@@ -1,0 +1,479 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+
+class GraphError(Exception):
+    pass
+
+
+class NotFound(GraphError):
+    pass
+
+
+class Conflict(GraphError):
+    pass
+
+
+class Validation(GraphError):
+    pass
+
+
+def _id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _loads(value: str | None, default: Any) -> Any:
+    return json.loads(value) if value else default
+
+
+class GraphStore:
+    """SQLite graph repository. A child checkpoint freezes its parent's effective history."""
+
+    def __init__(self, db_path: str | Path = ":memory:") -> None:
+        self.db_path = str(db_path)
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=5)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.execute("PRAGMA busy_timeout=5000")
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._init_schema()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    @contextmanager
+    def tx(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self._conn
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def _init_schema(self) -> None:
+        with self._lock:
+            self._conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS workflows(
+                  id TEXT PRIMARY KEY, name TEXT NOT NULL, root_instance_id TEXT,
+                  active_instance_id TEXT, graph_revision INTEGER NOT NULL DEFAULT 0,
+                  content_revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+                  updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS topics(
+                  id TEXT NOT NULL, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                  name TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workflow_id,id));
+                CREATE TABLE IF NOT EXISTS checkpoints(
+                  id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                  source_instance_id TEXT, source_content_revision INTEGER NOT NULL,
+                  messages_json TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS conversation_instances(
+                  id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                  topic_id TEXT NOT NULL, parent_id TEXT REFERENCES conversation_instances(id),
+                  checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id), title TEXT NOT NULL,
+                  status TEXT NOT NULL CHECK(status IN ('active','pruned')), provider TEXT NOT NULL,
+                  provider_conversation_id TEXT, content_revision INTEGER NOT NULL DEFAULT 0,
+                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                  FOREIGN KEY(workflow_id,topic_id) REFERENCES topics(workflow_id,id));
+                CREATE INDEX IF NOT EXISTS idx_instances_workflow_parent ON conversation_instances(workflow_id,parent_id);
+                CREATE INDEX IF NOT EXISTS idx_instances_workflow_topic ON conversation_instances(workflow_id,topic_id);
+                CREATE TABLE IF NOT EXISTS local_messages(
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                  instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+                  role TEXT NOT NULL CHECK(role IN ('system','user','assistant','tool')),
+                  content TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS idx_messages_instance ON local_messages(instance_id,id);
+                CREATE TABLE IF NOT EXISTS tombstones(
+                  workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                  instance_id TEXT PRIMARY KEY REFERENCES conversation_instances(id), pruned_at TEXT NOT NULL,
+                  prune_command_id TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS commands(
+                  id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                  idempotency_key TEXT NOT NULL, command_type TEXT NOT NULL, request_json TEXT NOT NULL,
+                  response_json TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT,
+                  UNIQUE(workflow_id,idempotency_key));
+                CREATE TABLE IF NOT EXISTS schema_migrations(
+                  version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+                """
+            )
+            columns = {row[1] for row in self._conn.execute("PRAGMA table_info(conversation_instances)")}
+            if "content_revision" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE conversation_instances ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0"
+                )
+            self._conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,?)", (_now(),)
+            )
+            self._conn.commit()
+
+    def _workflow(self, cx: sqlite3.Connection, workflow_id: str) -> sqlite3.Row:
+        row = cx.execute("SELECT * FROM workflows WHERE id=?", (workflow_id,)).fetchone()
+        if not row:
+            raise NotFound("workflow not found")
+        return row
+
+    def _instance(self, cx: sqlite3.Connection, workflow_id: str, instance_id: str, active=False) -> sqlite3.Row:
+        row = cx.execute(
+            "SELECT * FROM conversation_instances WHERE workflow_id=? AND id=?",
+            (workflow_id, instance_id),
+        ).fetchone()
+        if not row:
+            raise NotFound("conversation instance not found")
+        if active and row["status"] != "active":
+            raise Validation("conversation instance is pruned")
+        return row
+
+    def _ensure_topic(self, cx: sqlite3.Connection, workflow_id: str, topic_id: str, name: str) -> None:
+        cx.execute(
+            "INSERT OR IGNORE INTO topics(id,workflow_id,name,created_at) VALUES(?,?,?,?)",
+            (topic_id, workflow_id, name, _now()),
+        )
+        row = cx.execute("SELECT 1 FROM topics WHERE workflow_id=? AND id=?", (workflow_id, topic_id)).fetchone()
+        if not row:
+            raise Validation("topic could not be registered")
+
+    def list_workflows(self) -> dict[str, Any]:
+        with self._lock:
+            ids = [row[0] for row in self._conn.execute("SELECT id FROM workflows ORDER BY updated_at DESC")]
+        return {"workflows": [self.get_graph(workflow_id) for workflow_id in ids]}
+
+    def create_workflow(self, *, name: str, root_title: str, root_topic_id: str | None = None,
+                        provider: str = "local", root_instance_id: str | None = None,
+                        provider_conversation_id: str | None = None) -> dict[str, Any]:
+        if not name.strip() or not root_title.strip():
+            raise Validation("name and rootTitle are required")
+        workflow_id, instance_id = _id("wf"), root_instance_id or _id("ci")
+        topic_id, checkpoint_id, now = root_topic_id or _id("topic"), _id("cp"), _now()
+        with self.tx() as cx:
+            cx.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?)",
+                       (workflow_id, name.strip(), instance_id, instance_id, 1, 0, now, now))
+            self._ensure_topic(cx, workflow_id, topic_id, root_title.strip())
+            cx.execute("INSERT INTO checkpoints VALUES(?,?,?,?,?,?)",
+                       (checkpoint_id, workflow_id, None, 0, "[]", now))
+            cx.execute("INSERT INTO conversation_instances "
+                       "(id,workflow_id,topic_id,parent_id,checkpoint_id,title,status,provider,"
+                       "provider_conversation_id,content_revision,created_at,updated_at) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (instance_id, workflow_id, topic_id, None, checkpoint_id, root_title.strip(),
+                        "active", provider, provider_conversation_id, 0, now, now))
+        return self.get_graph(workflow_id)
+
+    def _route_ids(self, cx: sqlite3.Connection, workflow_id: str, instance_id: str) -> list[str]:
+        route: list[str] = []
+        current: str | None = instance_id
+        seen: set[str] = set()
+        while current:
+            if current in seen:
+                raise Validation("parent cycle detected")
+            seen.add(current)
+            row = self._instance(cx, workflow_id, current)
+            route.append(current)
+            current = row["parent_id"]
+        return list(reversed(route))
+
+    def _node(self, cx: sqlite3.Connection, workflow_id: str, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"], "topicId": row["topic_id"], "parentId": row["parent_id"],
+            "title": row["title"], "status": row["status"], "provider": row["provider"],
+            "providerConversationId": row["provider_conversation_id"],
+            "contentRevision": row["content_revision"],
+            "memoryRoute": self._route_ids(cx, workflow_id, row["id"]),
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def get_graph(self, workflow_id: str) -> dict[str, Any]:
+        with self._lock:
+            wf = self._workflow(self._conn, workflow_id)
+            rows = self._conn.execute(
+                "SELECT * FROM conversation_instances WHERE workflow_id=? ORDER BY created_at,id", (workflow_id,)
+            ).fetchall()
+            return {"schemaVersion": 1, "workflowId": wf["id"], "name": wf["name"],
+                    "rootInstanceId": wf["root_instance_id"], "activeInstanceId": wf["active_instance_id"],
+                    "graphRevision": wf["graph_revision"], "eventRevision": wf["content_revision"],
+                    "nodes": [self._node(self._conn, workflow_id, row) for row in rows]}
+
+    def _local_messages(self, cx: sqlite3.Connection, instance_id: str) -> list[dict[str, Any]]:
+        messages = [dict(row) for row in cx.execute(
+            "SELECT id,role,content,created_at AS createdAt FROM local_messages WHERE instance_id=? ORDER BY id",
+            (instance_id,),
+        ).fetchall()]
+        for message in messages:
+            message["inherited"] = False
+        return messages
+
+    def _effective_messages(self, cx: sqlite3.Connection, workflow_id: str, instance_id: str) -> list[dict[str, Any]]:
+        instance = self._instance(cx, workflow_id, instance_id)
+        checkpoint = cx.execute("SELECT messages_json FROM checkpoints WHERE id=?", (instance["checkpoint_id"],)).fetchone()
+        inherited = _loads(checkpoint[0], []) if checkpoint else []
+        local = self._local_messages(cx, instance_id)
+        for message in inherited:
+            message["inherited"] = True
+        return inherited + local
+
+    def list_messages(self, workflow_id: str, instance_id: str,
+                      scope: str = "effective") -> dict[str, Any]:
+        if scope not in {"local", "effective"}:
+            raise Validation("message scope must be local or effective")
+        with self._lock:
+            self._instance(self._conn, workflow_id, instance_id)
+            wf = self._workflow(self._conn, workflow_id)
+            instance = self._instance(self._conn, workflow_id, instance_id)
+            messages = (self._local_messages(self._conn, instance_id) if scope == "local"
+                        else self._effective_messages(self._conn, workflow_id, instance_id))
+            return {"workflowId": workflow_id, "instanceId": instance_id,
+                    "contentRevision": instance["content_revision"],
+                    "eventRevision": wf["content_revision"],
+                    "messages": messages}
+
+    def append_message(self, workflow_id: str, instance_id: str, *, role: str, content: str) -> dict[str, Any]:
+        if role not in {"system", "user", "assistant", "tool"} or not content:
+            raise Validation("invalid role or empty content")
+        now = _now()
+        with self.tx() as cx:
+            self._instance(cx, workflow_id, instance_id, active=True)
+            cur = cx.execute("INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) VALUES(?,?,?,?,?)",
+                             (workflow_id, instance_id, role, content, now))
+            cx.execute("UPDATE conversation_instances SET content_revision=content_revision+1,updated_at=? WHERE id=?",
+                       (now, instance_id))
+            cx.execute("UPDATE workflows SET content_revision=content_revision+1,updated_at=? WHERE id=?", (now, workflow_id))
+            event_revision = self._workflow(cx, workflow_id)["content_revision"]
+            revision = self._instance(cx, workflow_id, instance_id)["content_revision"]
+        return {"id": cur.lastrowid, "instanceId": instance_id, "role": role, "content": content,
+                "createdAt": now, "inherited": False, "contentRevision": revision,
+                "eventRevision": event_revision}
+
+    def _validate_latest_local_user_edit(self, cx: sqlite3.Connection, workflow_id: str,
+                                         instance_id: str, message_id: int,
+                                         expected_content_revision: int) -> sqlite3.Row:
+        instance = self._instance(cx, workflow_id, instance_id, active=True)
+        if instance["content_revision"] != expected_content_revision:
+            raise Conflict("stale content revision")
+        latest = cx.execute(
+            "SELECT id,created_at FROM local_messages "
+            "WHERE workflow_id=? AND instance_id=? AND role='user' ORDER BY id DESC LIMIT 1",
+            (workflow_id, instance_id),
+        ).fetchone()
+        if not latest:
+            raise NotFound("local user message not found")
+        if latest["id"] != message_id:
+            raise Conflict("message is not the latest local user message")
+        return latest
+
+    def prepare_latest_local_user_edit(self, workflow_id: str, instance_id: str,
+                                       message_id: int, *, content: str,
+                                       expected_content_revision: int) -> dict[str, Any]:
+        if not content.strip():
+            raise Validation("content must not be blank")
+        with self._lock:
+            self._validate_latest_local_user_edit(
+                self._conn, workflow_id, instance_id, message_id, expected_content_revision
+            )
+            effective = self._effective_messages(self._conn, workflow_id, instance_id)
+        virtual: list[dict[str, Any]] = []
+        for message in effective:
+            item = dict(message)
+            if not item.get("inherited") and item["id"] == message_id:
+                item["content"] = content
+            if (not item.get("inherited") and item["id"] > message_id
+                    and item["role"] in {"assistant", "tool"}):
+                continue
+            virtual.append(item)
+        return {"messages": virtual, "contentRevision": expected_content_revision}
+
+    def commit_latest_local_user_edit(self, workflow_id: str, instance_id: str,
+                                      message_id: int, *, content: str,
+                                      expected_content_revision: int,
+                                      assistant_content: str | None = None) -> dict[str, Any]:
+        if not content.strip():
+            raise Validation("content must not be blank")
+        if assistant_content is not None and not assistant_content.strip():
+            raise Validation("assistant content must not be blank")
+        now = _now()
+        with self.tx() as cx:
+            latest = self._validate_latest_local_user_edit(
+                cx, workflow_id, instance_id, message_id, expected_content_revision
+            )
+            removed = [row["id"] for row in cx.execute(
+                "SELECT id FROM local_messages WHERE workflow_id=? AND instance_id=? "
+                "AND id>? AND role IN ('assistant','tool') ORDER BY id",
+                (workflow_id, instance_id, message_id),
+            ).fetchall()]
+            cx.execute(
+                "UPDATE local_messages SET content=? WHERE workflow_id=? AND instance_id=? AND id=?",
+                (content, workflow_id, instance_id, message_id),
+            )
+            cx.execute(
+                "DELETE FROM local_messages WHERE workflow_id=? AND instance_id=? "
+                "AND id>? AND role IN ('assistant','tool')",
+                (workflow_id, instance_id, message_id),
+            )
+            assistant_id: int | None = None
+            if assistant_content is not None:
+                assistant_id = cx.execute(
+                    "INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (workflow_id, instance_id, "assistant", assistant_content.strip(), now),
+                ).lastrowid
+            cx.execute(
+                "UPDATE conversation_instances SET content_revision=content_revision+1,updated_at=? WHERE id=?",
+                (now, instance_id),
+            )
+            cx.execute(
+                "UPDATE workflows SET content_revision=content_revision+1,updated_at=? WHERE id=?",
+                (now, workflow_id),
+            )
+            revision = self._instance(cx, workflow_id, instance_id)["content_revision"]
+            event_revision = self._workflow(cx, workflow_id)["content_revision"]
+            local = self._local_messages(cx, instance_id)
+        assistant_message = None
+        if assistant_id is not None:
+            assistant_message = {
+                "id": assistant_id, "instanceId": instance_id, "role": "assistant",
+                "content": assistant_content.strip(), "createdAt": now, "inherited": False,
+                "contentRevision": revision, "eventRevision": event_revision,
+            }
+        return {
+            "userMessage": {"id": message_id, "instanceId": instance_id, "role": "user",
+                            "content": content, "createdAt": latest["created_at"], "inherited": False,
+                            "contentRevision": revision, "eventRevision": event_revision},
+            "removedMessageIds": removed,
+            "regenerated": assistant_message is not None,
+            "assistantMessage": assistant_message,
+            "messages": local,
+            "contentRevision": revision,
+            "eventRevision": event_revision,
+        }
+
+    def fork(self, workflow_id: str, parent_id: str, *, title: str, topic_id: str | None = None,
+             provider: str | None = None, instance_id: str | None = None,
+             provider_conversation_id: str | None = None,
+             initial_message: str | None = None) -> dict[str, Any]:
+        if not title.strip():
+            raise Validation("title is required")
+        child_id, checkpoint_id, now = instance_id or _id("ci"), _id("cp"), _now()
+        with self.tx() as cx:
+            parent = self._instance(cx, workflow_id, parent_id, active=True)
+            wf = self._workflow(cx, workflow_id)
+            child_topic = topic_id or _id("topic")
+            self._ensure_topic(cx, workflow_id, child_topic, title.strip())
+            frozen = self._effective_messages(cx, workflow_id, parent_id)
+            cx.execute("INSERT INTO checkpoints VALUES(?,?,?,?,?,?)",
+                       (checkpoint_id, workflow_id, parent_id, parent["content_revision"], json.dumps(frozen), now))
+            cx.execute("INSERT INTO conversation_instances "
+                       "(id,workflow_id,topic_id,parent_id,checkpoint_id,title,status,provider,"
+                       "provider_conversation_id,content_revision,created_at,updated_at) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (child_id, workflow_id, child_topic, parent_id, checkpoint_id, title.strip(), "active",
+                        provider or parent["provider"], provider_conversation_id, 0, now, now))
+            if initial_message and initial_message.strip():
+                cx.execute(
+                    "INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) VALUES(?,?,?,?,?)",
+                    (workflow_id, child_id, "user", initial_message.strip(), now),
+                )
+                cx.execute("UPDATE conversation_instances SET content_revision=content_revision+1 WHERE id=?", (child_id,))
+                cx.execute("UPDATE workflows SET content_revision=content_revision+1 WHERE id=?", (workflow_id,))
+            cx.execute("UPDATE workflows SET graph_revision=graph_revision+1,updated_at=? WHERE id=?", (now, workflow_id))
+            node = self._node(cx, workflow_id, self._instance(cx, workflow_id, child_id))
+            updated_wf = self._workflow(cx, workflow_id)
+        child_revision = node["contentRevision"]
+        return {"node": node, "graphRevision": updated_wf["graph_revision"],
+                "contentRevision": child_revision, "eventRevision": updated_wf["content_revision"],
+                "frozenParentContentRevision": parent["content_revision"]}
+
+    def activate(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
+        with self.tx() as cx:
+            self._instance(cx, workflow_id, instance_id, active=True)
+            cx.execute("UPDATE workflows SET active_instance_id=?,updated_at=? WHERE id=?", (instance_id, _now(), workflow_id))
+            wf = self._workflow(cx, workflow_id)
+        return {"workflowId": workflow_id, "activeInstanceId": instance_id,
+                "graphRevision": wf["graph_revision"], "eventRevision": wf["content_revision"]}
+
+    def topic_routes(self, workflow_id: str, topic_id: str, include_pruned: bool = False) -> dict[str, Any]:
+        with self._lock:
+            self._workflow(self._conn, workflow_id)
+            sql = "SELECT * FROM conversation_instances WHERE workflow_id=? AND topic_id=?"
+            args: list[Any] = [workflow_id, topic_id]
+            if not include_pruned:
+                sql += " AND status='active'"
+            rows = self._conn.execute(sql + " ORDER BY created_at,id", args).fetchall()
+            return {"workflowId": workflow_id, "topicId": topic_id,
+                    "routes": [self._node(self._conn, workflow_id, row) for row in rows]}
+
+    def _leaf_first(self, cx: sqlite3.Connection, workflow_id: str, target_id: str) -> list[str]:
+        self._instance(cx, workflow_id, target_id, active=True)
+        children: dict[str, list[str]] = {}
+        for row in cx.execute("SELECT id,parent_id FROM conversation_instances WHERE workflow_id=? AND status='active'", (workflow_id,)):
+            children.setdefault(row["parent_id"], []).append(row["id"])
+        for values in children.values(): values.sort()
+        result: list[str] = []
+        def visit(node_id: str) -> None:
+            for child in children.get(node_id, []): visit(child)
+            result.append(node_id)
+        visit(target_id)
+        return result
+
+    def prune_plan(self, workflow_id: str, target_id: str, *, allow_root: bool = False) -> dict[str, Any]:
+        with self._lock:
+            wf = self._workflow(self._conn, workflow_id)
+            if target_id == wf["root_instance_id"] and not allow_root:
+                raise Validation("pruning the root requires allowRoot")
+            ids = self._leaf_first(self._conn, workflow_id, target_id)
+            return {"workflowId": workflow_id, "targetInstanceId": target_id, "leafFirst": True,
+                    "rootRemoval": target_id == wf["root_instance_id"], "graphRevision": wf["graph_revision"],
+                    "nodes": [self._node(self._conn, workflow_id, self._instance(self._conn, workflow_id, item)) for item in ids]}
+
+    def prune_commit(self, workflow_id: str, target_id: str, *, expected_revision: int,
+                     idempotency_key: str, allow_root: bool = False) -> dict[str, Any]:
+        if not idempotency_key.strip():
+            raise Validation("idempotencyKey is required")
+        request = {"targetInstanceId": target_id, "expectedRevision": expected_revision, "allowRoot": allow_root}
+        with self.tx() as cx:
+            existing = cx.execute("SELECT request_json,response_json,status FROM commands WHERE workflow_id=? AND idempotency_key=?",
+                                  (workflow_id, idempotency_key)).fetchone()
+            if existing:
+                if _loads(existing["request_json"], {}) != request:
+                    raise Conflict("idempotencyKey was already used with different arguments")
+                if existing["status"] == "completed":
+                    return _loads(existing["response_json"], {})
+                raise Conflict("command is already in progress")
+            wf = self._workflow(cx, workflow_id)
+            if wf["graph_revision"] != expected_revision:
+                raise Conflict(f"stale graph revision: expected {expected_revision}, actual {wf['graph_revision']}")
+            if target_id == wf["root_instance_id"] and not allow_root:
+                raise Validation("pruning the root requires allowRoot")
+            ids = self._leaf_first(cx, workflow_id, target_id)
+            command_id, now = _id("cmd"), _now()
+            cx.execute("INSERT INTO commands VALUES(?,?,?,?,?,?,?,?,?)",
+                       (command_id, workflow_id, idempotency_key, "prune", json.dumps(request), None, "started", now, None))
+            for item in ids:
+                cx.execute("UPDATE conversation_instances SET status='pruned',updated_at=? WHERE id=?", (now, item))
+                cx.execute("INSERT INTO tombstones VALUES(?,?,?,?)", (workflow_id, item, now, command_id))
+            active = wf["active_instance_id"]
+            if active in ids:
+                parent = self._instance(cx, workflow_id, target_id)["parent_id"]
+                active = parent
+            cx.execute("UPDATE workflows SET active_instance_id=?,graph_revision=graph_revision+1,updated_at=? WHERE id=?",
+                       (active, now, workflow_id))
+            next_revision = self._workflow(cx, workflow_id)["graph_revision"]
+            response = {"workflowId": workflow_id, "targetInstanceId": target_id,
+                        "prunedInstanceIds": ids, "activeInstanceId": active,
+                        "graphRevision": next_revision, "idempotencyKey": idempotency_key}
+            cx.execute("UPDATE commands SET response_json=?,status='completed',completed_at=? WHERE id=?",
+                       (json.dumps(response), now, command_id))
+            return response

@@ -1,0 +1,3 @@
+import{describe,expect,it}from'vitest';import{memoryPath,routeLabel}from'./graph';import type{Graph}from'./types';
+const graph:Graph={workflowId:'w',name:'W',rootInstanceId:'a',activeInstanceId:'e',graphRevision:1,eventRevision:1,nodes:[{id:'a',parentId:null,topicId:'a',title:'A',status:'active'},{id:'b',parentId:'a',topicId:'b',title:'B',status:'active'},{id:'e',parentId:'b',topicId:'d',title:'D via E',status:'active'}]};
+describe('route memory',()=>{it('uses only concrete ancestors',()=>{expect(memoryPath(graph,'e').map(x=>x.id)).toEqual(['a','b','e']);expect(routeLabel(graph,'e')).toBe('A → B → D via E')})});

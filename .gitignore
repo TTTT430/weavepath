@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+
+# Node / frontend
+node_modules/
+dist/
+coverage/
+.vite/
+.turbo/
+.npm-cache/
+*.tsbuildinfo
+playwright-report/
+test-results/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+data/
+runtime/
+backups/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.log
+*.pid
+
+# Local host/plugin state
+.codex/
+.claude/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

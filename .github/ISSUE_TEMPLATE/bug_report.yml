@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible WeavePath defect (do not include sensitive data)
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include API keys, private conversations, databases, or personal paths. Use the private security report for vulnerabilities.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe the actual and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest safe reproduction.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      options:
+        - Web workspace
+        - Core API
+        - Graph / route memory
+        - Model provider
+        - Host adapter
+        - Other
+    validations:
+      required: true
