@@ -95,7 +95,9 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
    const replyResult=result as{replyStatus?:string;replyErrorCode?:string|null};
    if(replyResult.replyStatus==='failed')setError(`${t('branchReplyFailed')}${replyResult.replyErrorCode?` (${replyResult.replyErrorCode})`:''}`);
   }catch(caught){
-   if(caught instanceof ApiError&&caught.status===409){const refreshed=layer.kind==='turn'?await loadTurns(layer.instanceId):await load();if(refreshed)setError(t('forkConflict'))}else setError(caught instanceof Error?caught.message:String(caught));
+   if(caught instanceof ApiError&&caught.status===409){const refreshed=layer.kind==='turn'?await loadTurns(layer.instanceId):await load();if(refreshed)setError(t('forkConflict'))}
+   else if(caught instanceof ApiError&&caught.status===404)setError(t('backendUpgradeRequired'));
+   else setError(caught instanceof Error?caught.message:String(caught));
   }finally{setBusy(false)}
  }
 

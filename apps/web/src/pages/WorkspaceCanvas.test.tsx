@@ -136,6 +136,14 @@ describe('native double canvas workspace',()=>{
   expect(screen.getByRole('alert')).toHaveTextContent('创建分支前对话内容已变化');
  });
 
+ it('explains an outdated backend when exact turn fork is unavailable and unlocks retry',async()=>{
+  apiMock.forkChat.mockRejectedValueOnce(new ApiError('HTTP 404',404,'notFound'));
+  renderCanvas();await openLeafCanvas();fireEvent.click(await screen.findByRole('button',{name:'card-branch-turn-77'}));
+  fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'LLM数据集'}});fireEvent.change(screen.getByLabelText('分支的首个问题'),{target:{value:'有哪些主流数据集'}});fireEvent.click(screen.getByRole('button',{name:'创建分支并回答'}));
+  expect(await screen.findByRole('alert')).toHaveTextContent('后端版本过旧');
+  expect(screen.getByRole('button',{name:'创建分支并回答'})).toBeEnabled();
+ });
+
  it('refreshes the workflow graph after a head-fork revision conflict',async()=>{
   apiMock.fork.mockRejectedValueOnce(new ApiError('stale',409,'conflict'));
   renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
