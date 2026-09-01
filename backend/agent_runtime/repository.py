@@ -245,6 +245,7 @@ class AgentRunRepository:
                     "SELECT tr.* FROM tool_results tr JOIN tool_calls tc ON tc.id=tr.tool_call_id "
                     "WHERE tc.run_id=? ORDER BY tr.created_at,tr.id", (run_id,)).fetchall()]
                 result["finalAnswer"] = row["final_answer"]
+                result["metrics"] = self._metrics(row, result["steps"], result["toolResults"])
             return result
 
     def list(self, workflow_id: str, instance_id: str) -> list[dict[str, Any]]:
@@ -270,12 +271,31 @@ class AgentRunRepository:
                 "status": row["status"], "inputContentRevision": row["input_content_revision"],
                 "contextSha256": row["context_sha256"], "modelSnapshot": json.loads(row["model_snapshot_json"]),
                 "memoryRoute": context.get("memoryRoute", []),
+                "acceptedKnowledge": context.get("acceptedKnowledge", []),
                 "availableTools": context.get("availableTools", []),
                 "objective": row["objective"], "constraints": json.loads(row["constraints_json"]),
                 "deliverables": json.loads(row["deliverables_json"]),
                 "acceptanceChecks": json.loads(row["acceptance_checks_json"]),
                 "finalMessageId": row["final_message_id"], "errorCode": row["error_code"],
                 "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+
+    @staticmethod
+    def _metrics(row: sqlite3.Row, steps: list[dict[str, Any]],
+                 tool_results: list[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            created = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            updated = datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
+            duration_ms = max(0, int((updated - created).total_seconds() * 1000))
+        except (TypeError, ValueError):
+            duration_ms = None
+        return {
+            "durationMs": duration_ms,
+            "modelStepCount": sum(step["kind"] == "model" for step in steps),
+            "toolCallCount": sum(step["kind"] == "tool" for step in steps),
+            "toolDurationMs": sum(result["durationMs"] for result in tool_results),
+            # The OpenAI-compatible preview does not receive provider usage consistently.
+            "inputTokens": None, "outputTokens": None, "estimatedCost": None,
+        }
 
     @staticmethod
     def _step(row: sqlite3.Row) -> dict[str, Any]:

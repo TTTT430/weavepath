@@ -13,6 +13,7 @@ from agent_runtime.repository import AgentRunRepository
 from agent_runtime.tools import ToolRegistry
 from api.llm import LLMUnavailable
 from graph_core import Conflict, GraphStore
+from engineering import EngineeringRepository
 
 
 class AgentRunError(RuntimeError):
@@ -71,9 +72,11 @@ def _safe_model_snapshot(value: Any) -> dict[str, Any]:
 
 class AgentRuntimeService:
     def __init__(self, graph: GraphStore, repository: AgentRunRepository,
-                 model: AgentModelPort, tools: ToolRegistry, max_steps: int = 6) -> None:
+                 model: AgentModelPort, tools: ToolRegistry, max_steps: int = 6,
+                 engineering: EngineeringRepository | None = None) -> None:
         self.graph, self.repository, self.model, self.tools = graph, repository, model, tools
         self.max_steps = max_steps
+        self.engineering = engineering
         self._claim_guard = threading.Lock()
         self._claim_locks: dict[tuple[str, str, str], tuple[threading.Lock, int]] = {}
 
@@ -155,6 +158,8 @@ class AgentRuntimeService:
         if snapshot["contentRevision"] != request["expectedContentRevision"]:
             raise AgentRunError("runRevisionConflict", "Route changed before the run started", 409)
         memory_route = self._route(workflow_id, instance_id)
+        accepted_knowledge = (self.engineering.accepted_knowledge(workflow_id, instance_id)
+                              if self.engineering else [])
         try:
             bound_model = self.model.bind()
             model_snapshot = _safe_model_snapshot(bound_model.snapshot())
@@ -170,6 +175,7 @@ class AgentRuntimeService:
         context = {"workflowId": workflow_id, "instanceId": instance_id,
                    "inputContentRevision": snapshot["contentRevision"],
                    "memoryRoute": memory_route,
+                   "acceptedKnowledge": accepted_knowledge,
                    "availableTools": tool_specs,
                    "messages": snapshot["messages"], "objective": request["objective"],
                    "constraints": request["constraints"], "deliverables": request["deliverables"],
@@ -196,7 +202,9 @@ class AgentRuntimeService:
                         if m["role"] in {"system", "user", "assistant"}]
             messages.append({"role": "user", "content": json.dumps({
                 "objective": request["objective"], "constraints": request["constraints"],
-                "deliverables": request["deliverables"], "acceptanceChecks": request["acceptanceChecks"]
+                "deliverables": request["deliverables"],
+                "acceptanceChecks": request["acceptanceChecks"],
+                "acceptedKnowledge": accepted_knowledge,
             }, ensure_ascii=False)})
             step_sequence = 0
             for _ in range(self.max_steps):

@@ -3,10 +3,11 @@ import type{Graph}from'../domain/types';
 import{useI18n}from'../lib/i18n';
 import{ChatPage}from'../pages/ChatPage';
 import{WorkspaceCanvas}from'../pages/WorkspaceCanvas';
+import{EngineeringWorkbench}from'./EngineeringWorkbench';
 
-type WorkspaceView='chat'|'workflow';
+type WorkspaceView='chat'|'workflow'|'lab';
 
-function initialView():WorkspaceView{return localStorage.getItem('weavepath.workspace.view')==='workflow'?'workflow':'chat'}
+function initialView():WorkspaceView{const value=localStorage.getItem('weavepath.workspace.view');return value==='workflow'||value==='lab'?value:'chat'}
 
 export function WorkspaceShell(){
  const{t}=useI18n(),[view,setViewState]=useState<WorkspaceView>(initialView),[workflowId,setWorkflowId]=useState(localStorage.getItem('cw.workflow')||''),[graph,setGraph]=useState<Graph|null>(null);
@@ -20,6 +21,7 @@ export function WorkspaceShell(){
    <nav className="workspace-view-tabs" aria-label={t('workflowCanvas')}>
     <button type="button" className={view==='chat'?'current':''} aria-pressed={view==='chat'} onClick={()=>setView('chat')}>{t('chatView')}</button>
     <button type="button" className={view==='workflow'?'current':''} aria-pressed={view==='workflow'} disabled={!workflowId} onClick={()=>setView('workflow')}>{t('workflowView')}</button>
+    <button type="button" className={view==='lab'?'current':''} aria-pressed={view==='lab'} disabled={!workflowId} onClick={()=>setView('lab')}>{t('labView')}</button>
    </nav>
    <span title={graph?.name||''}>{graph?.name||''}</span>
   </header>
@@ -29,6 +31,9 @@ export function WorkspaceShell(){
    </div>
    <div className={`workspace-surface workflow-surface ${view==='workflow'?'is-active':''}`} aria-hidden={view!=='workflow'}>
     <WorkspaceCanvas workflowId={workflowId} visible={view==='workflow'} onContinue={()=>setView('chat')}/>
+   </div>
+   <div className={`workspace-surface lab-surface ${view==='lab'?'is-active':''}`} aria-hidden={view!=='lab'}>
+    <EngineeringWorkbench workflowId={workflowId} graph={graph} visible={view==='lab'}/>
    </div>
   </section>
  </main>;

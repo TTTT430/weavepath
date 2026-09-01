@@ -322,7 +322,7 @@ def test_schema_and_revisions(store: GraphStore):
     assert store._conn.execute("PRAGMA journal_mode").fetchone()[0] in {"memory", "wal"}
     tables = {row[0] for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"workflows", "topics", "conversation_instances", "checkpoints", "local_messages", "tombstones", "commands", "schema_migrations"} <= tables
-    assert store._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
+    assert store._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 5
     before = store.get_graph(wf)
     store.append_message(wf, "A", role="user", content="hello")
     after_message = store.get_graph(wf)

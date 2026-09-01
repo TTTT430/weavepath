@@ -39,6 +39,81 @@ ALTER TABLE checkpoints ADD COLUMN source_cursor_kind TEXT;
 ALTER TABLE checkpoints ADD COLUMN source_cursor_value TEXT;
 """
 
+V5 = """
+CREATE TABLE IF NOT EXISTS artifacts(
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    instance_id TEXT REFERENCES conversation_instances(id) ON DELETE SET NULL,
+    run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    logical_name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    content_text TEXT NOT NULL,
+    metadata_json TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(workflow_id,logical_name,version)
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_workflow ON artifacts(workflow_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_artifacts_run ON artifacts(run_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_merges(
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    target_instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+    source_instance_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('accepted')),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS knowledge_items(
+    id TEXT PRIMARY KEY,
+    merge_id TEXT NOT NULL REFERENCES knowledge_merges(id) ON DELETE CASCADE,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    target_instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+    source_instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+    source_run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('conclusion','decision','fact','constraint')),
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_target ON knowledge_items(workflow_id,target_instance_id,created_at);
+CREATE TABLE IF NOT EXISTS knowledge_merge_artifacts(
+    merge_id TEXT NOT NULL REFERENCES knowledge_merges(id) ON DELETE CASCADE,
+    artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    PRIMARY KEY(merge_id,artifact_id)
+);
+
+CREATE TABLE IF NOT EXISTS datasets(
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    logical_name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    description TEXT NOT NULL,
+    cases_json TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(workflow_id,logical_name,version)
+);
+CREATE INDEX IF NOT EXISTS idx_datasets_workflow ON datasets(workflow_id,created_at);
+
+CREATE TABLE IF NOT EXISTS experiments(
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    dataset_id TEXT NOT NULL REFERENCES datasets(id) ON DELETE RESTRICT,
+    instance_ids_json TEXT NOT NULL,
+    run_ids_json TEXT NOT NULL,
+    metric TEXT NOT NULL,
+    notes TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_experiments_workflow ON experiments(workflow_id,created_at);
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
@@ -79,4 +154,7 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             "WHERE source_instance_id IS NOT NULL AND source_cursor_kind IS NULL"
         )
         conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)", (_now(),))
+    if 5 not in applied:
+        conn.executescript(V5)
+        conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)", (_now(),))
     conn.commit()

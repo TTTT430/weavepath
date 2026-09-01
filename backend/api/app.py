@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import sqlite3
 import tempfile
@@ -17,6 +18,7 @@ from agent_runtime import (AgentModelPort, AgentRunError, AgentRunRepository, Ag
                            OpenAICompatibleAgentAdapter, calculator_registry)
 from api.llm import LLMClient, LLMUnavailable, OpenAICompatibleLLM
 from api.model_settings import RuntimeModelSettings
+from engineering import EngineeringRepository
 from graph_core import Conflict, GraphStore, NotFound, Validation
 
 
@@ -309,6 +311,57 @@ class PruneCommitInput(PrunePlanInput):
     idempotency_key: str = Field(alias="idempotencyKey", min_length=1)
 
 
+class ArtifactInput(CamelModel):
+    name: str = Field(min_length=1, max_length=240)
+    kind: str = Field(default="text", min_length=1, max_length=80)
+    mime_type: str = Field(default="text/plain", alias="mimeType", min_length=1, max_length=200)
+    content: str = Field(default="", max_length=1_000_000)
+    instance_id: str | None = Field(None, alias="instanceId", max_length=240)
+    run_id: str | None = Field(None, alias="runId", max_length=240)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ComparisonInput(CamelModel):
+    instance_ids: list[str] = Field(alias="instanceIds", min_length=2, max_length=4)
+
+
+class KnowledgeSelection(CamelModel):
+    source_instance_id: str = Field(alias="sourceInstanceId", min_length=1, max_length=240)
+    source_run_id: str | None = Field(None, alias="sourceRunId", max_length=240)
+    kind: Literal["conclusion", "decision", "fact", "constraint"] = "conclusion"
+    title: str = Field(min_length=1, max_length=240)
+    content: str = Field(min_length=1, max_length=20_000)
+
+
+class KnowledgeMergeInput(CamelModel):
+    target_instance_id: str = Field(alias="targetInstanceId", min_length=1, max_length=240)
+    source_instance_ids: list[str] = Field(alias="sourceInstanceIds", min_length=1, max_length=4)
+    items: list[KnowledgeSelection] = Field(default_factory=list, max_length=50)
+    artifact_ids: list[str] = Field(default_factory=list, alias="artifactIds", max_length=50)
+
+
+class DatasetCase(CamelModel):
+    id: str = Field(min_length=1, max_length=240)
+    input: str = Field(min_length=1, max_length=20_000)
+    expected: str | None = Field(None, max_length=20_000)
+    tags: list[str] = Field(default_factory=list, max_length=50)
+
+
+class DatasetInput(CamelModel):
+    name: str = Field(min_length=1, max_length=240)
+    description: str = Field(default="", max_length=20_000)
+    cases: list[DatasetCase] = Field(min_length=1, max_length=5_000)
+
+
+class ExperimentInput(CamelModel):
+    name: str = Field(min_length=1, max_length=240)
+    dataset_id: str = Field(alias="datasetId", min_length=1, max_length=240)
+    instance_ids: list[str] = Field(alias="instanceIds", min_length=1, max_length=20)
+    run_ids: list[str] = Field(default_factory=list, alias="runIds", max_length=100)
+    metric: str = Field(default="manual-review", max_length=240)
+    notes: str = Field(default="", max_length=20_000)
+
+
 def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = None,
                model_settings: RuntimeModelSettings | None = None,
                agent_model: AgentModelPort | None = None) -> FastAPI:
@@ -325,12 +378,14 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         settings = model_settings or RuntimeModelSettings(settings_path)
         llm: LLMClient = llm_client or settings
         run_repository = AgentRunRepository(graph_store._conn, graph_store._lock)
+        engineering = EngineeringRepository(graph_store._conn, graph_store._lock)
         if agent_model is None:
             if isinstance(llm, OpenAICompatibleLLM):
                 agent_model = OpenAICompatibleAgentAdapter(lambda: llm)
             elif hasattr(llm, "_client"):
                 agent_model = OpenAICompatibleAgentAdapter(llm._client)
-        run_service = (AgentRuntimeService(graph_store, run_repository, agent_model, calculator_registry())
+        run_service = (AgentRuntimeService(graph_store, run_repository, agent_model, calculator_registry(),
+                                           engineering=engineering)
                        if agent_model is not None else None)
     except BaseException:
         if owned:
@@ -358,6 +413,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     app.state.store = graph_store
     app.state.model_settings = settings
     app.state.agent_runs = run_repository
+    app.state.engineering = engineering
 
     @app.exception_handler(NotFound)
     async def not_found(_: Request, exc: NotFound):
@@ -395,10 +451,20 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
 
     prefix = "/api/v1"
 
+    def route_context(workflow_id: str, instance_id: str,
+                      messages: list[dict[str, object]]) -> list[dict[str, object]]:
+        accepted = engineering.accepted_knowledge(workflow_id, instance_id)
+        if not accepted:
+            return messages
+        return [*messages, {"role": "system", "content": json.dumps({
+            "acceptedRouteKnowledge": accepted,
+            "instruction": "Use only these explicitly accepted cross-route facts; do not infer sibling transcripts.",
+        }, ensure_ascii=False)}]
+
     @app.get(prefix + "/health")
     def health():
         return {"ok": True, "service": "weavepath", "version": app.version,
-                "schemaVersion": 4, "aiConfigured": bool(llm.status()["configured"])}
+                "schemaVersion": 5, "aiConfigured": bool(llm.status()["configured"])}
 
     @app.get(prefix + "/ai/status")
     def ai_status():
@@ -464,7 +530,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         if not llm.status()["configured"]:
             raise LLMUnavailable(str(llm.status().get("reason") or "AI provider is not configured"))
         user_message = graph_store.append_message(workflow_id, instance_id, role="user", content=body.content)
-        context = graph_store.list_messages(workflow_id, instance_id)["messages"]
+        context = route_context(
+            workflow_id, instance_id,
+            graph_store.list_messages(workflow_id, instance_id)["messages"],
+        )
         assistant_text = llm.complete(context)
         assistant_message = graph_store.append_message(
             workflow_id, instance_id, role="assistant", content=assistant_text
@@ -483,7 +552,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             workflow_id, instance_id, message_id, content=body.content,
             expected_content_revision=body.expected_revision,
         )
-        assistant_text = llm.complete(prepared["messages"])
+        assistant_text = llm.complete(route_context(workflow_id, instance_id, prepared["messages"]))
         return graph_store.commit_latest_local_user_edit(
             workflow_id, instance_id, message_id, content=body.content,
             expected_content_revision=body.expected_revision,
@@ -509,6 +578,50 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def get_agent_run_events(run_id: str, after_sequence: int = Query(0, alias="afterSequence", ge=0),
                              limit: int = Query(100, ge=1, le=500)):
         return run_repository.events(run_id, after_sequence, limit)
+
+    @app.get(prefix + "/workflows/{workflow_id}/artifacts")
+    def list_artifacts(workflow_id: str):
+        return {"artifacts": engineering.list_artifacts(workflow_id)}
+
+    @app.post(prefix + "/workflows/{workflow_id}/artifacts", status_code=201)
+    def create_artifact(workflow_id: str, body: ArtifactInput):
+        return engineering.create_artifact(workflow_id, **body.model_dump(by_alias=False))
+
+    @app.get(prefix + "/workflows/{workflow_id}/artifacts/{artifact_id}")
+    def get_artifact(workflow_id: str, artifact_id: str):
+        return engineering.get_artifact(workflow_id, artifact_id)
+
+    @app.post(prefix + "/workflows/{workflow_id}/comparisons")
+    def compare_branches(workflow_id: str, body: ComparisonInput):
+        return engineering.compare(workflow_id, body.instance_ids)
+
+    @app.post(prefix + "/workflows/{workflow_id}/knowledge-merges", status_code=201)
+    def merge_knowledge(workflow_id: str, body: KnowledgeMergeInput):
+        value = body.model_dump(by_alias=False)
+        value["items"] = [item.model_dump(by_alias=True) for item in body.items]
+        return engineering.merge_knowledge(workflow_id, **value)
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/knowledge")
+    def accepted_knowledge(workflow_id: str, instance_id: str):
+        return {"knowledgeItems": engineering.accepted_knowledge(workflow_id, instance_id)}
+
+    @app.get(prefix + "/workflows/{workflow_id}/datasets")
+    def list_datasets(workflow_id: str):
+        return {"datasets": engineering.list_datasets(workflow_id)}
+
+    @app.post(prefix + "/workflows/{workflow_id}/datasets", status_code=201)
+    def create_dataset(workflow_id: str, body: DatasetInput):
+        return engineering.create_dataset(workflow_id, name=body.name,
+                                          description=body.description,
+                                          cases=[case.model_dump() for case in body.cases])
+
+    @app.get(prefix + "/workflows/{workflow_id}/experiments")
+    def list_experiments(workflow_id: str):
+        return {"experiments": engineering.list_experiments(workflow_id)}
+
+    @app.post(prefix + "/workflows/{workflow_id}/experiments", status_code=201)
+    def create_experiment(workflow_id: str, body: ExperimentInput):
+        return engineering.create_experiment(workflow_id, **body.model_dump(by_alias=False))
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/fork", status_code=201)
     def fork(workflow_id: str, instance_id: str, body: ForkInput):

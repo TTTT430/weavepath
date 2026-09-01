@@ -65,7 +65,7 @@ function dialogKeys(event:KeyboardEvent<HTMLElement>,close:()=>void){
 }
 
 export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCompleted}:Props){
- const{t}=useI18n();
+ const{t,locale}=useI18n();
  const[briefOwner,setBriefOwner]=useState('');
  const[panelOwner,setPanelOwner]=useState('');
  const[objective,setObjective]=useState('');
@@ -77,6 +77,7 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
  const[selectedState,setSelectedState]=useState<OwnedSelection>({owner:'',run:null});
  const[eventState,setEventState]=useState<OwnedEvents>({owner:'',runId:null,items:[],cursor:0,hasMore:false,loading:false});
  const[routeError,setRouteError]=useState({owner:'',message:''});
+ const[artifactBusy,setArtifactBusy]=useState(false),[savedArtifacts,setSavedArtifacts]=useState<Set<string>>(()=>new Set());
  const[listLoadingOwner,setListLoadingOwner]=useState('');
  const[pendingOwners,setPendingOwners]=useState<Set<string>>(()=>new Set());
  const loadGenerations=useRef<Map<string,number>>(new Map()),detailSeq=useRef(0),currentKeyRef=useRef('');
@@ -256,6 +257,22 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
   }
  }
 
+ async function saveResultArtifact(){
+  if(!graph||!selected?.finalAnswer||artifactBusy)return;
+  setArtifactBusy(true);
+  try{
+   await api.createArtifact(graph.workflowId,{name:selected.objective,kind:'agent-result',mimeType:'text/markdown',content:selected.finalAnswer,instanceId:selected.instanceId,runId:selected.runId,metadata:{source:'agent-run'}});
+   setSavedArtifacts(current=>new Set(current).add(String(selected.runId)));
+  }catch(caught){setErrorFor(key,caught instanceof Error?caught.message:String(caught))}
+  finally{setArtifactBusy(false)}
+ }
+
+ const eventName=(type:string)=>({
+  'run.created':locale==='zh-CN'?'运行已创建':'Run created','context.frozen':locale==='zh-CN'?'上下文已冻结':'Context frozen','run.started':locale==='zh-CN'?'开始执行':'Execution started','model.started':locale==='zh-CN'?'模型开始思考':'Model started','model.completed':locale==='zh-CN'?'模型步骤完成':'Model step completed','model.failed':locale==='zh-CN'?'模型步骤失败':'Model step failed','tool.requested':locale==='zh-CN'?'请求工具':'Tool requested','tool.started':locale==='zh-CN'?'工具开始执行':'Tool started','tool.completed':locale==='zh-CN'?'工具完成':'Tool completed','tool.failed':locale==='zh-CN'?'工具失败':'Tool failed','run.completed':locale==='zh-CN'?'运行完成':'Run completed','run.failed':locale==='zh-CN'?'运行失败':'Run failed','run.interrupted':locale==='zh-CN'?'运行中断':'Run interrupted'
+ }as Record<string,string>)[type]||type;
+ const eventIcon=(type:string)=>type.startsWith('tool.')?'⌁':type.startsWith('model.')?'✦':type.includes('failed')?'!':type.includes('completed')?'✓':'•';
+ const duration=(value:number|null|undefined)=>value==null?'—':value<1000?`${value} ms`:`${(value/1000).toFixed(2)} s`;
+
  const status=(run:AgentRun)=>t(({queued:'runQueued',running:'runRunning',completed:'runCompleted',failed:'runFailed',interrupted:'runInterrupted'}as const)[run.status]||'runFailed');
  const tools=selected?.availableTools?.length?selected.availableTools:[DEFAULT_TOOL];
 
@@ -290,7 +307,7 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
     {error&&<p className="agent-error" role="alert">{error}</p>}
     <div className="agent-runs-layout">
      <div className="run-list">{!runs.length&&!listLoading&&<p>{t('noRuns')}</p>}{runs.map(run=><button type="button" key={run.runId} className={String(selected?.runId)===String(run.runId)?'current':''} onClick={()=>void inspect(run,key)}><strong>{run.objective}</strong><span className={`run-status ${run.status}`}>{status(run)}</span><small>{t('revision')}: {run.inputContentRevision}</small>{run.errorCode&&<em>{t('errorCode')}: {run.errorCode}</em>}</button>)}</div>
-     {selected&&<article className="run-detail">
+	     {selected&&<article className="run-detail">
       <h3>{selected.objective}</h3>
       <p><span className={`run-status ${selected.status}`}>{status(selected)}</span> · {t('revision')}: {selected.inputContentRevision}</p>
       <dl className="run-provenance compact">
@@ -301,12 +318,14 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
        {selected.contextSha256&&<div><dt>{t('contextHash')}</dt><dd title={selected.contextSha256}>{selected.contextSha256}</dd></div>}
       </dl>
       <small>{t('concreteRoute')}</small>
-      <div className="route-chips">{(selected.memoryRoute?.length?selected.memoryRoute:route.map(node=>({instanceId:node.id,topicId:node.topicId,title:node.title}))).map(node=><span key={node.instanceId} title={node.instanceId}>{node.title}</span>)}</div>
-      {selected.errorCode&&<p className="agent-error">{t('errorCode')}: {selected.errorCode}</p>}
-      <h4>{t('events')}</h4>
-      <ol className="run-events">{events.map(event=><li key={event.sequence}><strong>{event.type}</strong><pre>{show(event.payload)}</pre></li>)}</ol>
+	      <div className="route-chips">{(selected.memoryRoute?.length?selected.memoryRoute:route.map(node=>({instanceId:node.id,topicId:node.topicId,title:node.title}))).map(node=><span key={node.instanceId} title={node.instanceId}>{node.title}</span>)}</div>
+	      {selected.metrics&&<div className="run-metrics"><div><strong>{duration(selected.metrics.durationMs)}</strong><small>{locale==='zh-CN'?'总耗时':'Duration'}</small></div><div><strong>{selected.metrics.modelStepCount}</strong><small>{locale==='zh-CN'?'模型步骤':'Model steps'}</small></div><div><strong>{selected.metrics.toolCallCount}</strong><small>{locale==='zh-CN'?'工具调用':'Tool calls'}</small></div><div><strong>{duration(selected.metrics.toolDurationMs)}</strong><small>{locale==='zh-CN'?'工具耗时':'Tool time'}</small></div></div>}
+	      {!!selected.acceptedKnowledge?.length&&<section className="accepted-knowledge"><h4>{locale==='zh-CN'?'本次使用的接纳知识':'Accepted knowledge used'}</h4>{selected.acceptedKnowledge.map(item=><article key={item.knowledgeItemId}><strong>{item.title}</strong><p>{item.content}</p></article>)}</section>}
+	      {selected.errorCode&&<p className="agent-error">{t('errorCode')}: {selected.errorCode}</p>}
+	      <h4>{locale==='zh-CN'?'执行时间线':'Execution timeline'}</h4>
+	      <ol className="run-events timeline">{events.map(event=><li className={event.type.includes('failed')?'failed':event.type.includes('completed')?'completed':''} key={event.sequence}><i aria-hidden="true">{eventIcon(event.type)}</i><div><strong>{eventName(event.type)}</strong>{event.createdAt&&<time>{new Date(event.createdAt).toLocaleTimeString(locale)}</time>}<details><summary>{locale==='zh-CN'?'查看事件数据':'Event data'}</summary><pre>{show(event.payload)}</pre></details></div></li>)}</ol>
       {eventState.owner===key&&String(eventState.runId)===String(selected.runId)&&eventState.hasMore&&<button type="button" disabled={eventState.loading} onClick={()=>void loadMoreEvents()}>{t('loadMoreEvents')}</button>}
-      {(selected.finalAnswer||selected.toolResults?.length||selected.finalMessageId)&&<><h4>{t('result')}</h4><pre>{show(selected.finalAnswer||selected.toolResults?.length?selected.finalAnswer||selected.toolResults:{finalMessageId:selected.finalMessageId})}</pre></>}
+	      {(selected.finalAnswer||selected.toolResults?.length||selected.finalMessageId)&&<><div className="run-result-heading"><h4>{t('result')}</h4>{selected.finalAnswer&&<button type="button" disabled={artifactBusy||savedArtifacts.has(String(selected.runId))} onClick={()=>void saveResultArtifact()}>{savedArtifacts.has(String(selected.runId))?(locale==='zh-CN'?'已保存为 Artifact':'Saved as artifact'):(locale==='zh-CN'?'保存为 Artifact':'Save as artifact')}</button>}</div><pre>{show(selected.finalAnswer||selected.toolResults?.length?selected.finalAnswer||selected.toolResults:{finalMessageId:selected.finalMessageId})}</pre></>}
      </article>}
     </div>
    </section>

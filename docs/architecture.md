@@ -1,6 +1,6 @@
 # 总体架构与领域模型
 
-本文主要描述目标架构。当前已验证基线包含 SQLite GraphStore、schema v4 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 都已完成窄范围 **Verified local preview** 验收，但不等于完整 Agent Runtime、跨宿主集成或阶段完成。
+本文主要描述目标架构。当前自动化验证基线包含 SQLite GraphStore、schema v5 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布、Engineering Lab v1 和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 已完成窄范围真实浏览器验收，Engineering Lab v1 已完成自动化验证；这些都不等于完整 Agent Runtime、跨宿主集成或阶段完成。
 
 ## 分层
 
@@ -179,7 +179,7 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 - completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
 - 启动时遗留的 `queued` / `running` run 转为 `interrupted`，不会自动继续执行。
 
-schema v3 引入且在当前 schema v4 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
+schema v3 引入且在当前 schema v5 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 
 ## HostAdapter 能力协议
 

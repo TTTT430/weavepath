@@ -19,6 +19,9 @@ test = [
   "pytest>=8.4,<9",
 ]
 
+[tool.setuptools]
+py-modules = ["engineering"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["graph_core*", "api*", "agent_runtime*"]
