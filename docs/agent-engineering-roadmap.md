@@ -17,11 +17,11 @@ The current **Conversation Workflow / Local Graph Chat** implementation is the P
 - branch, activate, inspect, topic-route selection, and two-step cascade archival;
 - isolation between concrete routes, including multiple instances of the same logical topic;
 - a standalone OpenAI-compatible synchronous chat path and in-app model settings;
-- an independent graph window, cross-window activation updates, and Chinese/English UI chrome;
+- a native `WorkspaceShell` with “Chat / Workflow” switching, a top-level `ConversationInstance` graph, a local-only Turn Canvas, and Chinese/English UI chrome; `/graph` remains a compatibility entry point;
 - separation between inherited checkpoint memory and messages written locally to the selected node;
 - revision-aware editing and regeneration of the latest local user message.
 
-Phase 1 is **not complete**. A schema v3 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
+Phase 1 is **not complete**. A schema v4 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
 
 A **Verified local preview** named **Route-to-Agent Run v1** now exercises one bounded synchronous run from a frozen concrete-route context, with an execution brief, durable event journal, `safe_calculator` / `1.0.0`, the configured OpenAI-compatible production adapter, a test-only scripted mock, revision/idempotency/interruption safeguards, and a web run dialog/timeline. The recorded evidence is in [Route-to-Agent Run v1](route-to-agent-run-v1.md). This narrow preview does not make Phase 1 or Phase 2 complete.
 
@@ -71,7 +71,7 @@ Established the local-first source of truth, route-instance model, checkpoint se
 
 **Exit evidence**
 
-- accepted architecture decisions for the global store, topic route instances, and host-operation sagas;
+- accepted architecture decisions for the global store, topic route instances, host-operation sagas, and the native double-canvas workspace;
 - documented data ownership and legacy manifest migration;
 - graph invariants covered by domain tests.
 
@@ -83,8 +83,8 @@ Deliver a reliable standalone route-aware conversation graph before expanding in
 
 **Current capabilities** are listed in “What exists today.” Remaining work includes:
 
-- hardening the existing schema v3 forward migrations with upgrade matrices, backup/recovery, and rollback/downgrade policy;
-- completion of restart, archive, conflict, and popup lifecycle E2E coverage;
+- hardening the existing schema v4 forward migrations with upgrade matrices, backup/recovery, and rollback/downgrade policy;
+- extending restart, archive, and conflict E2E coverage; `/graph` popup lifecycle is compatibility coverage, not a completion condition for the default WorkspaceShell;
 - stable command/query application services and adapter contracts;
 - clearer recovery for partially completed operations;
 - packaging and data-directory diagnostics suitable for non-developer users.

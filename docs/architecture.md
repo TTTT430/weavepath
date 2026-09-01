@@ -1,25 +1,27 @@
 # 总体架构与领域模型
 
-本文主要描述目标架构。当前 Phase 1 已建立 SQLite GraphStore、schema v3 前向迁移、FastAPI 路由、可运行 React chat/graph 页面和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。Route-to-Agent Run v1 已完成窄范围 **Verified local preview** 验收，但不等于完整 Agent Runtime 或阶段完成。当前两个同源浏览器窗口通过 `BroadcastChannel + postMessage` 同步 activate，不使用 WebSocket。
+本文主要描述目标架构。当前已验证基线包含 SQLite GraphStore、schema v4 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 都已完成窄范围 **Verified local preview** 验收，但不等于完整 Agent Runtime、跨宿主集成或阶段完成。
 
 ## 分层
 
 ### UI Shells
 
-- Web Chat：本地对话和固定工作流入口。
-- Graph Window：独立浏览器/Desktop 窗口中的主图界面。
+- WorkspaceShell（本机预览已验证）：同一个应用内承载“对话 / 工作流”两个长期 surface，切换时保持聊天草稿、请求状态、消息滚动和画布镜头。
+- Workflow Canvas（本机预览已验证）：第一层显示具体 `ConversationInstance` 路线图，双击实例按需钻入第二层 local-only Turn Canvas；双击不 activate。
+- Web Chat：本地对话 surface；只有用户在工作流中显式选择“继续对话”后才接受 activate 结果。
+- Graph Window：保留为 `/graph` 可选兼容入口或未来 Desktop surface，不再是默认工作流入口，也不拥有独立领域状态。
 - Desktop Shell：后续单实例、任务栏入口和协议唤起。
 - Codex Widget：宿主内快速入口与迷你图。
 - Claude Command/Plugin：启动或聚焦 companion app，并提供宿主能力。
 
-UI 只持有临时 selection、zoom、language 等展示状态。结构真相必须从 Core Service 获取。
+UI 只持有临时 selection、viewport、节点视觉位置、折叠、language 等展示状态。它们必须按 workflow/instance 命名空间保存，且不得改变 parent/checkpoint、host binding、tombstone、`graph_revision` 或 `content_revision`。结构真相必须从 Core Service 获取。
 
 ### Application Services
 
 - Command service：create、fork、bind、archive 等结构变更。
 - Query service：graph read model、route choice、record pagination。
 - Host operation saga：协调 SQLite 与不可事务化的宿主副作用。
-- Event service（目标）：未来按需要通过 WebSocket 发布 `graph.changed`、`instance.activated`、`checkpoint.ready`；当前浏览器窗口仅用 browser events 同步 activate。
+- Event service（目标）：未来按需要通过 WebSocket 发布 `graph.changed`、`instance.activated`、`checkpoint.ready`；同一 `WorkspaceShell` 内的视图切换不需要跨窗口事件，可选 `/graph` 兼容窗口仍可暂用 browser events。
 - Context builder：只沿选定祖先路线构建上下文。
 - Agent Runtime service（本机预览）：从具体 instance 冻结有效路线消息和 execution brief，驱动同步 model/tool loop，并把 run、step、event、tool call/result 和最终答案写入 SQLite。
 
@@ -88,7 +90,8 @@ ConversationInstance
 Checkpoint
   id, instance_id, message_prefix
   content_hash, foundation_snapshot_id
-  readiness, created_at
+  source_cursor_kind, source_cursor_value
+  source_content_revision, readiness, created_at
 
 HostBinding
   instance_id, adapter
@@ -128,6 +131,33 @@ D1 和 D2 可以在 UI 中聚合显示为一个 D，并提供两条路线选择�
 
 多个窗口或宿主同时打开时，不允许用一个全局 `active_node_id` 覆盖它们。
 
+## 双层画布读模型
+
+顶层 Workflow Graph 的卡片始终代表具体 `ConversationInstance`，边仍由 `parent_instance_id` 推导。它不能混入单条消息、工具调用或纯视觉分组节点，否则 prune、route choice 和 checkpoint 语义会变得含糊。
+
+双击顶层卡片进入该实例的 Turn Canvas。Turn Canvas 是按需构造的 `scope=local` 读模型：每个本地用户消息开始一个 turn，直到下一条本地用户消息之前的本地 assistant/tool message 都归入该 turn；failure/operation 在相应事件投影可用后扩展同一时间线。祖先 checkpoint 消息只用于有效上下文，不在子实例画布中重复投影；UI 单独显示 memory route、checkpoint anchor 和继承消息数量。
+
+```text
+Workflow Graph
+└─ ConversationInstance B
+   └─ Turn Canvas (local only)
+      ├─ B / user turn 1
+      │  └─ assistant + tool + failure events
+      └─ B / user turn 2
+         └─ assistant + tool + failure events
+```
+
+视图动作与领域动作分开：selection 和钻入只更新 UI metadata；显式“继续对话”才调用 `activate_instance`/HostAdapter navigation。激活成功后才切回 Chat，失败则保留画布和草稿。完整决策见 [ADR-0004](adr/0004-native-workspace-double-canvas.md)。
+
+### 精确 turn checkpoint cursor
+
+从某一 turn 创建子实例时，fork 命令携带 `source_instance_id + cursor kind/value + expected_content_revision`。Standalone 当前使用：
+
+- `localUserTurn`：value 为本地用户消息 ID，冻结内容截至下一条本地用户消息之前；
+- `instanceHead`：value 对应请求接受时的实例 content revision。
+
+checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点。内容 revision 已变化时拒绝 fork，不能把旧 turn selection 默默应用到新实例头。外部宿主由 adapter 把自己的 seed/turn/message cursor 映射为通用 `HostCheckpointRef`；不支持精确 cursor 时必须结构化降级，不能静默改为整段会话继承。
+
 ## Revision 与并发
 
 - `graph_revision` 只在 parent、status、host binding、tombstone 等结构变更时增加。
@@ -149,7 +179,7 @@ D1 和 D2 可以在 UI 中聚合显示为一个 D，并提供两条路线选择�
 - completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
 - 启动时遗留的 `queued` / `running` run 转为 `interrupted`，不会自动继续执行。
 
-当前 schema v3 的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
+schema v3 引入且在当前 schema v4 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 
 ## HostAdapter 能力协议
 
@@ -169,14 +199,17 @@ class HostAdapter(Protocol):
 
 ```text
 can_fork
+can_fork_from_checkpoint
 can_navigate
 can_read_transcript
+can_read_local_turns
 can_archive
 can_rename
 can_open_external_window
+supported_checkpoint_cursor_kinds
 ```
 
-UI 根据 capability 显示动作。缺失导航能力时打开 companion app，不得用 composer 文本、伪 deep link 或模型消息模拟切换。
+UI 根据 capability 显示动作。缺失导航能力时保留画布并提供 companion app/宿主任务列表降级，不得用 composer 文本、伪 deep link 或模型消息模拟切换。无法区分 local/inherited transcript 时不得伪造 local-only Turn Canvas；无法按选定 cursor fork 时禁用精确分支，或经用户明确确认后从实例头分支。
 
 ### 适配器职责
 
@@ -209,15 +242,23 @@ validate command + revision
 - prune 先生成 leaf-first plan；所有宿主 archive 成功后才提交 tombstone。
 - 部分 archive 失败时不提交图变更，并向用户显示可重试计划。
 
-## 独立窗口
+## 原生 WorkspaceShell 与可选兼容窗口
 
-第一阶段由 Web Chat 的用户点击直接执行：
+默认工作流入口改为同一 React 应用中的原生视图切换：
 
 ```text
-window.open('/workflows/{workflowId}/graph')
+WorkspaceShell
+  [对话] [工作流]
+        └─ Workflow Graph
+             └─ double click → Turn Canvas
+                  └─ explicit Continue → activate → Chat
 ```
 
-当前 Graph Window 在 activate 或 prune-commit 成功后，通过 `BroadcastChannel` 和 `window.opener.postMessage` 通知 Chat 重新 hydrate 具体实例。双击节点的单次 activate、具体路线切换和非空草稿保持已完成手工真实浏览器验收；由聊天页创建的标准 popup 在成功后自动关闭和自动化 E2E 仍需补充。未来只有在需要服务端主动推送或跨设备同步时才引入 WebSocket。
+Chat 与 Workflow surface 保持挂载，切换不通过 `window.open`，也不需要用 `BroadcastChannel` 表达普通 selection 或 drill-down。顶层和每个实例的 viewport、视觉位置、折叠和 selection 是独立 UI metadata；它们丢失时只重置布局，不得改变图或记忆路线。
+
+`/graph?workflow=...` 继续包装同一个 `WorkspaceCanvas`，用于兼容旧入口或未来独立 Desktop surface。该兼容窗口只在显式 Continue/activate 或 prune 等真实 mutation 后通知其他页面，不得把双击节点解释为 activate。默认 WorkspaceShell 与双层画布已完成自动化和真实浏览器 **Verified local preview**；旧版“独立弹窗双击即切换并自动关闭”不再是默认产品语义，也不能替代对兼容窗口本身的独立验收。
+
+未来只有在服务端主动推送、多个进程或跨设备同步确有需要时才引入 WebSocket。
 
 后续 companion service：
 

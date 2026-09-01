@@ -317,15 +317,28 @@ def test_schema_v1_database_upgrades_to_latest_without_losing_graph_data(tmp_pat
     conn.execute("INSERT INTO conversation_instances VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                  ("A", "legacy", "topic", None, "cp", "Legacy root", "active", "local",
                   None, 1, "old", "old"))
+    conn.execute("INSERT INTO topics VALUES(?,?,?,?)", ("child-topic", "legacy", "Child", "old"))
+    conn.execute("INSERT INTO checkpoints VALUES(?,?,?,?,?,?)", ("child-cp", "legacy", "A", 1, "[]", "old"))
+    conn.execute("INSERT INTO conversation_instances VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                 ("B", "legacy", "child-topic", "A", "child-cp", "Legacy child", "active",
+                  "local", None, 0, "old", "old"))
     conn.execute("INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) "
                  "VALUES(?,?,?,?,?)", ("legacy", "A", "user", "preserve me", "old"))
     conn.commit()
     conn.close()
     store = GraphStore(path)
     versions = [row[0] for row in store._conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-    assert versions == [1, 2, 3]
+    assert versions == [1, 2, 3, 4]
     assert store._conn.execute("SELECT name FROM sqlite_master WHERE name='agent_runs'").fetchone()
     assert store.get_graph("legacy")["nodes"][0]["title"] == "Legacy root"
+    child = next(node for node in store.get_graph("legacy")["nodes"] if node["id"] == "B")
+    assert child["checkpointAnchor"] == {
+        "kind": "instanceHead",
+        "cursorValue": "1",
+        "sourceInstanceId": "A",
+        "sourceContentRevision": 1,
+        "anchorMessageId": None,
+    }
     assert store.list_messages("legacy", "A", scope="local")["messages"][0]["content"] == "preserve me"
     store.create_workflow(name="after migration", root_title="A")
     store.close()
@@ -362,7 +375,7 @@ def test_schema_v2_upgrade_backfills_immutable_completed_run_result(tmp_path):
     assert repo.get("run_legacy")["finalAnswer"] == "durable answer"
     assert [row[0] for row in store._conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    )] == [1, 2, 3]
+    )] == [1, 2, 3, 4]
     store.close()
     reopened = GraphStore(path)
     assert AgentRunRepository(reopened._conn, reopened._lock).get("run_legacy")["finalAnswer"] == "durable answer"

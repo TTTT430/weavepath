@@ -37,7 +37,9 @@ class CallbackLLM(FakeLLM):
 def test_camel_case_api_round_trip():
     store = GraphStore(":memory:")
     with TestClient(create_app(store)) as client:
-        assert client.get("/api/v1/health").json()["ok"] is True
+        health = client.get("/api/v1/health").json()
+        assert health["ok"] is True
+        assert health["schemaVersion"] == 4
         created = client.post("/api/v1/workflows", json={
             "name": "Workflow", "rootTitle": "A", "rootTopicId": "A", "rootInstanceId": "A"
         })
@@ -120,6 +122,105 @@ def test_message_scope_api_and_chat_context_remain_effective():
             ("user", "child context"),
             ("user", "new question"),
         ]
+    store.close()
+
+
+def test_turn_canvas_and_fork_from_turn_api_contract():
+    store = GraphStore(":memory:")
+    with TestClient(create_app(store)) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Workflow", "rootTitle": "A", "rootInstanceId": "A"
+        }).json()
+        wf = graph["workflowId"]
+        client.post(f"/api/v1/workflows/{wf}/instances/A/messages", json={
+            "role": "user", "content": "A context"
+        })
+        client.post(f"/api/v1/workflows/{wf}/instances/A/fork", json={
+            "title": "B", "instanceId": "B"
+        })
+        first = client.post(f"/api/v1/workflows/{wf}/instances/B/messages", json={
+            "role": "user", "content": "B1"
+        }).json()
+        client.post(f"/api/v1/workflows/{wf}/instances/B/messages", json={
+            "role": "assistant", "content": "B1 answer"
+        })
+        second = client.post(f"/api/v1/workflows/{wf}/instances/B/messages", json={
+            "role": "user", "content": "B2"
+        }).json()
+        second_answer = client.post(f"/api/v1/workflows/{wf}/instances/B/messages", json={
+            "role": "assistant", "content": "B2 answer"
+        }).json()
+        third = client.post(f"/api/v1/workflows/{wf}/instances/B/messages", json={
+            "role": "user", "content": "B3"
+        }).json()
+        client.post(f"/api/v1/workflows/{wf}/instances/B/messages", json={
+            "role": "assistant", "content": "B3 answer"
+        })
+
+        canvas_response = client.get(f"/api/v1/workflows/{wf}/instances/B/turns")
+        assert canvas_response.status_code == 200
+        canvas = canvas_response.json()
+        assert canvas["memoryRoute"] == [
+            {"instanceId": "A", "title": "A"},
+            {"instanceId": "B", "title": "B"},
+        ]
+        assert canvas["inheritedMessageCount"] == 1
+        assert [turn["id"] for turn in canvas["turns"]] == [
+            str(first["id"]), str(second["id"]), str(third["id"])
+        ]
+        assert canvas["turns"][1]["responses"][0]["content"] == "B2 answer"
+
+        forked = client.post(f"/api/v1/workflows/{wf}/instances/B/fork", json={
+            "title": "C from B2",
+            "instanceId": "C",
+            "anchorMessageId": second["id"],
+            "expectedContentRevision": canvas["contentRevision"],
+            "idempotencyKey": "api-fork-b2",
+        })
+        assert forked.status_code == 201
+        assert forked.json()["checkpointAnchor"]["kind"] == "localUserTurn"
+        replay = client.post(f"/api/v1/workflows/{wf}/instances/B/fork", json={
+            "title": "C from B2",
+            "instanceId": "C",
+            "anchorMessageId": second["id"],
+            "expectedContentRevision": canvas["contentRevision"],
+            "idempotencyKey": "api-fork-b2",
+        })
+        assert replay.status_code == 201
+        assert replay.json() == forked.json()
+        child = client.get(f"/api/v1/workflows/{wf}/instances/C/messages").json()["messages"]
+        assert [message["content"] for message in child] == [
+            "A context", "B1", "B1 answer", "B2", "B2 answer"
+        ]
+        child_node = next(
+            node for node in client.get(f"/api/v1/workflows/{wf}/graph").json()["nodes"]
+            if node["id"] == "C"
+        )
+        assert child_node["checkpointAnchor"]["anchorMessageId"] == second["id"]
+
+        stale = client.post(f"/api/v1/workflows/{wf}/instances/B/fork", json={
+            "title": "stale", "instanceId": "stale",
+            "anchorMessageId": second["id"],
+            "expectedContentRevision": canvas["contentRevision"] - 1,
+            "idempotencyKey": "api-stale-b2",
+        })
+        assert stale.status_code == 409
+        assert stale.json()["code"] == "conflict"
+
+        invalid = client.post(f"/api/v1/workflows/{wf}/instances/B/fork", json={
+            "title": "invalid", "instanceId": "invalid",
+            "anchorMessageId": second_answer["id"],
+            "expectedContentRevision": canvas["contentRevision"],
+            "idempotencyKey": "api-invalid-anchor",
+        })
+        assert invalid.status_code == 422
+        assert invalid.json()["code"] == "validationError"
+
+        missing_guard = client.post(f"/api/v1/workflows/{wf}/instances/B/fork", json={
+            "title": "missing guard", "anchorMessageId": second["id"],
+        })
+        assert missing_guard.status_code == 422
+        assert missing_guard.json()["code"] == "validationError"
     store.close()
 
 

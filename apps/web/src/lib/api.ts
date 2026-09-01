@@ -1,4 +1,4 @@
-import type {AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentToolSpec,ApiErrorPayload,CreateAgentRunInput,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,Route,WorkflowSummary} from '../domain/types';
+import type {AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentToolSpec,ApiErrorPayload,CreateAgentRunInput,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,Route,TurnCanvasSnapshot,WorkflowSummary} from '../domain/types';
 const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number){super(message);this.name='ApiError'}
@@ -19,10 +19,11 @@ export const api={
  graph:(w:string)=>request<Graph>(`/workflows/${enc(w)}/graph`),
  messages:(w:string,i:string,scope:'local'|'effective'='local')=>request<{messages:Message[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`).then(x=>x.messages),
  messageSnapshot:(w:string,i:string,scope:'local'|'effective'='local')=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`),
+ turns:(w:string,i:string)=>request<TurnCanvasSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/turns`),
  regenerate:(w:string,i:string,messageId:string|number,content:string,expectedRevision:number)=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages/${enc(String(messageId))}/regenerate`,{method:'POST',body:JSON.stringify({content,expectedRevision})}),
  send:(w:string,i:string,content:string)=>request<Message>(`/workflows/${enc(w)}/instances/${enc(i)}/messages`,{method:'POST',body:JSON.stringify({role:'user',content})}),
  chat:(w:string,i:string,content:string)=>request<{userMessage:Message;assistantMessage:Message}>(`/workflows/${enc(w)}/instances/${enc(i)}/chat`,{method:'POST',body:JSON.stringify({content})}),
- fork:(w:string,i:string,body:{title:string;topicId?:string;initialMessage?:string})=>request<ForkResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork`,{method:'POST',body:JSON.stringify(body)}),
+ fork:(w:string,i:string,body:{title:string;topicId?:string;initialMessage?:string;anchorMessageId?:string|number;expectedContentRevision?:number;idempotencyKey?:string})=>request<ForkResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork`,{method:'POST',body:JSON.stringify(body)}),
  activate:(w:string,i:string)=>request<{activeInstanceId:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/activate`,{method:'POST',body:'{}'}),
  prunePlan:(w:string,i:string,allowRoot=false)=>request<PrunePlan>(`/workflows/${enc(w)}/instances/${enc(i)}/prune-plan`,{method:'POST',body:JSON.stringify({allowRoot})}),
  pruneCommit:(w:string,i:string,plan:PrunePlan)=>request<{prunedInstanceIds:string[];activeInstanceId?:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/prune-commit`,{method:'POST',body:JSON.stringify({allowRoot:!!plan.rootRemoval,expectedRevision:plan.graphRevision,idempotencyKey:crypto.randomUUID()})}),

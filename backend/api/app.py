@@ -291,6 +291,9 @@ class ForkInput(CamelModel):
     instance_id: str | None = Field(None, alias="instanceId")
     provider_conversation_id: str | None = Field(None, alias="providerConversationId")
     initial_message: str | None = Field(None, alias="initialMessage")
+    anchor_message_id: int | None = Field(None, alias="anchorMessageId", ge=1)
+    expected_content_revision: int | None = Field(None, alias="expectedContentRevision", ge=0)
+    idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
 
 
 class ActivateInput(CamelModel):
@@ -395,7 +398,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @app.get(prefix + "/health")
     def health():
         return {"ok": True, "service": "weavepath", "version": app.version,
-                "schemaVersion": 3, "aiConfigured": bool(llm.status()["configured"])}
+                "schemaVersion": 4, "aiConfigured": bool(llm.status()["configured"])}
 
     @app.get(prefix + "/ai/status")
     def ai_status():
@@ -447,6 +450,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def messages(workflow_id: str, instance_id: str,
                  scope: Literal["local", "effective"] = "effective"):
         return graph_store.list_messages(workflow_id, instance_id, scope=scope)
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/turns")
+    def turns(workflow_id: str, instance_id: str):
+        return graph_store.list_turns(workflow_id, instance_id)
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/messages", status_code=201)
     def append(workflow_id: str, instance_id: str, body: MessageInput):

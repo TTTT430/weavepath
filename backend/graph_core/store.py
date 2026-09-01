@@ -115,8 +115,12 @@ class GraphStore:
             cx.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?)",
                        (workflow_id, name.strip(), instance_id, instance_id, 1, 0, now, now))
             self._ensure_topic(cx, workflow_id, topic_id, root_title.strip())
-            cx.execute("INSERT INTO checkpoints VALUES(?,?,?,?,?,?)",
-                       (checkpoint_id, workflow_id, None, 0, "[]", now))
+            cx.execute(
+                "INSERT INTO checkpoints"
+                "(id,workflow_id,source_instance_id,source_content_revision,messages_json,created_at,"
+                "source_cursor_kind,source_cursor_value) VALUES(?,?,?,?,?,?,?,?)",
+                (checkpoint_id, workflow_id, None, 0, "[]", now, None, None),
+            )
             cx.execute("INSERT INTO conversation_instances "
                        "(id,workflow_id,topic_id,parent_id,checkpoint_id,title,status,provider,"
                        "provider_conversation_id,content_revision,created_at,updated_at) "
@@ -145,8 +149,35 @@ class GraphStore:
             "providerConversationId": row["provider_conversation_id"],
             "contentRevision": row["content_revision"],
             "memoryRoute": self._route_ids(cx, workflow_id, row["id"]),
+            "checkpointAnchor": self._checkpoint_anchor(cx, row),
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         }
+
+    def _checkpoint_anchor(self, cx: sqlite3.Connection,
+                           instance: sqlite3.Row) -> dict[str, Any] | None:
+        checkpoint = cx.execute(
+            "SELECT source_instance_id,source_content_revision,source_cursor_kind,source_cursor_value "
+            "FROM checkpoints WHERE id=?",
+            (instance["checkpoint_id"],),
+        ).fetchone()
+        if not checkpoint or not checkpoint["source_cursor_kind"]:
+            return None
+        value = checkpoint["source_cursor_value"]
+        result: dict[str, Any] = {
+            "kind": checkpoint["source_cursor_kind"],
+            "cursorValue": value,
+            "sourceInstanceId": checkpoint["source_instance_id"],
+            "sourceContentRevision": checkpoint["source_content_revision"],
+        }
+        if result["kind"] == "localUserTurn" and value is not None:
+            result["turnId"] = value
+            try:
+                result["anchorMessageId"] = int(value)
+            except ValueError:
+                result["anchorMessageId"] = value
+        elif result["kind"] == "instanceHead":
+            result["anchorMessageId"] = None
+        return result
 
     def get_graph(self, workflow_id: str) -> dict[str, Any]:
         with self._lock:
@@ -191,6 +222,70 @@ class GraphStore:
                     "contentRevision": instance["content_revision"],
                     "eventRevision": wf["content_revision"],
                     "messages": messages}
+
+    def list_turns(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
+        """Project one instance's local transcript into user-anchored turns.
+
+        Turn Canvas is deliberately a local-only read model. Inherited
+        checkpoint messages belong to the route context, not to this concrete
+        conversation instance, and must not be repeated as cards here. A turn
+        starts at a local user message and owns every following local message
+        until the next local user message. ``eventExtensions`` is reserved for
+        future non-message tool/error timeline entries.
+        """
+        with self._lock:
+            instance = self._instance(self._conn, workflow_id, instance_id)
+            wf = self._workflow(self._conn, workflow_id)
+            local = self._local_messages(self._conn, instance_id)
+            checkpoint = self._conn.execute(
+                "SELECT messages_json FROM checkpoints WHERE id=?",
+                (instance["checkpoint_id"],),
+            ).fetchone()
+            inherited_message_count = len(_loads(checkpoint["messages_json"], [])) if checkpoint else 0
+            route_ids = self._route_ids(self._conn, workflow_id, instance_id)
+            memory_route = [
+                {
+                    "instanceId": route_id,
+                    "title": self._instance(self._conn, workflow_id, route_id)["title"],
+                }
+                for route_id in route_ids
+            ]
+            checkpoint_anchor = self._checkpoint_anchor(self._conn, instance)
+
+        preamble: list[dict[str, Any]] = []
+        turns: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        for message in local:
+            if message["role"] == "user":
+                current = {
+                    "id": str(message["id"]),
+                    "sequence": len(turns) + 1,
+                    "anchorMessageId": message["id"],
+                    "userMessage": message,
+                    "responses": [],
+                    "status": "pending",
+                }
+                turns.append(current)
+            elif current is None:
+                preamble.append(message)
+            else:
+                current["responses"].append(message)
+                if message["role"] == "assistant":
+                    current["status"] = "completed"
+
+        return {
+            "workflowId": workflow_id,
+            "instanceId": instance_id,
+            "scope": "local",
+            "memoryRoute": memory_route,
+            "inheritedMessageCount": inherited_message_count,
+            "contentRevision": instance["content_revision"],
+            "eventRevision": wf["content_revision"],
+            "checkpointAnchor": checkpoint_anchor,
+            "preamble": preamble,
+            "turns": turns,
+            "eventExtensions": [],
+        }
 
     def append_message(self, workflow_id: str, instance_id: str, *, role: str, content: str) -> dict[str, Any]:
         if role not in {"system", "user", "assistant", "tool"} or not content:
@@ -311,21 +406,127 @@ class GraphStore:
             "eventRevision": event_revision,
         }
 
+    def _fork_checkpoint(self, cx: sqlite3.Connection, workflow_id: str,
+                         parent_id: str, anchor_message_id: int | None
+                         ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        effective = self._effective_messages(cx, workflow_id, parent_id)
+        local = [message for message in effective if not message.get("inherited")]
+        if anchor_message_id is None:
+            return effective, {
+                "kind": "instanceHead",
+                "anchorMessageId": None,
+                "includedThroughLocalMessageId": local[-1]["id"] if local else None,
+            }
+
+        anchor = cx.execute(
+            "SELECT id FROM local_messages "
+            "WHERE workflow_id=? AND instance_id=? AND id=? AND role='user'",
+            (workflow_id, parent_id, anchor_message_id),
+        ).fetchone()
+        if not anchor:
+            raise Validation(
+                "anchorMessageId must reference a local user message in the source instance"
+            )
+
+        next_user = cx.execute(
+            "SELECT id FROM local_messages "
+            "WHERE workflow_id=? AND instance_id=? AND role='user' AND id>? "
+            "ORDER BY id LIMIT 1",
+            (workflow_id, parent_id, anchor_message_id),
+        ).fetchone()
+        next_user_id = next_user["id"] if next_user else None
+        inherited = [message for message in effective if message.get("inherited")]
+        included_local = [
+            message for message in local
+            if next_user_id is None or message["id"] < next_user_id
+        ]
+        return inherited + included_local, {
+            "kind": "localUserTurn",
+            "anchorMessageId": anchor_message_id,
+            "turnId": str(anchor_message_id),
+            "includedThroughLocalMessageId": included_local[-1]["id"],
+            "nextExcludedLocalUserMessageId": next_user_id,
+        }
+
     def fork(self, workflow_id: str, parent_id: str, *, title: str, topic_id: str | None = None,
              provider: str | None = None, instance_id: str | None = None,
              provider_conversation_id: str | None = None,
-             initial_message: str | None = None) -> dict[str, Any]:
+             initial_message: str | None = None,
+             anchor_message_id: int | None = None,
+             expected_content_revision: int | None = None,
+             idempotency_key: str | None = None) -> dict[str, Any]:
         if not title.strip():
             raise Validation("title is required")
+        if idempotency_key is not None and not idempotency_key.strip():
+            raise Validation("idempotencyKey must not be blank")
+        normalized_key = idempotency_key.strip() if idempotency_key is not None else None
+        if anchor_message_id is not None:
+            if expected_content_revision is None:
+                raise Validation(
+                    "expectedContentRevision is required when anchorMessageId is provided"
+                )
+            if normalized_key is None:
+                raise Validation("idempotencyKey is required when anchorMessageId is provided")
+        request = {
+            "sourceInstanceId": parent_id,
+            "title": title.strip(),
+            "topicId": topic_id,
+            "provider": provider,
+            "instanceId": instance_id,
+            "providerConversationId": provider_conversation_id,
+            "initialMessage": initial_message.strip() if initial_message and initial_message.strip() else None,
+            "anchorMessageId": anchor_message_id,
+            "expectedContentRevision": expected_content_revision,
+        }
         child_id, checkpoint_id, now = instance_id or _id("ci"), _id("cp"), _now()
         with self.tx() as cx:
+            if normalized_key is not None:
+                existing = cx.execute(
+                    "SELECT request_json,response_json,status FROM commands "
+                    "WHERE workflow_id=? AND idempotency_key=?",
+                    (workflow_id, normalized_key),
+                ).fetchone()
+                if existing:
+                    if _loads(existing["request_json"], {}) != request:
+                        raise Conflict("idempotencyKey was already used with different arguments")
+                    if existing["status"] == "completed":
+                        return _loads(existing["response_json"], {})
+                    raise Conflict("command is already in progress")
             parent = self._instance(cx, workflow_id, parent_id, active=True)
+            if (expected_content_revision is not None
+                    and parent["content_revision"] != expected_content_revision):
+                raise Conflict(
+                    "stale content revision: expected "
+                    f"{expected_content_revision}, actual {parent['content_revision']}"
+                )
             wf = self._workflow(cx, workflow_id)
             child_topic = topic_id or _id("topic")
             self._ensure_topic(cx, workflow_id, child_topic, title.strip())
-            frozen = self._effective_messages(cx, workflow_id, parent_id)
-            cx.execute("INSERT INTO checkpoints VALUES(?,?,?,?,?,?)",
-                       (checkpoint_id, workflow_id, parent_id, parent["content_revision"], json.dumps(frozen), now))
+            frozen, checkpoint_anchor = self._fork_checkpoint(
+                cx, workflow_id, parent_id, anchor_message_id
+            )
+            command_id: str | None = None
+            if normalized_key is not None:
+                command_id = _id("cmd")
+                cx.execute(
+                    "INSERT INTO commands VALUES(?,?,?,?,?,?,?,?,?)",
+                    (command_id, workflow_id, normalized_key, "fork", json.dumps(request),
+                     None, "started", now, None),
+                )
+            cursor_value = (str(anchor_message_id) if anchor_message_id is not None
+                            else str(parent["content_revision"]))
+            checkpoint_anchor.update({
+                "cursorValue": cursor_value,
+                "sourceInstanceId": parent_id,
+                "sourceContentRevision": parent["content_revision"],
+            })
+            cx.execute(
+                "INSERT INTO checkpoints"
+                "(id,workflow_id,source_instance_id,source_content_revision,messages_json,created_at,"
+                "source_cursor_kind,source_cursor_value) VALUES(?,?,?,?,?,?,?,?)",
+                (checkpoint_id, workflow_id, parent_id, parent["content_revision"],
+                 json.dumps(frozen), now, checkpoint_anchor["kind"], cursor_value),
+            )
             cx.execute("INSERT INTO conversation_instances "
                        "(id,workflow_id,topic_id,parent_id,checkpoint_id,title,status,provider,"
                        "provider_conversation_id,content_revision,created_at,updated_at) "
@@ -342,10 +543,19 @@ class GraphStore:
             cx.execute("UPDATE workflows SET graph_revision=graph_revision+1,updated_at=? WHERE id=?", (now, workflow_id))
             node = self._node(cx, workflow_id, self._instance(cx, workflow_id, child_id))
             updated_wf = self._workflow(cx, workflow_id)
-        child_revision = node["contentRevision"]
-        return {"node": node, "graphRevision": updated_wf["graph_revision"],
-                "contentRevision": child_revision, "eventRevision": updated_wf["content_revision"],
-                "frozenParentContentRevision": parent["content_revision"]}
+            child_revision = node["contentRevision"]
+            response = {"node": node, "graphRevision": updated_wf["graph_revision"],
+                        "contentRevision": child_revision,
+                        "eventRevision": updated_wf["content_revision"],
+                        "frozenParentContentRevision": parent["content_revision"],
+                        "checkpointAnchor": checkpoint_anchor}
+            if normalized_key is not None and command_id is not None:
+                response["idempotencyKey"] = normalized_key
+                cx.execute(
+                    "UPDATE commands SET response_json=?,status='completed',completed_at=? WHERE id=?",
+                    (json.dumps(response), now, command_id),
+                )
+            return response
 
     def activate(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
         with self.tx() as cx:

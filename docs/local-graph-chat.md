@@ -3,7 +3,7 @@
 ## Phase 0：边界冻结
 
 - 冻结 legacy v4 Codex adapter。
-- 接受三项 ADR。
+- 接受四项 ADR，包括原生 WorkspaceShell 与双层画布决策。
 - 明确全局 DB、manifest 迁移和数据所有权。
 - demo HTML 定位为视觉规格。
 - 建立最小目录与依赖配置；此阶段不要求应用可启动。
@@ -12,9 +12,11 @@
 
 ## Phase 1：Local Graph Chat（进行中）
 
-目标是在不依赖宿主私有能力的情况下，完整验证图、路线记忆和独立窗口。
+目标是在不依赖宿主私有能力的情况下，完整验证图、路线记忆、原生 WorkspaceShell 和节点内部 Turn Canvas。独立 `/graph` 窗口降为可选兼容入口，不再定义默认交互。
 
-当前已落地图存储、核心 HTTP API、可运行 React chat/graph 页面、独立浏览器窗口、OpenAI-compatible 同步 AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。同步 AI 请求具有“正在思考”与本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；SSE、停止生成和 metabolize 尚未实现。
+已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible 同步 AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。同步 AI 请求具有“正在思考”与本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；SSE、停止生成和 metabolize 尚未实现。
+
+依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：双击具体实例只进入该实例的 local-only Turn Canvas；只有显式“继续对话”才 activate；可以从选定本地用户 turn 冻结精确 checkpoint。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
 
 日常启动与验证分别使用根目录的 `scripts/dev.ps1` 和 `scripts/check.ps1`；前者固定 API 端口 8000，Web 默认端口 5173。
 
@@ -26,6 +28,7 @@ GET  /api/v1/workflows/{id}/graph
 POST /api/v1/workflows/{workflowId}/instances/{id}/fork
 POST /api/v1/workflows/{workflowId}/instances/{id}/activate
 GET  /api/v1/workflows/{workflowId}/instances/{id}/messages
+GET  /api/v1/workflows/{workflowId}/instances/{id}/turns       # verified local-only projection
 GET  /api/v1/workflows/{workflowId}/topics/{id}/routes
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-plan
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-commit
@@ -40,25 +43,28 @@ POST /api/v1/chat/stream                                      # planned SSE
 WS   /api/v1/events                                           # planned
 ```
 
+fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地用户 turn 时，checkpoint 只冻结到该 turn 完成处；源实例 revision 已变化则返回 409。schema v4 为 checkpoint 增加 provider-neutral 的 cursor kind/value；接口、迁移和冲突路径已完成本机测试。
+
 实现范围：
 
-- FastAPI、React、schemaVersion 3 SQLite schema 与启动时前向 migrations；rollback/downgrade 尚未完成；
+- FastAPI、React 和已验证的 schemaVersion 4 SQLite checkpoint cursor migration；rollback/downgrade 尚未完成；
 - GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port 已实现，正式 Standalone HostAdapter 尚未拆出；
 - workflow、topic、instance、checkpoint、local message、tombstone；
+- Turn projector 只读取具体实例的 local messages，将一个用户问题及下一用户问题前的 assistant/tool message 组织为一张 turn 卡片；继承 checkpoint 不重复投影，failure/operation 事件扩展仍是后续工作；
 - 从 Co-Thinker 复用 SSE 与中断保护（planned）；
-- 从 v4 widget 提取正交布局、route chooser 和中英文界面；
-- 从 demo 迁移聊天页、workflow button 和图窗口视觉；
-- `window.open` 独立浏览器窗口；
-- 当前以 `BroadcastChannel + postMessage` 同步 activate；WebSocket/event stream 为后续能力。
+- 从 v4 widget 提取正交布局、route chooser 和中英文界面，并借鉴 dsh-synapse 的画布检查体验；
+- 默认使用 `WorkspaceShell` 内的 Chat/Workflow 两个持久 surface；第一层 Workflow Graph 和第二层 Turn Canvas 复用一个按需加载的画布区域，不在每个节点中嵌套多个 React Flow；
+- 顶层和每个实例的 viewport、视觉位置、折叠与 selection 是独立 UI metadata，不改变 graph/content revision；
+- `/graph` 与 `window.open` 仅保留为可选兼容入口；它可继续使用 `BroadcastChannel + postMessage` 同步真实 mutation，WebSocket/event stream 为后续能力。
 
-建议实现顺序：
+落地顺序与后续：
 
-1. `backend/graph_core`：实体、不变量、in-memory repository 和纯领域测试。
-2. `backend/api`：SQLite repositories、Standalone command/query service；`backend/agent_runtime` 承载已验证本机 preview 的 run repository/service、model port 与 tool registry。
-3. FastAPI：health、workflow/fork/activate/prune API 和统一错误结构。
-4. `apps/web`：聊天页与图窗口的最小 React 入口。
-5. 浏览器事件完成当前窗口同步；同步 LLM adapter 已落地，后续加入 SSE，只有服务端事件确有需要时再加入 WebSocket。
-6. E2E：完成下方 A/B/C/D 验收后才开始 Codex 集成。
+1. `backend/graph_core`：checkpoint cursor、local-only turn read model、精确 turn fork 与 migration 测试已完成本机验证。
+2. `backend/api`：turns query 和带 revision 的 anchor fork 已落地；`backend/agent_runtime` 继续承载已验证本机 preview 的 run repository/service、model port 与 tool registry。
+3. `apps/web`：`WorkspaceShell` 已成为默认入口并保持 Chat surface；Workflow surface 在顶层实例图和节点内部 Turn Canvas 间按需钻入。
+4. Tool/Failure/Approval 完整 Timeline 仍待扩展；当前最小 turn 卡片不得把继承消息当成本地内容。
+5. Standalone/Host Mock capability contract 和正式 Codex/Claude 集成仍是后续，需明确 transcript、精确 cursor fork 和 navigation 的降级结果。
+6. 下方 A/B/C/D/turn 的 Standalone 自动化与主路径真实浏览器 E2E 已完成；跨宿主验收不能复用该完成声明。
 
 ### 必须通过的验收
 
@@ -72,18 +78,24 @@ A
 
 验收项：
 
-1. 工作流按钮直接打开图窗口，不发送聊天消息。**已验证。**
-2. D 的 route chooser 同时显示 `A-B-C-D` 与 `A-E-D`。**具体路线展示、双击选择及消息隔离已在真实浏览器验证。**
+1. 工作流按钮在当前 WorkspaceShell 内切换到 Workflow surface，不发送聊天消息，不丢失草稿、消息滚动或正在进行的请求。**Verified local preview。**
+2. D 的 route chooser 同时显示 `A-B-C-D` 与 `A-E-D`；单击只选择具体实例，双击只进入该实例的 Turn Canvas，不 activate。**Verified local preview。**
 3. B 中写入 `B_ONLY` 后，D2 的 context、inspect 和摘要均不得出现它。**消息路线隔离已验证；摘要系统尚未实现。**
 4. E 中写入 `E_ONLY` 后，D1 不得出现它。**消息路线隔离已验证。**
 5. fork 后父节点继续聊天，已创建子节点仍使用原 checkpoint。**后端测试已验证。**
-6. 双击 D2 只发送一次 activate；聊天页切换到 D2，输入框原内容不变。**单次 activate、路线切换和非空草稿保持已完成手工真实浏览器验收；标准 popup 自动关闭和自动化 E2E 仍待完成。**
+6. 双击 D2 不发送 activate；只有在 D2 inspector 或 Turn Canvas 中单击“继续对话”才发送一次 activate，成功后切回 D2 聊天且输入框原内容不变，失败则保留画布。**Verified local preview。**
 7. prune B 的计划只包含 B、C、D1，并按 leaf-first 顺序归档；E、D2 保持 active。
 8. revision 冲突返回 409，不覆盖新结构。
 9. 服务重启后图、消息、checkpoint 和 tombstone 完整恢复。**持久化基础已实现，完整重启 E2E 仍待单独记录。**
 10. 中英文只改变 UI chrome，不改变 workflow、topic、节点名称和消息。**自动测试与手工真实浏览器验收已覆盖。**
 11. 后台摘要迟到时不能写入错误 instance 或改变 graph revision。**Planned：metabolize 尚未实现。**
 12. E2E 测试不依赖 Codex/Claude；Agent Runtime 使用测试专用 `ScriptedMockAgentAdapter` 复现 model turns，正式 HostAdapter mock 仍是后续工作。
+13. 进入 B 的 Turn Canvas 时，只显示 B 本地用户 turns 及其本地 assistant/tool message；A 的 checkpoint 内容只显示为路线与继承摘要，不能成为 B 的卡片。failure/operation 扩展仍是后续工作。**Verified local preview。**
+14. 从 B 的第 2 个本地用户 turn 创建 C 时，C checkpoint 包含 B1、B2 及 B2 在下一用户问题前的响应，不包含 B3；stale `expectedContentRevision` 返回 409。**Verified local preview。**
+15. 顶层与 B/D1/D2 各自的 viewport、节点位置、折叠和 selection 独立恢复，写入这些 UI metadata 不增加 graph/content revision。**Verified local preview。**
+16. 无 `can_read_local_turns` 的宿主不伪造 Turn Canvas；无精确 cursor fork 能力时禁用该动作或经确认降级到实例头；无 navigation 时不宣称已切换。**Planned adapter contract。**
+
+本机验证使用统一套件：后端 95 项、前端 60 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
 
 ## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
 

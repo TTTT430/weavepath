@@ -4,6 +4,10 @@ export interface Instance {id:string;workflowId?:string;parentId:string|null;top
 export interface Graph {workflowId:string;name:string;rootInstanceId:string;activeInstanceId:string|null;graphRevision:number;eventRevision:number;nodes:Instance[]}
 export interface Message {id:string|number;role:'user'|'assistant'|'system'|'tool';content:string;createdAt?:string;inherited?:boolean;contentRevision?:number}
 export interface MessageSnapshot {messages:Message[];contentRevision:number;eventRevision?:number}
+export interface TurnMemoryRouteNode {instanceId:string;title:string}
+export type ConversationTurnStatus='completed'|'pending'|'running'|'failed'|'interrupted';
+export interface ConversationTurn {id:string;sequence:number;anchorMessageId:number;userMessage:Message;responses:Message[];status:ConversationTurnStatus}
+export interface TurnCanvasSnapshot {workflowId:string;instanceId:string;scope:'local';contentRevision:number;eventRevision:number;memoryRoute:TurnMemoryRouteNode[];inheritedMessageCount:number;checkpointAnchor:Record<string,unknown>|null;preamble:Message[];turns:ConversationTurn[];eventExtensions:unknown[]}
 export interface Route {id:string;topicId:string;title:string;memoryRoute:string[];status:Status}
 export interface PrunePlan {graphRevision:number;nodes:Array<{id:string;title?:string}>;rootRemoval?:boolean}
 export interface ApiErrorPayload {message?:string;error?:string;code?:string;runId?:string|number}

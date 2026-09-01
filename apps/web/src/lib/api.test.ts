@@ -34,3 +34,21 @@ describe('agent runtime API contract',()=>{
   expect(run.availableTools).toEqual([{name:'safe_calculator',version:'1.0.0',description:'Arithmetic'}]);
  });
 });
+
+describe('turn canvas API contract',()=>{
+ it('loads route-scoped turns without requesting inherited messages separately',async()=>{
+  const fetchMock=vi.fn().mockResolvedValue(response(200,{workflowId:'wf',instanceId:'b',contentRevision:4,eventRevision:8,memoryRoute:[{instanceId:'a',title:'数据集'},{instanceId:'b',title:'实验'}],inheritedMessageCount:3,turns:[{id:'turn-1',sequence:1,userMessage:{id:10,role:'user',content:'本地问题'},responses:[],status:'pending'}]}));
+  vi.stubGlobal('fetch',fetchMock);
+  const snapshot=await api.turns('wf','b');
+  expect(snapshot.turns[0].userMessage.content).toBe('本地问题');
+  expect(fetchMock).toHaveBeenCalledWith('/api/v1/workflows/wf/instances/b/turns',expect.any(Object));
+ });
+
+ it('sends an anchored fork with revision and idempotency identity',async()=>{
+  const fetchMock=vi.fn().mockResolvedValue(response(201,{node:{id:'child'},graphRevision:6}));
+  vi.stubGlobal('fetch',fetchMock);
+  await api.fork('wf','b',{title:'分支',anchorMessageId:10,expectedContentRevision:4,idempotencyKey:'idem-1'});
+  const init=fetchMock.mock.calls[0][1] as RequestInit;
+  expect(JSON.parse(String(init.body))).toEqual({title:'分支',anchorMessageId:10,expectedContentRevision:4,idempotencyKey:'idem-1'});
+ });
+});

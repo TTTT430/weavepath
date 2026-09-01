@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from graph_core import Conflict, GraphStore
+from graph_core import Conflict, GraphStore, Validation
 
 
 @pytest.fixture
@@ -47,6 +47,182 @@ def test_fork_initial_message_is_child_local_and_bumps_content_revision(store: G
     assert forked["node"]["id"] == "B"
     assert forked["contentRevision"] == before + 1
     assert [(item["content"], item["inherited"]) for item in messages] == [("branch work", False)]
+
+
+def test_turn_canvas_groups_local_messages_and_exposes_route_context_counts(store: GraphStore):
+    wf = create(store)
+    store.append_message(wf, "A", role="user", content="A inherited context")
+    store.fork(wf, "A", title="B", instance_id="B")
+    store.append_message(wf, "B", role="system", content="local preamble")
+    first = store.append_message(wf, "B", role="user", content="B1")
+    store.append_message(wf, "B", role="assistant", content="B1 answer")
+    store.append_message(wf, "B", role="tool", content="B1 tool")
+    second = store.append_message(wf, "B", role="user", content="B2")
+    store.append_message(wf, "B", role="assistant", content="B2 answer")
+    pending = store.append_message(wf, "B", role="user", content="B3 pending")
+    store.fork(wf, "A", title="E", instance_id="E", initial_message="sibling secret")
+
+    canvas = store.list_turns(wf, "B")
+
+    assert canvas["scope"] == "local"
+    assert canvas["memoryRoute"] == [
+        {"instanceId": "A", "title": "A"},
+        {"instanceId": "B", "title": "B"},
+    ]
+    assert canvas["inheritedMessageCount"] == 1
+    assert [message["content"] for message in canvas["preamble"]] == ["local preamble"]
+    assert [turn["id"] for turn in canvas["turns"]] == [
+        str(first["id"]), str(second["id"]), str(pending["id"])
+    ]
+    assert [turn["sequence"] for turn in canvas["turns"]] == [1, 2, 3]
+    assert [turn["anchorMessageId"] for turn in canvas["turns"]] == [
+        first["id"], second["id"], pending["id"]
+    ]
+    assert [turn["userMessage"]["content"] for turn in canvas["turns"]] == [
+        "B1", "B2", "B3 pending"
+    ]
+    assert [[message["content"] for message in turn["responses"]] for turn in canvas["turns"]] == [
+        ["B1 answer", "B1 tool"],
+        ["B2 answer"],
+        [],
+    ]
+    assert [turn["status"] for turn in canvas["turns"]] == ["completed", "completed", "pending"]
+    assert canvas["eventExtensions"] == []
+    assert "A inherited context" not in str(canvas["turns"])
+    assert "sibling secret" not in str(canvas)
+
+
+def test_fork_from_local_user_turn_freezes_complete_turn_and_excludes_later_turns(store: GraphStore):
+    wf = create(store)
+    store.append_message(wf, "A", role="user", content="A context")
+    store.fork(wf, "A", title="B", instance_id="B")
+    store.append_message(wf, "B", role="user", content="B1")
+    store.append_message(wf, "B", role="assistant", content="B1 answer")
+    second = store.append_message(wf, "B", role="user", content="B2")
+    store.append_message(wf, "B", role="system", content="B2 system response")
+    store.append_message(wf, "B", role="assistant", content="B2 answer")
+    second_tool = store.append_message(wf, "B", role="tool", content="B2 tool")
+    third = store.append_message(wf, "B", role="user", content="B3")
+    latest = store.append_message(wf, "B", role="assistant", content="B3 answer")
+
+    source_revision = store.list_messages(wf, "B", scope="local")["contentRevision"]
+    forked = store.fork(
+        wf, "B", title="C from B2", instance_id="C", anchor_message_id=second["id"],
+        expected_content_revision=source_revision, idempotency_key="fork-b2",
+    )
+
+    assert [message["content"] for message in store.list_messages(wf, "C")["messages"]] == [
+        "A context", "B1", "B1 answer", "B2", "B2 system response", "B2 answer", "B2 tool"
+    ]
+    assert forked["checkpointAnchor"] == {
+        "kind": "localUserTurn",
+        "anchorMessageId": second["id"],
+        "turnId": str(second["id"]),
+        "includedThroughLocalMessageId": second_tool["id"],
+        "nextExcludedLocalUserMessageId": third["id"],
+        "cursorValue": str(second["id"]),
+        "sourceInstanceId": "B",
+        "sourceContentRevision": latest["contentRevision"],
+    }
+    store.append_message(wf, "B", role="user", content="B4 after fork")
+    assert "B4 after fork" not in [
+        message["content"] for message in store.list_messages(wf, "C")["messages"]
+    ]
+
+
+def test_anchored_fork_keeps_siblings_isolated_and_rejects_invalid_anchors(store: GraphStore):
+    wf = create(store)
+    inherited = store.append_message(wf, "A", role="user", content="inherited A")
+    store.fork(wf, "A", title="B", instance_id="B")
+    b_user = store.append_message(wf, "B", role="user", content="B local")
+    b_answer = store.append_message(wf, "B", role="assistant", content="B answer")
+    store.fork(wf, "A", title="E", instance_id="E")
+    e_user = store.append_message(wf, "E", role="user", content="E sibling secret")
+
+    source_revision = store.list_messages(wf, "B", scope="local")["contentRevision"]
+    store.fork(
+        wf, "B", title="C", instance_id="C", anchor_message_id=b_user["id"],
+        expected_content_revision=source_revision, idempotency_key="fork-b-local",
+    )
+    assert [message["content"] for message in store.list_messages(wf, "C")["messages"]] == [
+        "inherited A", "B local", "B answer"
+    ]
+
+    for invalid_anchor in (inherited["id"], b_answer["id"], e_user["id"], 999_999):
+        with pytest.raises(Validation, match="local user message"):
+            store.fork(
+                wf, "B", title=f"invalid {invalid_anchor}",
+                instance_id=f"invalid-{invalid_anchor}", anchor_message_id=invalid_anchor,
+                expected_content_revision=source_revision,
+                idempotency_key=f"invalid-anchor-{invalid_anchor}",
+            )
+
+
+@pytest.mark.parametrize(
+    ("expected_content_revision", "idempotency_key", "message"),
+    [
+        (None, "fork-key", "expectedContentRevision is required"),
+        (1, None, "idempotencyKey is required"),
+    ],
+)
+def test_anchored_fork_requires_revision_and_idempotency_key(
+    store: GraphStore,
+    expected_content_revision: int | None,
+    idempotency_key: str | None,
+    message: str,
+):
+    wf = create(store)
+    anchor = store.append_message(wf, "A", role="user", content="anchor")
+
+    with pytest.raises(Validation, match=message):
+        store.fork(
+            wf, "A", title="unsafe child", anchor_message_id=anchor["id"],
+            expected_content_revision=expected_content_revision,
+            idempotency_key=idempotency_key,
+        )
+
+    assert len(store.get_graph(wf)["nodes"]) == 1
+
+
+def test_anchored_fork_rejects_stale_content_revision_without_creating_child(store: GraphStore):
+    wf = create(store)
+    anchor = store.append_message(wf, "A", role="user", content="anchor")
+    accepted_revision = anchor["contentRevision"]
+    store.append_message(wf, "A", role="assistant", content="concurrent answer")
+
+    with pytest.raises(Conflict, match="stale content revision"):
+        store.fork(
+            wf, "A", title="stale child", instance_id="stale-child",
+            anchor_message_id=anchor["id"], expected_content_revision=accepted_revision,
+            idempotency_key="stale-anchor",
+        )
+    assert "stale-child" not in {node["id"] for node in store.get_graph(wf)["nodes"]}
+
+
+def test_anchored_fork_is_idempotent_and_rejects_key_reuse_with_new_arguments(store: GraphStore):
+    wf = create(store)
+    anchor = store.append_message(wf, "A", role="user", content="anchor")
+    revision = anchor["contentRevision"]
+    arguments = {
+        "title": "B",
+        "instance_id": "B",
+        "anchor_message_id": anchor["id"],
+        "expected_content_revision": revision,
+        "idempotency_key": "fork-turn-1",
+    }
+
+    first = store.fork(wf, "A", **arguments)
+    replay = store.fork(wf, "A", **arguments)
+
+    assert replay == first
+    assert first["idempotencyKey"] == "fork-turn-1"
+    assert [node["id"] for node in store.get_graph(wf)["nodes"]].count("B") == 1
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM commands WHERE workflow_id=? AND command_type='fork'",
+        (wf,),
+    ).fetchone()[0] == 1
+    with pytest.raises(Conflict, match="different arguments"):
+        store.fork(wf, "A", **{**arguments, "title": "different"})
 
 
 def test_local_and_effective_message_scopes_keep_routes_isolated(store: GraphStore):
@@ -146,7 +322,7 @@ def test_schema_and_revisions(store: GraphStore):
     assert store._conn.execute("PRAGMA journal_mode").fetchone()[0] in {"memory", "wal"}
     tables = {row[0] for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"workflows", "topics", "conversation_instances", "checkpoints", "local_messages", "tombstones", "commands", "schema_migrations"} <= tables
-    assert store._conn.execute("SELECT version FROM schema_migrations").fetchone()[0] == 1
+    assert store._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 4
     before = store.get_graph(wf)
     store.append_message(wf, "A", role="user", content="hello")
     after_message = store.get_graph(wf)
@@ -179,3 +355,35 @@ def test_file_database_enables_wal(tmp_path):
         assert persistent._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     finally:
         persistent.close()
+
+
+def test_checkpoint_anchor_metadata_survives_database_reopen(tmp_path):
+    database = tmp_path / "anchor-audit.db"
+    persistent = GraphStore(database)
+    wf = create(persistent)
+    persistent.append_message(wf, "A", role="user", content="A context")
+    persistent.fork(wf, "A", title="B", instance_id="B")
+    anchor = persistent.append_message(wf, "B", role="user", content="B anchor")
+    persistent.append_message(wf, "B", role="assistant", content="B answer")
+    source_revision = persistent.list_messages(wf, "B", scope="local")["contentRevision"]
+    persistent.fork(
+        wf, "B", title="C", instance_id="C", anchor_message_id=anchor["id"],
+        expected_content_revision=source_revision, idempotency_key="persist-anchor",
+    )
+    persistent.close()
+
+    reopened = GraphStore(database)
+    try:
+        node = next(node for node in reopened.get_graph(wf)["nodes"] if node["id"] == "C")
+        expected = {
+            "kind": "localUserTurn",
+            "cursorValue": str(anchor["id"]),
+            "sourceInstanceId": "B",
+            "sourceContentRevision": source_revision,
+            "turnId": str(anchor["id"]),
+            "anchorMessageId": anchor["id"],
+        }
+        assert node["checkpointAnchor"] == expected
+        assert reopened.list_turns(wf, "C")["checkpointAnchor"] == expected
+    finally:
+        reopened.close()

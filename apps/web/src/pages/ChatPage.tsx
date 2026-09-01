@@ -14,7 +14,12 @@ interface OwnedSnapshot extends MessageSnapshot {owner:string}
 interface OwnedReply {owner:string;state:ReplyState;error:string}
 interface OwnedMessages {owner:string;items:Message[]}
 
-export function ChatPage(){
+export interface ChatPageProps{
+ onOpenWorkflow?:(workflowId:string)=>void
+ onWorkspaceChange?:(context:{workflowId:string;graph:Graph|null})=>void
+}
+
+export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const{t}=useI18n();
  const[settingsOpen,setSettingsOpen]=useState(false);
  const[workflows,setWorkflows]=useState<WorkflowSummary[]>([]);
@@ -150,6 +155,7 @@ export function ChatPage(){
   if(graph&&active&&owner)void refreshRouteMessages(graph.workflowId,active.id,active.contentRevision||0);
  },[owner,graph?.workflowId,active?.id,active?.contentRevision,refreshRouteMessages]);
  useEffect(()=>{const box=messagesRef.current;if(box)box.scrollTop=box.scrollHeight},[messages,replyState]);
+ useEffect(()=>{onWorkspaceChange?.({workflowId,graph})},[workflowId,graph,onWorkspaceChange]);
  useEffect(()=>{
   const refresh=()=>void loadGraph();
   const channel=new BroadcastChannel('conversation-workflow');
@@ -266,6 +272,7 @@ export function ChatPage(){
 
  function openGraph(){
   if(!graph)return;
+  if(onOpenWorkflow){onOpenWorkflow(graph.workflowId);return}
   const url=new URL('/graph',window.location.href);
   url.searchParams.set('workflow',graph.workflowId);
   const popup=window.open(url.href,'_blank','popup=yes,width=1280,height=820,resizable=yes');

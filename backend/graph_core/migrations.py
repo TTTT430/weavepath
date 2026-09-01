@@ -34,6 +34,11 @@ V3 = """
 ALTER TABLE agent_runs ADD COLUMN final_answer TEXT;
 """
 
+V4 = """
+ALTER TABLE checkpoints ADD COLUMN source_cursor_kind TEXT;
+ALTER TABLE checkpoints ADD COLUMN source_cursor_value TEXT;
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
@@ -60,4 +65,18 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             ") WHERE final_answer IS NULL AND final_message_id IS NOT NULL"
         )
         conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(3,?)", (_now(),))
+    if 4 not in applied:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(checkpoints)")}
+        if "source_cursor_kind" not in columns:
+            conn.execute("ALTER TABLE checkpoints ADD COLUMN source_cursor_kind TEXT")
+        if "source_cursor_value" not in columns:
+            conn.execute("ALTER TABLE checkpoints ADD COLUMN source_cursor_value TEXT")
+        # Existing child checkpoints were all created from the source
+        # instance head. Preserve that fact as an explicit, auditable cursor.
+        conn.execute(
+            "UPDATE checkpoints SET source_cursor_kind='instanceHead', "
+            "source_cursor_value=CAST(source_content_revision AS TEXT) "
+            "WHERE source_instance_id IS NOT NULL AND source_cursor_kind IS NULL"
+        )
+        conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)", (_now(),))
     conn.commit()
