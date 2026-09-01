@@ -11,11 +11,13 @@ from graph_core import GraphStore
 class FakeLLM:
     def __init__(self):
         self.messages = []
+        self.calls = 0
 
     def status(self):
         return {"configured": True, "provider": "fake", "model": "test-model", "reason": None}
 
     def complete(self, messages):
+        self.calls += 1
         self.messages = messages
         return "assistant answer"
 
@@ -82,6 +84,46 @@ def test_ai_status_and_route_aware_chat_round_trip():
         assert [(item["role"], item["content"]) for item in listed] == [
             ("user", "question"), ("assistant", "assistant answer")
         ]
+    store.close()
+
+
+def test_fork_chat_answers_from_an_exact_turn_and_is_idempotent_without_sibling_leakage():
+    store, llm = GraphStore(":memory:"), FakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Canvas", "rootTitle": "A", "rootInstanceId": "A"
+        }).json()
+        wf = graph["workflowId"]
+        anchor = client.post(f"/api/v1/workflows/{wf}/instances/A/messages", json={
+            "role": "user", "content": "shared question"
+        }).json()
+        client.post(f"/api/v1/workflows/{wf}/instances/A/messages", json={
+            "role": "assistant", "content": "shared answer"
+        })
+        store.fork(wf, "A", title="Sibling", instance_id="E",
+                   initial_message="sibling-only secret", expected_content_revision=2,
+                   idempotency_key="sibling-fork")
+        body = {"title": "Canvas branch", "initialMessage": "branch question",
+                "anchorMessageId": anchor["id"], "expectedContentRevision": 2,
+                "idempotencyKey": "canvas-fork"}
+        response = client.post(f"/api/v1/workflows/{wf}/instances/A/fork-chat", json=body)
+        assert response.status_code == 201
+        result = response.json()
+        child_id = result["node"]["id"]
+        assert result["replyStatus"] == "completed"
+        local = client.get(
+            f"/api/v1/workflows/{wf}/instances/{child_id}/messages?scope=local"
+        ).json()["messages"]
+        assert [(item["role"], item["content"]) for item in local] == [
+            ("user", "branch question"), ("assistant", "assistant answer")
+        ]
+        assert "shared question" in str(llm.messages)
+        assert "sibling-only secret" not in str(llm.messages)
+
+        replay = client.post(f"/api/v1/workflows/{wf}/instances/A/fork-chat", json=body)
+        assert replay.json()["node"]["id"] == child_id
+        assert replay.json()["replyStatus"] == "completed"
+        assert llm.calls == 1
     store.close()
 
 

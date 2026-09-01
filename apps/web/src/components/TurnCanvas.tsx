@@ -12,8 +12,10 @@ interface TurnData extends Record<string,unknown>{
  turnLabel:string
  statusLabels:Record<string,string>
  roleLabels:Record<string,string>
+ branchLabel:string
  onSelect:(id:string)=>void
  onToggleCollapse:(id:string)=>void
+ onBranch?:(turn:ConversationTurn)=>void
 }
 type TurnFlowNode=Node<TurnData,'turn'>;
 
@@ -23,6 +25,7 @@ function TurnCard({data,selected=false}:{data:TurnData;selected?:boolean}){
  const{turn}=data;
  return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''}`} onClick={()=>data.onSelect(turn.id)}>
   <button type="button" className="turn-collapse" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}>{data.collapsed?'＋':'−'}</button>
+  {data.onBranch&&<button type="button" className="turn-branch" aria-label={`${data.branchLabel}: ${turn.sequence}`} onClick={event=>{event.stopPropagation();data.onSelect(turn.id);data.onBranch?.(turn)}}>↗</button>}
   <header><strong>{data.turnLabel} {turn.sequence}</strong><span className={`turn-status ${turn.status}`}>{data.statusLabels[turn.status]||turn.status}</span></header>
   <p className="turn-user">{excerpt(turn.userMessage.content)}</p>
   {!data.collapsed&&<div className="turn-responses"><small>{data.responseLabel}: {turn.responses.length}</small>{turn.responses.map(message=><p key={message.id} className={`turn-response ${message.role}`}><small>{data.roleLabels[message.role]||message.role}</small>{excerpt(message.content)}</p>)}</div>}
@@ -42,12 +45,13 @@ export interface TurnCanvasProps{
  onToggleCollapse:(id:string)=>void
  onViewportChange?:(viewport:Viewport)=>void
  onNodePositionChange?:(id:string,position:CanvasPosition)=>void
- labels:{locate:string;fit:string;collapse:string;expand:string;responses:string;empty:string;turn:string;statusLabels:Record<string,string>;roleLabels:Record<string,string>}
+ onBranch?:(turn:ConversationTurn)=>void
+ labels:{locate:string;fit:string;collapse:string;expand:string;responses:string;empty:string;turn:string;branch:string;statusLabels:Record<string,string>;roleLabels:Record<string,string>}
 }
 
-export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPositions={},initialViewport,onSelect,onToggleCollapse,onViewportChange,onNodePositionChange,labels}:TurnCanvasProps){
+export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPositions={},initialViewport,onSelect,onToggleCollapse,onViewportChange,onNodePositionChange,onBranch,labels}:TurnCanvasProps){
  const[instance,setInstance]=useState<ReactFlowInstance<TurnFlowNode>|null>(null),collapsed=new Set(collapsedTurnIds);
- const calculated=useMemo<TurnFlowNode[]>(()=>snapshot.turns.map((turn,index)=>({id:turn.id,type:'turn',position:turnPositions[turn.id]||{x:48+index*360,y:90},selected:turn.id===selectedTurnId,data:{turn,collapsed:collapsed.has(turn.id),collapseLabel:labels.collapse,expandLabel:labels.expand,responseLabel:labels.responses,turnLabel:labels.turn,statusLabels:labels.statusLabels,roleLabels:labels.roleLabels,onSelect,onToggleCollapse}})),[snapshot.turns,selectedTurnId,collapsedTurnIds,turnPositions,labels,onSelect,onToggleCollapse]);
+ const calculated=useMemo<TurnFlowNode[]>(()=>snapshot.turns.map((turn,index)=>({id:turn.id,type:'turn',position:turnPositions[turn.id]||{x:48+index*360,y:90},selected:turn.id===selectedTurnId,data:{turn,collapsed:collapsed.has(turn.id),collapseLabel:labels.collapse,expandLabel:labels.expand,responseLabel:labels.responses,turnLabel:labels.turn,branchLabel:labels.branch,statusLabels:labels.statusLabels,roleLabels:labels.roleLabels,onSelect,onToggleCollapse,onBranch}})),[snapshot.turns,selectedTurnId,collapsedTurnIds,turnPositions,labels,onSelect,onToggleCollapse,onBranch]);
  const[nodes,setNodes,onNodesChange]=useNodesState<TurnFlowNode>(calculated);
  useEffect(()=>setNodes(calculated),[calculated,setNodes]);
  const edges=useMemo(()=>nodes.slice(1).map((node,index)=>({id:`turn-edge-${nodes[index].id}-${node.id}`,source:nodes[index].id,target:node.id,type:'smoothstep',markerEnd:{type:MarkerType.ArrowClosed}})),[nodes]);

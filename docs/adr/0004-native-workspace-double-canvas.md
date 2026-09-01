@@ -44,7 +44,7 @@ WorkspaceShell
 
 - 双击顶层实例卡片进入该实例的 Turn Canvas，不激活对话。
 - 一个 turn 以该实例的本地 `user` message 开始，并包含下一条本地 `user` message 之前的本地 assistant、tool message；failure/operation 在相应事件投影可用后作为同一 turn 的扩展时间线。
-- Turn Canvas 是 `scope=local` 的只读投影；祖先 checkpoint 中的继承消息不得再次渲染成当前实例的卡片。
+- Turn Canvas 的显示数据是 `scope=local` 的只读投影；surface 可提交 route-scoped chat/fork 命令，但不维护第二份 transcript。祖先 checkpoint 中的继承消息不得再次渲染成当前实例的卡片。
 - 继承信息只在路线面包屑、checkpoint 摘要和 `inheritedMessageCount` 中展示，并可通过显式检查入口查看。
 - 返回第一层时恢复顶层 viewport、节点位置、折叠和 selection；再次进入同一实例时恢复该实例自己的 Turn Canvas 状态。
 
@@ -60,6 +60,8 @@ WorkspaceShell
 | 单击实例或 route choice | 只改变当前 surface 的 selection | 否 |
 | 双击实例或 route choice | 钻入该具体实例的 Turn Canvas | 否 |
 | 单击 turn | 显示该 turn 详情 | 否 |
+| 在 Turn Canvas composer 发送 | 向该具体实例追加用户消息，并按当前模型配置生成回答 | 否 |
+| 点击 turn 卡片的分支动作 | 从精确 cursor 创建子实例，并为首条分支问题生成回答 | 否 |
 | “返回工作流” | 返回第一层并恢复镜头 | 否 |
 | “继续对话” | 验证具体实例，调用 activate/navigate，成功后回到 Chat | 是 |
 
@@ -83,6 +85,8 @@ Standalone 的当前 cursor 约定为：
 - `instanceHead`：没有选择具体 turn 时，cursor 指向请求接受时的实例头，并记录对应 `source_content_revision`。
 
 checkpoint 继续保存冻结的有效消息快照；cursor 是可审计的分支锚点，不替代快照。请求还必须带 `expected_content_revision`，源实例已变化时返回 409，不能在新的内容头上悄悄重放旧 selection。
+
+Standalone 的 `fork-chat` 命令使用同一 idempotency key 覆盖“创建子实例 + 生成首个回答”。子实例创建成功而模型失败时保留用户问题并返回稳定 `replyErrorCode`，UI 继续打开该子实例并显示失败状态；相同命令重试不得重复创建子实例或重复已完成的回答。
 
 未来 HostAdapter 使用 provider-neutral 的 checkpoint reference：
 
@@ -159,12 +163,14 @@ can_navigate
 - 双击节点、route choice 或 turn 的网络行为不得包含 activate/navigate。
 - 只有显式“继续对话”可以 activate；成功前不得离开工作流 surface。
 - 从 turn 分支必须冻结到该 turn 的 cursor，并拒绝 stale `expected_content_revision`。
+- Turn Canvas composer 与 Chat 必须写入同一个实例消息真源；任一 surface 刷新后看到的本地 turns 必须一致。
+- 画布发送和精确分支不得隐式 activate 当前实例或子实例。
 - UI metadata 的写入不得改变 graph/content revision。
 - 同 topic 多路线必须先解析到具体 instance，Turn Canvas 和继续对话都不能使用逻辑 topic 代替实例 ID。
 - 本 ADR 的 Standalone 本机纵向切片已完成后端、前端、typecheck/build 与真实浏览器 E2E，状态为 **Verified local preview**；这不代表正式 Codex/Claude HostAdapter、failure/approval 完整事件投影、跨设备同步或生产部署已经完成。
 
 ## 本机验证记录
 
-2026-09-01 的统一验证基线包含后端 99 项测试、前端 63 项测试、Python compileall、TypeScript typecheck、production build 和真实浏览器 E2E。浏览器路径确认了原生“对话 / 工作流”切换、双击只钻入 Turn Canvas、local-only 内容投影、从具体 turn 分支、画布状态恢复，以及显式“继续对话”后才 activate 并返回 Chat。
+2026-09-01 的统一验证基线包含后端 104 项测试、前端 66 项测试、Python compileall、TypeScript typecheck 和 production build。自动化路径确认了原生三视图切换、双击只钻入 Turn Canvas、local-only 内容投影、画布/Chat 共用消息真源、从具体 turn 幂等创建并回答子分支、画布状态恢复，以及只有显式“继续对话”才 activate；真实浏览器继续覆盖只读钻入与交互 surface。
 
 该记录只适用于单用户、本机、Standalone Local Graph Chat 纵向切片。`/graph` 是兼容入口；正式 HostAdapter 的 capability degradation 仍需 adapter contract 与对应宿主 E2E。

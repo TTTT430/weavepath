@@ -7,7 +7,7 @@
 ### UI Shells
 
 - WorkspaceShell（本机预览已验证）：同一个应用内承载“对话 / 工作流”两个长期 surface，切换时保持聊天草稿、请求状态、消息滚动和画布镜头。
-- Workflow Canvas（本机预览已验证）：第一层显示具体 `ConversationInstance` 路线图，双击实例按需钻入第二层 local-only Turn Canvas；双击不 activate。
+- Workflow Canvas（本机预览已验证）：第一层显示具体 `ConversationInstance` 路线图，双击实例按需钻入第二层 local-only Turn Canvas；第二层可向该实例继续发送消息或从精确 turn 创建并回答子分支，双击本身不 activate。
 - Web Chat：本地对话 surface；只有用户在工作流中显式选择“继续对话”后才接受 activate 结果。
 - Graph Window：保留为 `/graph` 可选兼容入口或未来 Desktop surface，不再是默认工作流入口，也不拥有独立领域状态。
 - Desktop Shell：后续单实例、任务栏入口和协议唤起。
@@ -131,16 +131,18 @@ D1 和 D2 可以在 UI 中聚合显示为一个 D，并提供两条路线选择�
 
 多个窗口或宿主同时打开时，不允许用一个全局 `active_node_id` 覆盖它们。
 
-## 双层画布读模型
+## 双层画布读模型与命令入口
 
 顶层 Workflow Graph 的卡片始终代表具体 `ConversationInstance`，边仍由 `parent_instance_id` 推导。它不能混入单条消息、工具调用或纯视觉分组节点，否则 prune、route choice 和 checkpoint 语义会变得含糊。
 
 双击顶层卡片进入该实例的 Turn Canvas。Turn Canvas 是按需构造的 `scope=local` 读模型：每个本地用户消息开始一个 turn，直到下一条本地用户消息之前的本地 assistant/tool message 都归入该 turn；failure/operation 在相应事件投影可用后扩展同一时间线。祖先 checkpoint 消息只用于有效上下文，不在子实例画布中重复投影；UI 单独显示 memory route、checkpoint anchor 和继承消息数量。
 
+Turn Canvas surface 同时暴露受控命令入口，但不维护第二份 transcript：画布 composer 调用与 Chat 相同的 route-aware chat/message API；轮次卡片的分支动作携带精确 `anchorMessageId`、`expectedContentRevision` 和 `idempotencyKey`，创建真实子 `ConversationInstance` 后生成首个回答。成功写入通过 workflow event 通知 Chat/Canvas 刷新，因此两端只是在操作同一 SQLite 真源。
+
 ```text
 Workflow Graph
 └─ ConversationInstance B
-   └─ Turn Canvas (local only)
+   └─ Turn Canvas (local projection + route-scoped commands)
       ├─ B / user turn 1
       │  └─ assistant + tool + failure events
       └─ B / user turn 2

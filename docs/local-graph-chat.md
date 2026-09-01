@@ -26,6 +26,7 @@
 POST /api/v1/workflows
 GET  /api/v1/workflows/{id}/graph
 POST /api/v1/workflows/{workflowId}/instances/{id}/fork
+POST /api/v1/workflows/{workflowId}/instances/{id}/fork-chat  # exact turn + first reply
 POST /api/v1/workflows/{workflowId}/instances/{id}/activate
 GET  /api/v1/workflows/{workflowId}/instances/{id}/messages
 GET  /api/v1/workflows/{workflowId}/instances/{id}/turns       # verified local-only projection
@@ -51,6 +52,7 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 - GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port 已实现，正式 Standalone HostAdapter 尚未拆出；
 - workflow、topic、instance、checkpoint、local message、tombstone；
 - Turn projector 只读取具体实例的 local messages，将一个用户问题及下一用户问题前的 assistant/tool message 组织为一张 turn 卡片；继承 checkpoint 不重复投影，failure/operation 事件扩展仍是后续工作；
+- Turn Canvas composer 与普通 Chat 调用同一条 route-aware 消息链路并写入同一 SQLite 消息真源，不复制 transcript；从 turn 卡片发起的 `fork-chat` 以精确 anchor 幂等创建子实例，并可立即生成首个回答；
 - 从 Co-Thinker 复用 SSE 与中断保护（planned）；
 - 从 v4 widget 提取正交布局、route chooser 和中英文界面，并借鉴 dsh-synapse 的画布检查体验；
 - 默认使用 `WorkspaceShell` 内的 Chat/Workflow 两个持久 surface；第一层 Workflow Graph 和第二层 Turn Canvas 复用一个按需加载的画布区域，不在每个节点中嵌套多个 React Flow；
@@ -94,8 +96,10 @@ A
 14. 从 B 的第 2 个本地用户 turn 创建 C 时，C checkpoint 包含 B1、B2 及 B2 在下一用户问题前的响应，不包含 B3；stale `expectedContentRevision` 返回 409。**Verified local preview。**
 15. 顶层与 B/D1/D2 各自的 viewport、节点位置、折叠和 selection 独立恢复，写入这些 UI metadata 不增加 graph/content revision。**Verified local preview。**
 16. 无 `can_read_local_turns` 的宿主不伪造 Turn Canvas；无精确 cursor fork 能力时禁用该动作或经确认降级到实例头；无 navigation 时不宣称已切换。**Planned adapter contract。**
+17. 在 B 的 Turn Canvas 发送问题后，刷新普通 Chat 与 Turn Canvas 必须看到同一条本地记录；发送动作不隐式 activate B。**Verified local preview。**
+18. 从 B 的任意 turn 卡片创建子分支时，首个问题写入新子实例并在模型可用时立即回答；幂等重放不得重复创建实例或回答，兄弟路线内容不得进入模型上下文。**Verified local preview。**
 
-本机验证使用统一套件：后端 99 项、前端 63 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
+本机验证使用统一套件：后端 104 项、前端 66 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
 
 ## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
 

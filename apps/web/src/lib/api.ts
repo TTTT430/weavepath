@@ -24,6 +24,7 @@ export const api={
  send:(w:string,i:string,content:string)=>request<Message>(`/workflows/${enc(w)}/instances/${enc(i)}/messages`,{method:'POST',body:JSON.stringify({role:'user',content})}),
  chat:(w:string,i:string,content:string)=>request<{userMessage:Message;assistantMessage:Message}>(`/workflows/${enc(w)}/instances/${enc(i)}/chat`,{method:'POST',body:JSON.stringify({content})}),
  fork:(w:string,i:string,body:{title:string;topicId?:string;initialMessage?:string;anchorMessageId?:string|number;expectedContentRevision?:number;idempotencyKey?:string})=>request<ForkResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork`,{method:'POST',body:JSON.stringify(body)}),
+ forkChat:(w:string,i:string,body:{title:string;topicId?:string;initialMessage:string;anchorMessageId:string|number;expectedContentRevision:number;idempotencyKey:string})=>request<ForkChatResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork-chat`,{method:'POST',body:JSON.stringify(body)}),
  activate:(w:string,i:string)=>request<{activeInstanceId:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/activate`,{method:'POST',body:'{}'}),
  prunePlan:(w:string,i:string,allowRoot=false)=>request<PrunePlan>(`/workflows/${enc(w)}/instances/${enc(i)}/prune-plan`,{method:'POST',body:JSON.stringify({allowRoot})}),
  pruneCommit:(w:string,i:string,plan:PrunePlan)=>request<{prunedInstanceIds:string[];activeInstanceId?:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/prune-commit`,{method:'POST',body:JSON.stringify({allowRoot:!!plan.rootRemoval,expectedRevision:plan.graphRevision,idempotencyKey:crypto.randomUUID()})}),
@@ -43,3 +44,4 @@ export const api={
  ,createExperiment:(w:string,body:{name:string;datasetId:string;instanceIds:string[];runIds:Array<string|number>;metric:string;notes:string})=>request<Experiment>(`/workflows/${enc(w)}/experiments`,{method:'POST',body:JSON.stringify(body)})
 };
 interface ForkResponse {node:{id:string};graphRevision:number}
+interface ForkChatResponse extends ForkResponse {replyStatus:'completed'|'recorded'|'failed';replyErrorCode?:string|null;assistantMessage?:Message|null}

@@ -17,7 +17,7 @@ The current **Conversation Workflow / Local Graph Chat** implementation is the P
 - branch, activate, inspect, topic-route selection, and two-step cascade archival;
 - isolation between concrete routes, including multiple instances of the same logical topic;
 - a standalone OpenAI-compatible synchronous chat path and in-app model settings;
-- a native `WorkspaceShell` with “Chat / Workflow” switching, a top-level `ConversationInstance` graph, a local-only Turn Canvas, and Chinese/English UI chrome; `/graph` remains a compatibility entry point;
+- a native `WorkspaceShell` with “Chat / Workflow / Lab” switching, a top-level `ConversationInstance` graph, an actionable local-only Turn Canvas, and Chinese/English UI chrome; `/graph` remains a compatibility entry point;
 - separation between inherited checkpoint memory and messages written locally to the selected node;
 - revision-aware editing and regeneration of the latest local user message.
 - an Engineering Lab preview for transcript-free branch comparison, explicit knowledge transfer, versioned artifacts and datasets, and frozen experiment snapshots.

@@ -1,5 +1,5 @@
 import{useCallback,useEffect,useMemo,useRef,useState}from'react';
-import type{ConversationTurn,Graph,PrunePlan,Route,TurnCanvasSnapshot}from'../domain/types';
+import type{AIStatus,ConversationTurn,Graph,PrunePlan,Route,TurnCanvasSnapshot}from'../domain/types';
 import{api,ApiError}from'../lib/api';
 import{loadCanvasState,saveCanvasState,type CanvasViewport,type PersistedCanvasState}from'../lib/canvasState';
 import{routeLabel}from'../domain/graph';
@@ -30,6 +30,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
  const[layer,setLayer]=useState<Layer>({kind:'workflow'}),[turnSnapshot,setTurnSnapshot]=useState<TurnCanvasSnapshot|null>(null),[turnLoading,setTurnLoading]=useState(false);
  const[workflowFocus,setWorkflowFocus]=useState<{id:string;revision:number}|null>(null);
  const[branch,setBranch]=useState(false),[branchAnchorId,setBranchAnchorId]=useState<string|number|undefined>(),[plan,setPlan]=useState<PrunePlan|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const[aiStatus,setAiStatus]=useState<AIStatus|null>(null),[canvasDrafts,setCanvasDrafts]=useState<Record<string,string>>({}),[canvasSendingOwner,setCanvasSendingOwner]=useState(''),[canvasReply,setCanvasReply]=useState<{owner:string;state:'idle'|'thinking'|'error';error:string}>({owner:'',state:'idle',error:''});
  const[canvasState,setCanvasState]=useState<PersistedCanvasState>(()=>loadCanvasState(workflowId));
  const request=useRef(0),turnRequest=useRef(0),routeRequest=useRef(0),selectedRef=useRef('');
  const node=useMemo(()=>graph?.nodes.find(item=>item.id===selected),[graph,selected]);
@@ -69,6 +70,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
 
  useEffect(()=>{request.current++;turnRequest.current++;routeRequest.current++;const persisted=loadCanvasState(workflowId),next=persisted.workflow.selectedId||'';selectedRef.current=next;setCanvasState(persisted);setGraph(null);setSelectedState(next);setRoutes([]);setLayer({kind:'workflow'});setTurnSnapshot(null);setWorkflowFocus(null);setError('')},[workflowId]);
  useEffect(()=>{if(visible)void load()},[visible,load]);
+ useEffect(()=>{if(visible)api.aiStatus().then(setAiStatus).catch(()=>setAiStatus(null))},[visible,workflowId]);
  useEffect(()=>{const current=++routeRequest.current;setRoutes([]);if(!node||!graph)return;api.routes(graph.workflowId,node.topicId).then(value=>{if(current===routeRequest.current)setRoutes(value)}).catch(caught=>{if(current===routeRequest.current)setError(caught instanceof Error?caught.message:String(caught))})},[node?.id,node?.topicId,graph?.workflowId]);
  useEffect(()=>{if(!visible||layer.kind!=='turn')return;void loadTurns(layer.instanceId)},[visible,layer.kind,layer.kind==='turn'?layer.instanceId:'',loadTurns]);
  useEffect(()=>{const refresh=()=>{if(!visible)return;void load();if(layer.kind==='turn')void loadTurns(layer.instanceId)};const channel=new BroadcastChannel('conversation-workflow');channel.addEventListener('message',refresh);return()=>channel.close()},[visible,layer,load,loadTurns]);
@@ -85,11 +87,36 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
   if(!graph||!node)return;setBusy(true);setError('');
   const expected=turnSnapshot?.instanceId===node.id?turnSnapshot.contentRevision:node.contentRevision||0;
   try{
-   const result=await api.fork(graph.workflowId,node.id,{...input,...(branchAnchorId!==undefined?{anchorMessageId:branchAnchorId}:{}),expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()});
+   const exactTurnBranch=branchAnchorId!==undefined&&!!input.initialMessage;
+   const result=exactTurnBranch
+    ?await api.forkChat(graph.workflowId,node.id,{title:input.title,...(input.topicId?{topicId:input.topicId}:{}),initialMessage:input.initialMessage!,anchorMessageId:branchAnchorId!,expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()})
+    :await api.fork(graph.workflowId,node.id,{...input,...(branchAnchorId!==undefined?{anchorMessageId:branchAnchorId}:{}),expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()});
    setBranch(false);setBranchAnchorId(undefined);setWorkflowFocus({id:result.node.id,revision:result.graphRevision});await load();openCanvas(result.node.id);
+   const replyResult=result as{replyStatus?:string;replyErrorCode?:string|null};
+   if(replyResult.replyStatus==='failed')setError(`${t('branchReplyFailed')}${replyResult.replyErrorCode?` (${replyResult.replyErrorCode})`:''}`);
   }catch(caught){
    if(caught instanceof ApiError&&caught.status===409){const refreshed=layer.kind==='turn'?await loadTurns(layer.instanceId):await load();if(refreshed)setError(t('forkConflict'))}else setError(caught instanceof Error?caught.message:String(caught));
   }finally{setBusy(false)}
+ }
+
+ async function sendFromCanvas(){
+  if(layer.kind!=='turn'||!graph||canvasSendingOwner)return;
+  const instanceId=layer.instanceId,owner=`${graph.workflowId}:${instanceId}`,content=(canvasDrafts[instanceId]||'').trim();
+  if(!content)return;
+  setCanvasSendingOwner(owner);setCanvasDrafts(current=>({...current,[instanceId]:''}));setError('');
+  try{
+   let status=aiStatus;
+   if(!status){try{status=await api.aiStatus();setAiStatus(status)}catch{status=null}}
+   setCanvasReply({owner,state:status?.configured?'thinking':'idle',error:''});
+   if(status?.configured)await api.chat(graph.workflowId,instanceId,content);else await api.send(graph.workflowId,instanceId,content);
+   notifyWorkflowChanged({type:'conversation-workflow-changed',workflowId:graph.workflowId,instanceId});
+   await Promise.all([loadTurns(instanceId),load()]);
+   setCanvasReply({owner,state:'idle',error:''});
+  }catch(caught){
+   await loadTurns(instanceId);
+   const message=caught instanceof ApiError&&caught.code==='aiTimeout'?t('aiTimeout'):caught instanceof Error?caught.message:t('canvasSendFailed');
+   setCanvasReply({owner,state:'error',error:message});
+  }finally{setCanvasSendingOwner('')}
  }
 
  async function preparePrune(){if(!graph||!node)return;setBusy(true);try{setPlan(await api.prunePlan(graph.workflowId,node.id,node.id===graph.rootInstanceId))}catch(caught){setError(caught instanceof Error?caught.message:String(caught))}finally{setBusy(false)}}
@@ -97,7 +124,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
 
  const routeText=(route:Route)=>route.memoryRoute.map(id=>graph?.nodes.find(item=>item.id===id)?.title||id).join(' → ');
  const workflowLabels=useMemo(()=>({locate:t('locateSelection'),fit:t('fitCanvas'),collapse:t('collapseBranch'),expand:t('expandBranch')}),[t]);
- const turnLabels=useMemo(()=>({locate:t('locateSelection'),fit:t('fitCanvas'),collapse:t('collapseTurn'),expand:t('expandTurn'),responses:t('turnResponses'),empty:t('noLocalTurns'),turn:t('turnLabel'),statusLabels:{completed:t('statusCompleted'),pending:t('statusPending'),running:t('statusRunning'),failed:t('statusFailed'),interrupted:t('statusInterrupted')},roleLabels:{user:t('roleUser'),assistant:t('roleAssistant'),tool:t('roleTool'),system:t('roleSystem')}}),[t]);
+ const turnLabels=useMemo(()=>({locate:t('locateSelection'),fit:t('fitCanvas'),collapse:t('collapseTurn'),expand:t('expandTurn'),responses:t('turnResponses'),empty:t('noLocalTurns'),turn:t('turnLabel'),branch:t('branchFromTurn'),statusLabels:{completed:t('statusCompleted'),pending:t('statusPending'),running:t('statusRunning'),failed:t('statusFailed'),interrupted:t('statusInterrupted')},roleLabels:{user:t('roleUser'),assistant:t('roleAssistant'),tool:t('roleTool'),system:t('roleSystem')}}),[t]);
  const turnViewport=(value:CanvasViewport|undefined)=>value;
 
  if(!workflowId)return <div className="loading">{t('selectWorkflow')}</div>;
@@ -116,14 +143,15 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
      <WorkflowGraph graph={graph} selectedId={selected} collapsedNodeIds={canvasState.workflow.collapsedNodeIds} nodePositions={canvasState.workflow.positions} initialViewport={canvasState.workflow.viewport} focusRequest={workflowFocus} onSelect={selectNode} onOpenCanvas={openCanvas} onToggleCollapse={toggleWorkflowCollapse} onViewportChange={viewport=>updateWorkflow({viewport})} onNodePositionChange={(id,position)=>updateWorkflow({positions:{...canvasState.workflow.positions,[id]:position}})} labels={workflowLabels}/>
     </div>
     <div className={`canvas-layer ${layer.kind==='turn'?'is-active':''}`} data-testid="turn-layer" hidden={layer.kind!=='turn'} aria-hidden={layer.kind!=='turn'}>
-     {turnLoading&&!turnSnapshot?<div className="canvas-loading">{t('loadingTurns')}</div>:turnSnapshot&&layer.kind==='turn'?<TurnCanvas snapshot={turnSnapshot} selectedTurnId={turnState?.selectedTurnId||''} collapsedTurnIds={turnState?.collapsedTurnIds} turnPositions={turnState?.positions} initialViewport={turnViewport(turnState?.viewport)} onSelect={id=>updateTurn(layer.instanceId,{selectedTurnId:id})} onToggleCollapse={id=>toggleTurnCollapse(layer.instanceId,id)} onViewportChange={viewport=>updateTurn(layer.instanceId,{viewport})} onNodePositionChange={(id,position)=>updateTurn(layer.instanceId,{positions:{...(turnState?.positions||{}),[id]:position}})} labels={turnLabels}/>:null}
+     {turnLoading&&!turnSnapshot?<div className="canvas-loading">{t('loadingTurns')}</div>:turnSnapshot&&layer.kind==='turn'?<TurnCanvas snapshot={turnSnapshot} selectedTurnId={turnState?.selectedTurnId||''} collapsedTurnIds={turnState?.collapsedTurnIds} turnPositions={turnState?.positions} initialViewport={turnViewport(turnState?.viewport)} onSelect={id=>updateTurn(layer.instanceId,{selectedTurnId:id})} onToggleCollapse={id=>toggleTurnCollapse(layer.instanceId,id)} onViewportChange={viewport=>updateTurn(layer.instanceId,{viewport})} onNodePositionChange={(id,position)=>updateTurn(layer.instanceId,{positions:{...(turnState?.positions||{}),[id]:position}})} onBranch={turn=>{updateTurn(layer.instanceId,{selectedTurnId:turn.id});setBranchAnchorId(turn.anchorMessageId);setBranch(true)}} labels={turnLabels}/>:null}
+     {layer.kind==='turn'&&<form className="canvas-chat-composer" onSubmit={event=>{event.preventDefault();void sendFromCanvas()}}><div><textarea aria-label={t('canvasMessage')} value={canvasDrafts[layer.instanceId]||''} placeholder={t('canvasMessagePlaceholder')} onChange={event=>setCanvasDrafts(current=>({...current,[layer.instanceId]:event.target.value}))} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();void sendFromCanvas()}}}/>{canvasReply.owner===`${graph.workflowId}:${layer.instanceId}`&&canvasReply.state==='thinking'&&<span role="status">{t('thinking')}…</span>}{canvasReply.owner===`${graph.workflowId}:${layer.instanceId}`&&canvasReply.state==='error'&&<span className="canvas-reply-error" role="alert">{canvasReply.error}</span>}{!aiStatus?.configured&&<small>{t('recordOnly')}</small>}</div><button className="primary" disabled={canvasSendingOwner!==''||!(canvasDrafts[layer.instanceId]||'').trim()}>{t('send')}</button></form>}
     </div>
    </div>
    <aside className="canvas-inspector">
     {layer.kind==='workflow'?<WorkflowInspector/>:<TurnInspector/>}
    </aside>
   </section>
-  <BranchDialog open={branch} parentTitle={node?.title||''} busy={busy} onClose={()=>{setBranch(false);setBranchAnchorId(undefined)}} onSubmit={input=>void fork(input)}/>
+  <BranchDialog open={branch} parentTitle={node?.title||''} busy={busy} requireMessage={branchAnchorId!==undefined} onClose={()=>{setBranch(false);setBranchAnchorId(undefined)}} onSubmit={input=>void fork(input)}/>
   <PruneDialog plan={plan} busy={busy} onClose={()=>setPlan(null)} onCommit={()=>void commitPrune()}/>
  </main>;
 

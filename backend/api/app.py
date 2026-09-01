@@ -298,6 +298,15 @@ class ForkInput(CamelModel):
     idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
 
 
+class ForkChatInput(CamelModel):
+    title: str = Field(min_length=1, max_length=240)
+    topic_id: str | None = Field(None, alias="topicId", max_length=240)
+    initial_message: str = Field(alias="initialMessage", min_length=1, max_length=20_000)
+    anchor_message_id: int = Field(alias="anchorMessageId", ge=1)
+    expected_content_revision: int = Field(alias="expectedContentRevision", ge=0)
+    idempotency_key: str = Field(alias="idempotencyKey", min_length=1, max_length=200)
+
+
 class ActivateInput(CamelModel):
     preference_key: str | None = Field(None, alias="preferenceKey")
 
@@ -626,6 +635,38 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/fork", status_code=201)
     def fork(workflow_id: str, instance_id: str, body: ForkInput):
         return graph_store.fork(workflow_id, instance_id, **body.model_dump(by_alias=False))
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/fork-chat", status_code=201)
+    def fork_chat(workflow_id: str, instance_id: str, body: ForkChatInput):
+        result = graph_store.fork(workflow_id, instance_id, **body.model_dump(by_alias=False))
+        child_id = result["node"]["id"]
+        local = graph_store.list_messages(workflow_id, child_id, scope="local")["messages"]
+        existing_answer = next((message for message in reversed(local)
+                                if message["role"] == "assistant"), None)
+        reply_status, reply_error = "recorded", None
+        assistant_message = existing_answer
+        if existing_answer is not None:
+            reply_status = "completed"
+        elif llm.status()["configured"]:
+            try:
+                context = route_context(
+                    workflow_id, child_id,
+                    graph_store.list_messages(workflow_id, child_id, scope="effective")["messages"],
+                )
+                answer = llm.complete(context)
+                assistant_message = graph_store.append_message(
+                    workflow_id, child_id, role="assistant", content=answer
+                )
+                reply_status = "completed"
+            except LLMUnavailable as exc:
+                reply_status, reply_error = "failed", exc.code
+            except Exception:
+                reply_status, reply_error = "failed", "aiUnavailable"
+        graph = graph_store.get_graph(workflow_id)
+        node = next(item for item in graph["nodes"] if item["id"] == child_id)
+        return {"node": node, "graphRevision": graph["graphRevision"],
+                "replyStatus": reply_status, "replyErrorCode": reply_error,
+                "assistantMessage": assistant_message}
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/activate")
     def activate(workflow_id: str, instance_id: str, body: ActivateInput):
