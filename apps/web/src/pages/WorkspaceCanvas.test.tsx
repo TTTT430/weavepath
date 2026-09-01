@@ -74,16 +74,26 @@ afterEach(()=>{cleanup();vi.clearAllMocks();vi.unstubAllGlobals()});
 describe('native double canvas workspace',()=>{
  it('opens Turn Canvas on double-click without activating, and activates only through Continue conversation',async()=>{
   const onContinue=vi.fn();renderCanvas({onContinue});await openLeafCanvas();
+  expect(screen.getByTestId('workflow-layer')).toHaveAttribute('hidden');expect(screen.getByTestId('turn-layer')).not.toHaveAttribute('hidden');
   expect(apiMock.activate).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button',{name:'继续对话'}));
   await waitFor(()=>expect(apiMock.activate).toHaveBeenCalledOnce());
   expect(apiMock.activate).toHaveBeenCalledWith('wf','leaf');expect(onContinue).toHaveBeenCalledOnce();
  });
 
+ it('keeps the workflow layer hidden and explains an outdated backend when Turn API is unavailable',async()=>{
+  apiMock.turns.mockRejectedValueOnce(new ApiError('Not Found',404,'notFound'));renderCanvas();
+  await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
+  fireEvent.doubleClick(screen.getByRole('button',{name:'open-leaf-canvas'}));
+  expect(await screen.findByRole('alert')).toHaveTextContent('后端版本过旧');
+  expect(screen.getByTestId('workflow-layer')).toHaveAttribute('hidden');expect(screen.getByTestId('turn-layer')).not.toHaveAttribute('hidden');
+ });
+
  it('restores workflow selection and viewport through the breadcrumb and selects a collapsed ancestor',async()=>{
   renderCanvas();await openLeafCanvas();
   fireEvent.click(screen.getByRole('button',{name:'研究工作流'}));
   const workflow=screen.getByTestId('workflow-graph');
+  expect(screen.getByTestId('workflow-layer')).not.toHaveAttribute('hidden');expect(screen.getByTestId('turn-layer')).toHaveAttribute('hidden');
   expect(workflow).toHaveAttribute('data-selected','leaf');expect(workflow).toHaveAttribute('data-viewport',JSON.stringify({x:14,y:-22,zoom:.8}));
   fireEvent.click(screen.getByRole('button',{name:'collapse-root'}));
   await waitFor(()=>expect(workflow).toHaveAttribute('data-selected','root'));

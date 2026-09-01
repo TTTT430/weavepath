@@ -51,12 +51,12 @@ export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPosi
  const[nodes,setNodes,onNodesChange]=useNodesState<TurnFlowNode>(calculated);
  useEffect(()=>setNodes(calculated),[calculated,setNodes]);
  const edges=useMemo(()=>nodes.slice(1).map((node,index)=>({id:`turn-edge-${nodes[index].id}-${node.id}`,source:nodes[index].id,target:node.id,type:'smoothstep',markerEnd:{type:MarkerType.ArrowClosed}})),[nodes]);
- const locate=()=>{const selected=nodes.filter(node=>node.id===selectedTurnId);void instance?.fitView({nodes:selected.length?selected:nodes,duration:220,padding:.6})};
- const fit=()=>void instance?.fitView({nodes,duration:220,padding:.2});
+ const locate=()=>{const selected=nodes.filter(node=>node.id===selectedTurnId);void instance?.fitView({nodes:selected.length?selected:nodes,duration:220,padding:.6,maxZoom:1.05})};
+ const fit=()=>void instance?.fitView({nodes,duration:220,padding:.24,maxZoom:1});
  return <div className="turn-canvas">
   {!nodes.length&&<p className="turn-canvas-empty">{labels.empty}</p>}
-  <ReactFlow<TurnFlowNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} defaultViewport={initialViewport} nodesDraggable elementsSelectable={false} nodesConnectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)}>
-   <Background gap={16} size={1}/>{nodes.length>=8&&<MiniMap/>}<Controls/>
+  <ReactFlow<TurnFlowNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.24,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable elementsSelectable={false} nodesConnectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)}>
+   <Background color="#d7dee7" gap={24} size={1}/>{nodes.length>=8&&<MiniMap/>}<Controls/>
    <Panel position="top-right" className="canvas-tools"><button type="button" onClick={locate} disabled={!nodes.length} aria-label={labels.locate}>◎</button><button type="button" onClick={fit} disabled={!nodes.length} aria-label={labels.fit}>↔</button></Panel>
   </ReactFlow>
  </div>;

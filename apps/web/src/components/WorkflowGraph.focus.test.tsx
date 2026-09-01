@@ -31,7 +31,7 @@ describe('workflow focus request',()=>{
   expect(flowMock.fitView).not.toHaveBeenCalled();
   rerender(<WorkflowGraph graph={graphWithChild} selectedId="child" focusRequest={focusRequest}{...handlers}/>);
   await waitFor(()=>expect(flowMock.fitView).toHaveBeenCalledTimes(1));
-  expect(flowMock.fitView).toHaveBeenCalledWith({nodes:[expect.objectContaining({id:'child'})],duration:220,padding:.7});
+  expect(flowMock.fitView).toHaveBeenCalledWith({nodes:[expect.objectContaining({id:'child'})],duration:220,padding:.7,maxZoom:1.1});
   await act(async()=>{rerender(<WorkflowGraph graph={{...graphWithChild,eventRevision:3}} selectedId="root" focusRequest={focusRequest}{...handlers}/>);await Promise.resolve()});
   expect(flowMock.fitView).toHaveBeenCalledTimes(1);
  });

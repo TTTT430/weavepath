@@ -1,6 +1,6 @@
 import{useEffect,useState}from'react';
 import type{AISettingsInput}from'../domain/types';
-import{api}from'../lib/api';
+import{api,ApiError}from'../lib/api';
 import{useI18n,type Locale}from'../lib/i18n';
 import'../settings.css';
 
@@ -18,14 +18,15 @@ export function ModelSettingsDialog({onClose,onSaved}:{onClose:()=>void;onSaved:
  useEffect(()=>{api.aiSettings().then(x=>{setBaseUrl(x.baseUrl||'');setModel(x.model||'');setTimeoutValue(x.timeoutSeconds);setPersist(x.persistence==='local');setHasKey(x.hasApiKey)}).catch(e=>setNotice(e.message))},[]);
  function choose(value:Preset){setProvider(value);const p=presets[value];if(value!=='custom'){setBaseUrl(p.url);setModel(p.model)}}
  function body():AISettingsInput{return{baseUrl:baseUrl.trim(),model:model.trim(),...(apiKey?{apiKey}:{}),timeoutSeconds:Number(timeout),persistence:persist?'local':'memory'}}
- async function validate(){setBusy(true);setNotice('');try{const hasSelectedModel=!!model.trim();const x=await api.validateAISettings(body());setModels(x.models);setNotice(t(!hasSelectedModel||x.selectedModelAvailable?'connectionOk':'connectionOkModelMissing'))}catch(e){setNotice(`${t('connectionFailed')}: ${e instanceof Error?e.message:String(e)}`)}finally{setBusy(false)}}
+ function discoveryError(error:unknown){if(error instanceof ApiError){const keys={modelDiscoveryTimeout:'modelDiscoveryTimeout',modelDiscoveryUnauthorized:'modelDiscoveryUnauthorized',modelDiscoveryUnsupported:'modelDiscoveryUnsupported',modelDiscoveryConnectionFailed:'modelDiscoveryConnectionFailed',modelDiscoveryInvalidResponse:'modelDiscoveryInvalidResponse'}as const;const key=error.code?keys[error.code as keyof typeof keys]:undefined;if(key)return t(key)}return error instanceof Error?error.message:String(error)}
+ async function validate(){setBusy(true);setNotice('');try{const hasSelectedModel=!!model.trim();const x=await api.validateAISettings(body());setModels(x.models);setNotice(t(!hasSelectedModel||x.selectedModelAvailable?'connectionOk':'connectionOkModelMissing'))}catch(e){setNotice(`${t('connectionFailed')}: ${discoveryError(e)}`)}finally{setBusy(false)}}
  async function save(){setBusy(true);setNotice('');try{await api.saveAISettings(body());await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
  async function reset(){setBusy(true);try{await api.resetAISettings();await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e));setBusy(false)}}
  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="model-settings-title"><header><h2 id="model-settings-title">{t('modelSettings')}</h2><button aria-label={t('close')} onClick={onClose}>×</button></header>
   <label>{t('language')}<select value={locale} onChange={e=>setLocale(e.target.value as Locale)}><option value="zh-CN">中文</option><option value="en">English</option></select></label>
   <label>{t('provider')}<select value={provider} onChange={e=>choose(e.target.value as Preset)}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="lmstudio">LM Studio</option><option value="ollama">Ollama</option><option value="custom">{t('customProvider')}</option></select></label>
   <label>{t('baseUrl')}<input value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="https://…/v1"/></label>
-  <label>{t('model')}<input list="available-models" value={model} onChange={e=>setModel(e.target.value)}/><datalist id="available-models">{models.map(x=><option key={x} value={x}/>)}</datalist></label>
+  <label>{t('model')}<input list="available-models" value={model} onChange={e=>setModel(e.target.value)} placeholder={t('modelPlaceholder')}/><datalist id="available-models">{models.map(x=><option key={x} value={x}/>)}</datalist><small>{t('manualModelHint')}</small></label>
   <label>{t('apiKey')}<input type="password" autoComplete="new-password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={hasKey?t('keyRetained'):t('keyOptional')}/><small>{t('keyMemoryHint')}</small></label>
   <label>{t('timeout')}<input type="number" min="1" max="300" value={timeout} onChange={e=>setTimeoutValue(Number(e.target.value))}/></label>
   <label className="check"><input type="checkbox" checked={persist} onChange={e=>setPersist(e.target.checked)}/><span>{t('persistNonSecret')}</span></label>

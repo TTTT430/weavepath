@@ -95,7 +95,7 @@ A
 15. 顶层与 B/D1/D2 各自的 viewport、节点位置、折叠和 selection 独立恢复，写入这些 UI metadata 不增加 graph/content revision。**Verified local preview。**
 16. 无 `can_read_local_turns` 的宿主不伪造 Turn Canvas；无精确 cursor fork 能力时禁用该动作或经确认降级到实例头；无 navigation 时不宣称已切换。**Planned adapter contract。**
 
-本机验证使用统一套件：后端 95 项、前端 60 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
+本机验证使用统一套件：后端 99 项、前端 63 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
 
 ## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
 

@@ -21,8 +21,8 @@
 | `backend/pyproject.toml` | Done | 声明 Python 3.12、FastAPI、Uvicorn 和测试依赖 |
 | `backend/graph_core/` | In progress | 已验证 SQLite GraphStore、冻结 checkpoint、同 topic 多实例、leaf-first prune、实例级 `contentRevision`、workflow `eventRevision`、schema v1/v2/v3→v4 前向迁移、checkpoint cursor、local-only turn projection 和从具体用户 turn 冻结 checkpoint；仍未拆稳定 repository/ports，也没有自动 rollback/downgrade |
 | `backend/api/` | In progress | health/SQLite schema version 为 4；核心 `/api/v1`、OpenAI-compatible 同步 Local Chat、模型设置、Route-to-Agent Run preview、`GET .../turns` 和 fork `anchorMessageId/expectedContentRevision` 已完成本机验证；graph snapshot 与 legacy manifest 协议仍为 schema v1，尚无 SSE、WebSocket、认证/多租户边界和完整 application service 分层 |
-| `backend/tests/` | In progress | graph/API、路线隔离、AI 设置、Agent Runtime、工具安全、turn cursor 和 v1/v2/v3→v4 migration 已纳入套件；2026-09-01 当前完整后端套件为 95 项通过 |
-| `apps/web/` | In progress | React chat/model settings、Agent Run preview、原生 `WorkspaceShell`、双层画布、画布 UI metadata 与显式 Continue 已实现；当前前端套件为 60 项通过，typecheck/production build 与主路径真实浏览器 E2E 已完成，真实窄屏和失败 Run 浏览器路径仍待补验 |
+| `backend/tests/` | In progress | graph/API、路线隔离、AI 设置、Agent Runtime、工具安全、turn cursor 和 v1/v2/v3→v4 migration 已纳入套件；2026-09-01 当前完整后端套件为 99 项通过 |
+| `apps/web/` | In progress | React chat/model settings、Agent Run preview、原生 `WorkspaceShell`、双层画布、画布 UI metadata 与显式 Continue 已实现；当前前端套件为 63 项通过，typecheck/production build 与主路径真实浏览器 E2E 已完成，真实窄屏和失败 Run 浏览器路径仍待补验 |
 | WorkspaceShell / 双层画布 | Verified local preview | 默认入口为同页“对话 / 工作流”；顶层是 `ConversationInstance` 图，双击钻入 local-only Turn Canvas，只有显式“继续对话”才 activate。已完成自动化与真实浏览器 E2E，边界见 ADR-0004 |
 | `scripts/dev.ps1` | Done for current slice | 从仓库根目录启动 API:8000 和 Web:5173，可用 `-WebPort` 覆盖 Web 端口 |
 | `scripts/check.ps1` | Done for current slice | 统一执行后端测试/compileall 与前端测试/build |
@@ -59,8 +59,8 @@
 
 2026-09-01 的 **Verified local preview** 记录如下：
 
-- Python 3.12 统一后端套件 95 项通过，包含 schema v3→v4 migration、local-only turn projection、精确 turn cursor、stale revision、幂等和路线隔离；
-- 前端 Vitest 统一套件 60 项通过，包含 WorkspaceShell 视图切换、双击仲裁、Turn Canvas、Continue 激活边界和画布 metadata 持久化；
+- Python 3.12 统一后端套件 99 项通过，包含 schema v3→v4 migration、local-only turn projection、精确 turn cursor、stale revision、幂等和路线隔离；
+- 前端 Vitest 统一套件 63 项通过，包含 WorkspaceShell 视图切换、双击仲裁、Turn Canvas、Continue 激活边界和画布 metadata 持久化；
 - Python compileall、TypeScript typecheck 与 production build 通过；
 - 真实浏览器 E2E 确认工作流在当前页面原生打开、双击只进入节点内部画布、继承消息不冒充本地 turn、从具体 turn 创建分支，以及显式 Continue 后才切回对应聊天；
 - `/graph` 保留为兼容入口，不是默认工作流入口，也不改变上述交互语义。
@@ -71,8 +71,8 @@
 
 2026-09-01 的 **Verified local preview** 记录如下：
 
-- 当前 Python 3.12 统一后端套件 95 项通过，其中覆盖 run create/read/events、frozen context、event sequence、重启恢复、工具安全、adapter contract、idempotency 与 revision；
-- 当前前端 Vitest 统一套件 60 项通过，其中覆盖 brief、重复提交保护、失败 Run 恢复、事件分页与路线切换竞态；
+- 当前 Python 3.12 统一后端套件 99 项通过，其中覆盖 run create/read/events、frozen context、event sequence、重启恢复、工具安全、adapter contract、idempotency 与 revision；
+- 当前前端 Vitest 统一套件 63 项通过，其中覆盖 brief、重复提交保护、失败 Run 恢复、事件分页与路线切换竞态；
 - Python compileall、TypeScript typecheck 与 production build 通过；仍有非阻塞 chunk-size 警告；
 - 真实浏览器使用受控 OpenAI-compatible 假上游完成 `数据集 → 情感分析` 路线的模型→`safe_calculator`→timeline→最终回答闭环；兄弟路线 canary 未进入请求；
 - 浏览器 E2E 验证的是桌面视口成功路径；失败 Run 目前有组件测试，真实窄屏响应式行为也尚未完成浏览器验收。

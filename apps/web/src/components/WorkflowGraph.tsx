@@ -42,7 +42,7 @@ export function ConversationCard({data,selected=false}:{data:ConversationData;se
  const node=data.instance,subtitle=nodeSubtitle(node),events=useClickArbitration(()=>data.onSelect(node.id),()=>data.onOpenCanvas(node.id));
  return <div className={`flow-node ${data.active?'is-active':''} ${node.status==='pruned'?'is-pruned':''} ${selected?'is-selected':''}`} data-instance-id={node.id} {...events}>
   {data.hasChildren&&<button type="button" className="node-collapse" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${node.title}`} onClick={event=>{event.preventDefault();event.stopPropagation();data.onToggleCollapse(node.id)}}>{data.collapsed?'＋':'−'}</button>}
-  <strong>{node.title}</strong>{subtitle&&<span>{subtitle}</span>}
+  <header className="flow-node-head"><i aria-hidden="true"/><strong>{node.title}</strong>{data.active&&<b aria-hidden="true"/>}</header>{subtitle&&<span>{subtitle}</span>}
  </div>;
 }
 
@@ -74,8 +74,8 @@ export function WorkflowGraph({graph,selectedId,collapsedNodeIds=[],nodePosition
  const visibleIds=useMemo(()=>new Set(nodes.map(node=>node.id)),[nodes]);
  const edges=useMemo(()=>graphEdges(graph).filter(edge=>visibleIds.has(edge.source)&&visibleIds.has(edge.target)).map(edge=>({...edge,type:'smoothstep',markerEnd:{type:MarkerType.ArrowClosed}})),[graph,visibleIds]);
  const wrapperEvents=useMemo(()=>reactFlowNodePointerProps(onOpenCanvas),[onOpenCanvas]);
- const locate=()=>{const selected=nodes.filter(node=>node.id===selectedId);void instance?.fitView({nodes:selected.length?selected:nodes,duration:220,padding:.65})};
- const fit=()=>void instance?.fitView({nodes,duration:220,padding:.2});
+ const locate=()=>{const selected=nodes.filter(node=>node.id===selectedId);void instance?.fitView({nodes:selected.length?selected:nodes,duration:220,padding:.65,maxZoom:1.1})};
+ const fit=()=>void instance?.fitView({nodes,duration:220,padding:.24,maxZoom:1});
  useEffect(()=>{
   if(!instance||!focusRequest)return;
   const key=`${focusRequest.id}:${focusRequest.revision}`;
@@ -83,10 +83,10 @@ export function WorkflowGraph({graph,selectedId,collapsedNodeIds=[],nodePosition
   const target=nodes.filter(node=>node.id===focusRequest.id);
   if(!target.length)return;
   appliedFocus.current=key;
-  void instance.fitView({nodes:target,duration:220,padding:.7});
+  void instance.fitView({nodes:target,duration:220,padding:.7,maxZoom:1.1});
  },[focusRequest,instance,nodes]);
- return <ReactFlow<ConversationFlowNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} defaultViewport={initialViewport} nodesDraggable nodesConnectable={false} elementsSelectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)} {...wrapperEvents}>
-  <Background gap={16} size={1}/>{shouldShowMiniMap(nodes.length)&&<MiniMap/>}<Controls/>
+ return <ReactFlow<ConversationFlowNode> nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.24,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable nodesConnectable={false} elementsSelectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)} {...wrapperEvents}>
+  <Background color="#d7dee7" gap={24} size={1}/>{shouldShowMiniMap(nodes.length)&&<MiniMap/>}<Controls/>
   <Panel position="top-right" className="canvas-tools"><button type="button" onClick={locate} disabled={!nodes.length} aria-label={labels.locate}>◎</button><button type="button" onClick={fit} disabled={!nodes.length} aria-label={labels.fit}>↔</button></Panel>
  </ReactFlow>;
 }

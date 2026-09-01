@@ -18,7 +18,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 - `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
 - 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
 
-当前仓库已有 SQLite `GraphStore`、schema v4 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流”：第一层画布显示具体 `ConversationInstance` 路线，双击节点进入只投影该实例本地记录的 Turn Canvas；单击与双击都不会激活会话，只有显式“继续对话”才 activate 并返回 Chat。可以从具体本地用户 turn 冻结 checkpoint 创建分支，继承内容不会在子实例中重复冒充本地卡片。该纵向切片已通过后端 95 项、前端 60 项测试、compileall、typecheck/build 和真实浏览器 E2E；`/graph` 只保留为兼容入口。
+当前仓库已有 SQLite `GraphStore`、schema v4 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流”：第一层画布显示具体 `ConversationInstance` 路线，双击节点进入只投影该实例本地记录的 Turn Canvas；单击与双击都不会激活会话，只有显式“继续对话”才 activate 并返回 Chat。可以从具体本地用户 turn 冻结 checkpoint 创建分支，继承内容不会在子实例中重复冒充本地卡片。该纵向切片已通过后端 99 项、前端 63 项测试、compileall、typecheck/build 和真实浏览器 E2E；`/graph` 只保留为兼容入口。
 
 第一版 OpenAI-compatible 同步 AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止，已有子节点继续使用编辑前的冻结 checkpoint。SSE、migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
 
@@ -28,7 +28,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 
 该 preview 当前是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。官方 app factory 已用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；跨进程 run owner/lease 仍属于后续运行时硬化范围。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
 
-2026-09-01 的当前统一本机验证基线包括 95 项后端测试、60 项前端测试、Python compileall、TypeScript/production build 和真实浏览器 E2E。其中 Route-to-Agent Run 路径使用受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。该结论只表示窄范围本机 preview 已验证，不表示完整 Agent Runtime 或 Phase 1/Phase 2 已完成。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。SSE、取消、任意 shell/文件/网络工具、artifacts、evaluation、多 Agent，以及正式 Codex/Claude adapter 均未包含在此切片中。
+2026-09-01 的当前统一本机验证基线包括 99 项后端测试、63 项前端测试、Python compileall、TypeScript/production build 和真实浏览器 E2E。其中 Route-to-Agent Run 路径使用受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。该结论只表示窄范围本机 preview 已验证，不表示完整 Agent Runtime 或 Phase 1/Phase 2 已完成。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。SSE、取消、任意 shell/文件/网络工具、artifacts、evaluation、多 Agent，以及正式 Codex/Claude adapter 均未包含在此切片中。
 
 ## 产品边界
 

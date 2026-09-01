@@ -183,6 +183,43 @@ def test_openai_compatible_model_discovery_parses_and_sorts_ids(tmp_path, monkey
     }
 
 
+@pytest.mark.parametrize(
+    ("mode", "code", "status_code", "message"),
+    [
+        ("timeout", "modelDiscoveryTimeout", 504, "timed out"),
+        ("unauthorized", "modelDiscoveryUnauthorized", 401, "rejected the API key"),
+        ("unsupported", "modelDiscoveryUnsupported", 502, "compatible /models"),
+        ("invalid", "modelDiscoveryInvalidResponse", 502, "invalid model list"),
+    ],
+)
+def test_model_discovery_reports_actionable_failure_classes(
+    tmp_path, monkeypatch, mode, code, status_code, message
+):
+    runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})
+
+    class FakeClient:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def get(self, url, headers):
+            del headers
+            request = httpx.Request("GET", url)
+            if mode == "timeout":
+                raise httpx.ConnectTimeout("timeout", request=request)
+            if mode == "invalid":
+                return httpx.Response(200, json=[], request=request)
+            status = 401 if mode == "unauthorized" else 404
+            return httpx.Response(status, json={"error": "must not leak"}, request=request)
+
+    monkeypatch.setattr("api.model_settings.httpx.Client", FakeClient)
+    with pytest.raises(ModelSettingsError) as caught:
+        runtime.discover_models(ModelConfig("https://provider.test/v1", ""))
+    assert caught.value.code == code
+    assert caught.value.status_code == status_code
+    assert message in str(caught.value)
+    assert "must not leak" not in str(caught.value)
+
+
 def test_request_validation_never_echoes_secret(tmp_path):
     store = GraphStore(":memory:")
     runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})

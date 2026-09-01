@@ -63,7 +63,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
    const next=value.turns.some(turn=>turn.id===persisted)?persisted:(value.turns.at(-1)?.id||'');
    updateTurn(instanceId,{selectedTurnId:next});
    return value;
-  }catch(caught){if(current===turnRequest.current){setTurnSnapshot(null);setError(caught instanceof Error?caught.message:t('turnLoadFailed'))}return null}
+  }catch(caught){if(current===turnRequest.current){setTurnSnapshot(null);setError(caught instanceof ApiError&&caught.status===404?t('backendUpgradeRequired'):caught instanceof Error?caught.message:t('turnLoadFailed'))}return null}
   finally{if(current===turnRequest.current)setTurnLoading(false)}
  },[workflowId,t,updateTurn]);
 
@@ -112,10 +112,10 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
   <ErrorBanner message={error} onRetry={()=>{setError('');if(layer.kind==='turn')void loadTurns(layer.instanceId);else void load()}}/>
   <section className="canvas-body">
    <div className="canvas-stack">
-    <div className={`canvas-layer ${layer.kind==='workflow'?'is-active':''}`} aria-hidden={layer.kind!=='workflow'}>
+    <div className={`canvas-layer ${layer.kind==='workflow'?'is-active':''}`} data-testid="workflow-layer" hidden={layer.kind!=='workflow'} aria-hidden={layer.kind!=='workflow'}>
      <WorkflowGraph graph={graph} selectedId={selected} collapsedNodeIds={canvasState.workflow.collapsedNodeIds} nodePositions={canvasState.workflow.positions} initialViewport={canvasState.workflow.viewport} focusRequest={workflowFocus} onSelect={selectNode} onOpenCanvas={openCanvas} onToggleCollapse={toggleWorkflowCollapse} onViewportChange={viewport=>updateWorkflow({viewport})} onNodePositionChange={(id,position)=>updateWorkflow({positions:{...canvasState.workflow.positions,[id]:position}})} labels={workflowLabels}/>
     </div>
-    <div className={`canvas-layer ${layer.kind==='turn'?'is-active':''}`} aria-hidden={layer.kind!=='turn'}>
+    <div className={`canvas-layer ${layer.kind==='turn'?'is-active':''}`} data-testid="turn-layer" hidden={layer.kind!=='turn'} aria-hidden={layer.kind!=='turn'}>
      {turnLoading&&!turnSnapshot?<div className="canvas-loading">{t('loadingTurns')}</div>:turnSnapshot&&layer.kind==='turn'?<TurnCanvas snapshot={turnSnapshot} selectedTurnId={turnState?.selectedTurnId||''} collapsedTurnIds={turnState?.collapsedTurnIds} turnPositions={turnState?.positions} initialViewport={turnViewport(turnState?.viewport)} onSelect={id=>updateTurn(layer.instanceId,{selectedTurnId:id})} onToggleCollapse={id=>toggleTurnCollapse(layer.instanceId,id)} onViewportChange={viewport=>updateTurn(layer.instanceId,{viewport})} onNodePositionChange={(id,position)=>updateTurn(layer.instanceId,{positions:{...(turnState?.positions||{}),[id]:position}})} labels={turnLabels}/>:null}
     </div>
    </div>

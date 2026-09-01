@@ -18,4 +18,9 @@ describe('workspace canvas state',()=>{
   const store=storage(JSON.stringify({workflow:{selectedId:'a',viewport:{x:0,y:0,zoom:99},positions:{a:{x:'bad',y:1}}},turns:{a:{positions:{t:{x:1,y:2}}}}}));
   expect(loadCanvasState('wf',store)).toEqual({workflow:{selectedId:'a',collapsedNodeIds:[],positions:{}},turns:{a:{collapsedTurnIds:[],positions:{t:{x:1,y:2}}}}});
  });
+
+ it('drops legacy over-zoomed cameras so nodes cannot reopen at an oversized scale',()=>{
+  const store=storage(JSON.stringify({workflow:{selectedId:'a',viewport:{x:0,y:0,zoom:2},positions:{}},turns:{a:{viewport:{x:0,y:0,zoom:1.75},positions:{}}}}));
+  expect(loadCanvasState('wf',store)).toEqual({workflow:{selectedId:'a',collapsedNodeIds:[],positions:{}},turns:{a:{collapsedTurnIds:[],positions:{}}}});
+ });
 });

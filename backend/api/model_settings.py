@@ -18,9 +18,8 @@ Persistence = Literal["memory", "local"]
 
 
 class ModelSettingsError(LLMUnavailable):
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
+    def __init__(self, code: str, message: str, status_code: int = 503) -> None:
+        super().__init__(message, code=code, status_code=status_code)
 
 
 def validate_base_url(value: str) -> str:
@@ -188,10 +187,45 @@ class RuntimeModelSettings:
                 response = http.get(client.base_url.rstrip("/") + "/models", headers=headers)
                 response.raise_for_status()
                 data = response.json()
+            if not isinstance(data, dict):
+                raise TypeError("model list response must be an object")
             values = data.get("data", [])
+            if not isinstance(values, list):
+                raise TypeError("model list data must be an array")
             models = sorted({item["id"] for item in values if isinstance(item, dict) and isinstance(item.get("id"), str)})
-        except (httpx.HTTPError, ValueError, TypeError) as exc:
-            raise ModelSettingsError("modelDiscoveryFailed", "Unable to connect to the model provider") from exc
+        except httpx.TimeoutException as exc:
+            raise ModelSettingsError(
+                "modelDiscoveryTimeout", "Model provider connection timed out", 504
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in {401, 403}:
+                raise ModelSettingsError(
+                    "modelDiscoveryUnauthorized",
+                    "Model provider rejected the API key",
+                    401,
+                ) from exc
+            if status in {404, 405}:
+                raise ModelSettingsError(
+                    "modelDiscoveryUnsupported",
+                    "Model provider does not expose a compatible /models endpoint",
+                    502,
+                ) from exc
+            raise ModelSettingsError(
+                "modelDiscoveryHttpError",
+                f"Model provider returned HTTP {status}",
+                502,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ModelSettingsError(
+                "modelDiscoveryConnectionFailed", "Unable to reach the model provider", 503
+            ) from exc
+        except (ValueError, TypeError) as exc:
+            raise ModelSettingsError(
+                "modelDiscoveryInvalidResponse",
+                "Model provider returned an invalid model list",
+                502,
+            ) from exc
         return models
 
     def validate_connection(self, *, base_url: str, model: str, api_key: str | None = None,

@@ -26,7 +26,7 @@ const DEFAULT_WORKFLOW:WorkflowCanvasState={collapsedNodeIds:[],positions:{}};
 function viewport(value:unknown):CanvasViewport|undefined{
  if(!value||typeof value!=='object')return undefined;
  const item=value as Record<string,unknown>,x=Number(item.x),y=Number(item.y),zoom=Number(item.zoom);
- if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(zoom)||zoom<.1||zoom>4)return undefined;
+ if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(zoom)||zoom<.25||zoom>1.5)return undefined;
  return{x,y,zoom};
 }
 

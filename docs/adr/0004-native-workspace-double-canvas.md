@@ -165,6 +165,6 @@ can_navigate
 
 ## 本机验证记录
 
-2026-09-01 的统一验证基线包含后端 95 项测试、前端 60 项测试、Python compileall、TypeScript typecheck、production build 和真实浏览器 E2E。浏览器路径确认了原生“对话 / 工作流”切换、双击只钻入 Turn Canvas、local-only 内容投影、从具体 turn 分支、画布状态恢复，以及显式“继续对话”后才 activate 并返回 Chat。
+2026-09-01 的统一验证基线包含后端 99 项测试、前端 63 项测试、Python compileall、TypeScript typecheck、production build 和真实浏览器 E2E。浏览器路径确认了原生“对话 / 工作流”切换、双击只钻入 Turn Canvas、local-only 内容投影、从具体 turn 分支、画布状态恢复，以及显式“继续对话”后才 activate 并返回 Chat。
 
 该记录只适用于单用户、本机、Standalone Local Graph Chat 纵向切片。`/graph` 是兼容入口；正式 HostAdapter 的 capability degradation 仍需 adapter contract 与对应宿主 E2E。
