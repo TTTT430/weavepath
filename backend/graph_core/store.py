@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from graph_core.migrations import run_migrations
+
 
 class GraphError(Exception):
     pass
@@ -69,58 +71,7 @@ class GraphStore:
 
     def _init_schema(self) -> None:
         with self._lock:
-            self._conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS workflows(
-                  id TEXT PRIMARY KEY, name TEXT NOT NULL, root_instance_id TEXT,
-                  active_instance_id TEXT, graph_revision INTEGER NOT NULL DEFAULT 0,
-                  content_revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-                  updated_at TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS topics(
-                  id TEXT NOT NULL, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-                  name TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workflow_id,id));
-                CREATE TABLE IF NOT EXISTS checkpoints(
-                  id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-                  source_instance_id TEXT, source_content_revision INTEGER NOT NULL,
-                  messages_json TEXT NOT NULL, created_at TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS conversation_instances(
-                  id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-                  topic_id TEXT NOT NULL, parent_id TEXT REFERENCES conversation_instances(id),
-                  checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id), title TEXT NOT NULL,
-                  status TEXT NOT NULL CHECK(status IN ('active','pruned')), provider TEXT NOT NULL,
-                  provider_conversation_id TEXT, content_revision INTEGER NOT NULL DEFAULT 0,
-                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                  FOREIGN KEY(workflow_id,topic_id) REFERENCES topics(workflow_id,id));
-                CREATE INDEX IF NOT EXISTS idx_instances_workflow_parent ON conversation_instances(workflow_id,parent_id);
-                CREATE INDEX IF NOT EXISTS idx_instances_workflow_topic ON conversation_instances(workflow_id,topic_id);
-                CREATE TABLE IF NOT EXISTS local_messages(
-                  id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-                  instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
-                  role TEXT NOT NULL CHECK(role IN ('system','user','assistant','tool')),
-                  content TEXT NOT NULL, created_at TEXT NOT NULL);
-                CREATE INDEX IF NOT EXISTS idx_messages_instance ON local_messages(instance_id,id);
-                CREATE TABLE IF NOT EXISTS tombstones(
-                  workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-                  instance_id TEXT PRIMARY KEY REFERENCES conversation_instances(id), pruned_at TEXT NOT NULL,
-                  prune_command_id TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS commands(
-                  id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-                  idempotency_key TEXT NOT NULL, command_type TEXT NOT NULL, request_json TEXT NOT NULL,
-                  response_json TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT,
-                  UNIQUE(workflow_id,idempotency_key));
-                CREATE TABLE IF NOT EXISTS schema_migrations(
-                  version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-                """
-            )
-            columns = {row[1] for row in self._conn.execute("PRAGMA table_info(conversation_instances)")}
-            if "content_revision" not in columns:
-                self._conn.execute(
-                    "ALTER TABLE conversation_instances ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0"
-                )
-            self._conn.execute(
-                "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(1,?)", (_now(),)
-            )
-            self._conn.commit()
+            run_migrations(self._conn)
 
     def _workflow(self, cx: sqlite3.Connection, workflow_id: str) -> sqlite3.Row:
         row = cx.execute("SELECT * FROM workflows WHERE id=?", (workflow_id,)).fetchone()

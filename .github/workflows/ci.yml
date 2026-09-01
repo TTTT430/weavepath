@@ -20,7 +20,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
       - run: python -m pip install -e "./backend[test]"
       - run: python -m pytest backend/tests
-      - run: python -m compileall -q backend/api backend/graph_core
+      - run: python -m compileall -q backend/api backend/agent_runtime backend/graph_core
 
   frontend:
     runs-on: ubuntu-latest

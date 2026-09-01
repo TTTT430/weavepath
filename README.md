@@ -18,7 +18,15 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 - `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
 - 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
 
-当前仓库已有 SQLite `GraphStore`、FastAPI `/api/v1` 路由和可运行的 React 工作台。自动验证包括后端、前端测试与 production build；手工真实浏览器验收已覆盖创建工作流、发送消息、从非当前节点创建分支、跨窗口广播刷新、同 topic 多路线选择、路线隔离、中英文切换、模型设置入口、固定聊天布局、安全 Markdown/GFM 渲染、节点本地记录与继承记忆分离，以及双击节点后单次 activate 与非空草稿保持。第一版 OpenAI-compatible 同步 AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止，已有子节点继续使用编辑前的冻结 checkpoint。SSE、migration runner、自动化浏览器 E2E 和正式 adapter 层仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
+当前仓库已有 SQLite `GraphStore`、schema v3 启动迁移、FastAPI `/api/v1` 路由和可运行的 React 工作台。既有 Local Graph Chat 验收已覆盖创建工作流、发送消息、从非当前节点创建分支、跨窗口广播刷新、同 topic 多路线选择、路线隔离、中英文切换、模型设置入口、固定聊天布局、安全 Markdown/GFM 渲染、节点本地记录与继承记忆分离，以及双击节点后单次 activate 与非空草稿保持。第一版 OpenAI-compatible 同步 AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止，已有子节点继续使用编辑前的冻结 checkpoint。SSE、自动化浏览器 E2E、migration rollback/发布策略和正式 host adapter 层仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
+
+### Route-to-Agent Run v1（本机预览已验证）
+
+仓库已完成第一个从具体对话路线启动 Agent Run 的窄纵向切片本机验证。该能力定位为 **Verified local synchronous durable preview**：用户确认 execution brief 后，系统从一个具体实例冻结路线上下文，记录持久化 event journal，并通过已配置的 OpenAI-compatible provider 调用唯一注册工具 `safe_calculator` / `1.0.0`；界面提供 run dialog 和 timeline。`ScriptedMockAgentAdapter` 只用于确定性测试，不是用户可选择的生产 provider。
+
+该 preview 当前是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。官方 app factory 已用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；跨进程 run owner/lease 仍属于后续运行时硬化范围。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
+
+2026-09-01 的本机记录包括 86 项后端测试、47 项前端测试、Python compileall、TypeScript/production build，以及一条真实浏览器 E2E：受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。该结论只表示窄范围本机 preview 已验证，不表示完整 Agent Runtime 或 Phase 1/Phase 2 已完成。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。SSE、取消、任意 shell/文件/网络工具、artifacts、evaluation、多 Agent，以及正式 Codex/Claude adapter 均未包含在此切片中。
 
 ## 产品边界
 
@@ -142,13 +150,13 @@ Pop-Location
 
 ```powershell
 cd backend
-uvicorn api.app:app --reload --host 127.0.0.1 --port 8000
+uvicorn api.app:create_app --factory --reload --host 127.0.0.1 --port 8000
 
 # 后端测试
 pytest
 ```
 
-新安装的默认数据库位于 `%LOCALAPPDATA%\WeavePath\data\workspace.db`；可用 `WEAVEPATH_DATA_DIR` 指定数据目录，或用 `WEAVEPATH_DB` 直接指定数据库文件。若新路径尚无数据库，程序会原地复用旧版 `CoThinker Workspace` 数据库，不复制、不重命名、不删除；旧 `COTHINKER_*` 环境变量也继续兼容。受限 sandbox 无法写用户数据目录时会降级到系统临时目录，不会在源码目录创建新数据库。当前 schema version 为 1，显式 migration runner 尚未实现。
+新安装的默认数据库位于 `%LOCALAPPDATA%\WeavePath\data\workspace.db`；可用 `WEAVEPATH_DATA_DIR` 指定数据目录，或用 `WEAVEPATH_DB` 直接指定数据库文件。若新路径尚无数据库，程序会原地复用旧版 `CoThinker Workspace` 数据库，不复制、不重命名、不删除；旧 `COTHINKER_*` 环境变量也继续兼容。受限 sandbox 无法写用户数据目录时会降级到系统临时目录，不会在源码目录创建新数据库。当前 health/SQLite schema version 为 3；graph snapshot 与 legacy manifest 协议仍为 schema v1。`GraphStore` 启动时运行记录在 `schema_migrations` 中的前向迁移。自动 downgrade、rollback 和发布级备份恢复流程仍未实现。
 
 在另一个 PowerShell 手动启动前端：
 
@@ -203,6 +211,7 @@ $env:WEAVEPATH_LLM_TIMEOUT = "60"
 - [开发状态](docs/development-status.md)
 - [Agent 工程路线图](docs/agent-engineering-roadmap.md)
 - [Codex 对话交互借鉴路线](docs/codex-interaction-roadmap.md)
+- [Route-to-Agent Run v1 契约与本机验收记录](docs/route-to-agent-run-v1.md)
 - [ADR-0001：全局 SQLite 为长期真源](docs/adr/0001-global-sqlite-source-of-truth.md)
 - [ADR-0002：同 topic 使用多个路线实例](docs/adr/0002-topic-route-instances.md)
 - [ADR-0003：HostAdapter 与 operation saga](docs/adr/0003-host-adapter-operation-saga.md)
@@ -218,23 +227,25 @@ $env:WEAVEPATH_LLM_TIMEOUT = "60"
 当前实际布局是：
 
 ```text
-apps/web/                     可运行的 React chat + 独立 graph 窗口
-backend/graph_core/           SQLite GraphStore、route checkpoint 与 revision
-backend/api/                  FastAPI `api.app:app` 与 schemaVersion 1 API
-backend/tests/                graph-core、API、AI 设置/路线与数据路径测试（42 项）
+apps/web/                     可运行的 React chat、graph 窗口与 Agent Run 面板
+backend/graph_core/           SQLite GraphStore、schema v3 migrations、route checkpoint 与 revision
+backend/agent_runtime/        Agent Run、event journal、OpenAI-compatible adapter 与安全工具注册表
+backend/api/                  FastAPI `api.app:create_app` factory 与 schemaVersion 3 API
+backend/tests/                graph-core、API、AI 设置/路线、迁移与 Agent Runtime 测试
 backend/pyproject.toml        Python 项目与测试依赖
 docs/                         Phase 0 文档与 Phase 1 验收说明
 scripts/dev.ps1               同时启动 API:8000 与 Web:5173
 scripts/check.ps1             后端/前端统一验证入口
 ```
 
-Phase 1 沿用当前扁平 Python 包布局，与 `pyproject.toml` 的 `include = ["graph_core*", "api*"]` 保持一致：
+当前沿用扁平 Python 包布局，与 `pyproject.toml` 的 `include = ["graph_core*", "api*", "agent_runtime*"]` 保持一致：
 
 ```text
 backend/graph_core/              纯领域实体、命令、查询、不变量
 backend/api/                     FastAPI、application services、ports/adapters
+backend/agent_runtime/           durable run repository/service、model port 与 tool registry
 backend/tests/                   领域、API 和 adapter contract 测试
-apps/web/src/                    React chat + workflow/model settings（27 项测试）
+apps/web/src/                    React chat + workflow/model settings + Agent Run UI
 ```
 
 以下是模块增长后的**目标布局**，不是当前已存在的目录：

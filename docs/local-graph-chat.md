@@ -14,7 +14,7 @@
 
 目标是在不依赖宿主私有能力的情况下，完整验证图、路线记忆和独立窗口。
 
-当前已落地图存储、核心 HTTP API、可运行 React chat/graph 页面、独立浏览器窗口、OpenAI-compatible 同步 AI adapter 和网页模型设置。后端、前端测试及 production build 已通过；手工真实浏览器验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。同步 AI 请求具有“正在思考”与本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。自动化浏览器 E2E 与标准 popup 自动关闭仍待复验；SSE、停止生成和 metabolize 尚未实现。
+当前已落地图存储、核心 HTTP API、可运行 React chat/graph 页面、独立浏览器窗口、OpenAI-compatible 同步 AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。同步 AI 请求具有“正在思考”与本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；SSE、停止生成和 metabolize 尚未实现。
 
 日常启动与验证分别使用根目录的 `scripts/dev.ps1` 和 `scripts/check.ps1`；前者固定 API 端口 8000，Web 默认端口 5173。
 
@@ -32,14 +32,18 @@ POST /api/v1/workflows/{workflowId}/instances/{id}/prune-commit
 GET  /api/v1/ai/status
 POST /api/v1/workflows/{workflowId}/instances/{id}/chat       # synchronous
 POST /api/v1/workflows/{workflowId}/instances/{id}/messages/{messageId}/regenerate
+POST /api/v1/workflows/{workflowId}/instances/{id}/runs       # verified local preview, synchronous
+GET  /api/v1/workflows/{workflowId}/instances/{id}/runs       # preview list
+GET  /api/v1/runs/{runId}                                     # preview global-ID detail
+GET  /api/v1/runs/{runId}/events                              # preview paged journal
 POST /api/v1/chat/stream                                      # planned SSE
 WS   /api/v1/events                                           # planned
 ```
 
 实现范围：
 
-- FastAPI、React、schemaVersion 1 SQLite schema；显式 migrations 尚未完成；
-- StandaloneAdapter 与 OpenAI-compatible LLM port；
+- FastAPI、React、schemaVersion 3 SQLite schema 与启动时前向 migrations；rollback/downgrade 尚未完成；
+- GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port 已实现，正式 Standalone HostAdapter 尚未拆出；
 - workflow、topic、instance、checkpoint、local message、tombstone；
 - 从 Co-Thinker 复用 SSE 与中断保护（planned）；
 - 从 v4 widget 提取正交布局、route chooser 和中英文界面；
@@ -50,7 +54,7 @@ WS   /api/v1/events                                           # planned
 建议实现顺序：
 
 1. `backend/graph_core`：实体、不变量、in-memory repository 和纯领域测试。
-2. `backend/api`：SQLite migration、repositories、Standalone/Mock adapter、command/query service。
+2. `backend/api`：SQLite repositories、Standalone command/query service；`backend/agent_runtime` 承载已验证本机 preview 的 run repository/service、model port 与 tool registry。
 3. FastAPI：health、workflow/fork/activate/prune API 和统一错误结构。
 4. `apps/web`：聊天页与图窗口的最小 React 入口。
 5. 浏览器事件完成当前窗口同步；同步 LLM adapter 已落地，后续加入 SSE，只有服务端事件确有需要时再加入 WebSocket。
@@ -79,36 +83,24 @@ A
 9. 服务重启后图、消息、checkpoint 和 tombstone 完整恢复。**持久化基础已实现，完整重启 E2E 仍待单独记录。**
 10. 中英文只改变 UI chrome，不改变 workflow、topic、节点名称和消息。**自动测试与手工真实浏览器验收已覆盖。**
 11. 后台摘要迟到时不能写入错误 instance 或改变 graph revision。**Planned：metabolize 尚未实现。**
-12. E2E 测试不依赖 Codex/Claude，MockAdapter 可复现失败和重试。
+12. E2E 测试不依赖 Codex/Claude；Agent Runtime 使用测试专用 `ScriptedMockAgentAdapter` 复现 model turns，正式 HostAdapter mock 仍是后续工作。
 
-## Phase 2：Route Memory
+## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
+
+Route-to-Agent Run v1 已验证同步 durable run 的第一条窄链路。它不改变 Phase 1 的图与 checkpoint 不变量：run 必须绑定一个 active instance，并按接受的 `contentRevision` 冻结该路线的 effective messages。
+
+这个 **Verified local preview** 包括 execution brief、持久化 run/step/event/tool journal、唯一安全工具 `safe_calculator` / `1.0.0`、生产 OpenAI-compatible adapter、测试专用 `ScriptedMockAgentAdapter`，以及 run dialog/timeline。API 合同和逐项本机验收记录以 [Route-to-Agent Run v1](route-to-agent-run-v1.md) 为准。
+
+这个切片没有 SSE、取消、任意 shell/文件/网络工具、artifacts、evaluation、多 Agent，也没有正式 Codex/Claude adapter。
+
+## Phase 3：Route-aware Memory 与 Context Engineering
 
 - 移植 foundation、judge、brief。
 - route digest、context budget 和显式 cross-route transfer。
 - 后台自动更新摘要，AI 只建议分支。
 
-当前同步 LLM adapter 只是 Local AI Chat 的第一条链路。Phase 2 才会补齐 route digest、metabolize、judge 和 brief；在此之前不得宣称已有完整 Co-Thinker thinker/metabolize 能力。
+当前同步 Local Chat 与 Agent Run frozen context 都不是完整的 Route Memory。Phase 3 才会补齐 route digest、metabolize、judge、context budget 和可审计 transfer；在此之前不得宣称已有完整 Co-Thinker thinker/metabolize 能力。
 
-## Phase 3：Codex Adapter
+## 后续阶段
 
-- 将 legacy v4 迁到 Core Service HostAdapter。
-- 导入 manifest v1。
-- 验证真实 fork、navigate、inspect、archive、rollback/orphan recovery。
-- Codex widget 保留为快速入口，独立窗口由 companion app 提供。
-- 在此之前 `conversation-workflow-bridge-v4` 保持 legacy frozen，不承担全局 DB 写入。
-
-## Phase 4：Desktop Companion
-
-- 单实例、loopback token、本地启动发现。
-- Tauri/Electron 复用同一 React/API。
-- 任务栏入口和聚焦指定 workflow。
-
-## Phase 5：Claude Adapter
-
-- capability-aware Claude Code 接入。
-- 不支持的原生动作明确降级到 companion app。
-
-## Phase 6：扩展模块
-
-- Artifacts、Experiments、Handoff、Search、Templates、Automation。
-- 本地单用户模型稳定后再评估 Cloud/Collaboration。
+长期阶段编号只以 [Agent 工程路线图](agent-engineering-roadmap.md) 为准：Phase 4 streaming/cancellation/retry，Phase 5 evaluation，Phase 6 observability，Phase 7 artifacts，Phase 8 multi-agent，Phase 9 Codex/Claude adapters，Phase 10 automation，Phase 11 security/packaging/deployment。Desktop companion 是 Phase 11 packaging 的一部分，不另造一套领域状态。

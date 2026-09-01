@@ -33,7 +33,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $webRoot "node_modules"))) {
 }
 
 $api = Start-Process -FilePath $Python `
-  -ArgumentList @("-m", "uvicorn", "api.app:app", "--host", "127.0.0.1", "--port", "$ApiPort") `
+  -ArgumentList @("-m", "uvicorn", "api.app:create_app", "--factory", "--host", "127.0.0.1", "--port", "$ApiPort") `
   -WorkingDirectory $backendRoot -PassThru -WindowStyle Hidden
 
 $web = Start-Process -FilePath "npm.cmd" `

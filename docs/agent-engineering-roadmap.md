@@ -21,7 +21,9 @@ The current **Conversation Workflow / Local Graph Chat** implementation is the P
 - separation between inherited checkpoint memory and messages written locally to the selected node;
 - revision-aware editing and regeneration of the latest local user message.
 
-Phase 1 is **not complete**. Streaming generation, cancellation, retry-without-edit, formal migrations, a stable adapter layer, and production deployment controls remain future work. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
+Phase 1 is **not complete**. A schema v3 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
+
+A **Verified local preview** named **Route-to-Agent Run v1** now exercises one bounded synchronous run from a frozen concrete-route context, with an execution brief, durable event journal, `safe_calculator` / `1.0.0`, the configured OpenAI-compatible production adapter, a test-only scripted mock, revision/idempotency/interruption safeguards, and a web run dialog/timeline. The recorded evidence is in [Route-to-Agent Run v1](route-to-agent-run-v1.md). This narrow preview does not make Phase 1 or Phase 2 complete.
 
 ## Guiding principles
 
@@ -81,7 +83,7 @@ Deliver a reliable standalone route-aware conversation graph before expanding in
 
 **Current capabilities** are listed in “What exists today.” Remaining work includes:
 
-- explicit SQLite migrations and upgrade/rollback testing;
+- hardening the existing schema v3 forward migrations with upgrade matrices, backup/recovery, and rollback/downgrade policy;
 - completion of restart, archive, conflict, and popup lifecycle E2E coverage;
 - stable command/query application services and adapter contracts;
 - clearer recovery for partially completed operations;
@@ -98,6 +100,8 @@ Deliver a reliable standalone route-aware conversation graph before expanding in
 ### Phase 2 — Agent runtime and tool registry
 
 Introduce a host-neutral runtime for executing an agent turn as a durable run rather than a single opaque HTTP request.
+
+**Verified local preview:** Route-to-Agent Run v1 exercises a synchronous subset of this phase with one registered tool (`safe_calculator` / `1.0.0`), the configured OpenAI-compatible production adapter, and a test-only `ScriptedMockAgentAdapter`. The recorded local test and browser evidence validates this first durable run boundary; it does not complete Phase 2 or imply streaming, cancellation, arbitrary shell/file/network tools, approvals, artifacts, evaluation, multi-agent behavior, or formal Codex/Claude adapters.
 
 **Scope**
 
@@ -315,6 +319,7 @@ Public releases should use the following labels:
 
 - **Available:** implemented, documented, and covered by automated or recorded acceptance evidence.
 - **Preview:** usable end to end but with documented limits or migration risk.
+- **Verified local preview:** exercised end to end on the recorded local environment, with its unsupported production and platform boundaries stated explicitly.
 - **Planned:** designed or scheduled but not available to users.
 - **Exploratory:** under evaluation with no compatibility commitment.
 

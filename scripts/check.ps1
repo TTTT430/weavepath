@@ -30,7 +30,7 @@ Push-Location $backendRoot
 try {
   & $Python -m pytest
   if ($LASTEXITCODE -ne 0) { throw "Backend tests failed." }
-  & $Python -m compileall -q api graph_core tests
+  & $Python -m compileall -q api agent_runtime graph_core tests
   if ($LASTEXITCODE -ne 0) { throw "Backend compile check failed." }
 }
 finally {

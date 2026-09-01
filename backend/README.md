@@ -4,9 +4,30 @@ Python 3.12 graph core and FastAPI API for route-aware conversation workflows.
 
 ```powershell
 python -m pip install -e ".[test]"
-uvicorn api.app:app --reload
+uvicorn api.app:create_app --factory --reload
 python -m pytest
 ```
+
+The API uses Uvicorn's application-factory mode. Importing `api.app` only
+defines the factory and does not open or create the default SQLite database;
+the database is opened when Uvicorn calls `create_app` during server startup.
+The official factory path takes a non-blocking operating-system lock beside the
+selected database before `GraphStore` opens it. This serializes schema migration
+and startup Run recovery, is released by normal lifespan shutdown or an OS
+process exit, and leaves the harmless lock file in place. A second backend for
+the same database exits with `databaseInstanceAlreadyRunning` instead of
+recovering the first process's active Runs. Uvicorn's `--reload` supervisor only
+imports the factory module; its serving child owns the lock.
+
+Route-to-Agent Run v1 still supports only one local API process, so do not add a
+Uvicorn `--workers` value greater than one. Cross-process Run owner/lease and
+worker coordination remain future work. Passing an existing `GraphStore` to
+`create_app` is an explicit dependency-injection/testing path and intentionally
+does not take this lock. The lock-free `open_default_store()` helper is likewise
+for one-shot callers, not an alternative production server entry point.
+Every server instance must use the same canonical `WEAVEPATH_DB` spelling;
+hard-link, mapped-drive, or UNC aliases for one SQLite file can produce distinct
+sidecar paths and are outside the v1 lock guarantee.
 
 The SQLite database defaults to `%LOCALAPPDATA%/WeavePath/data/workspace.db` on
 Windows, `$XDG_DATA_HOME/weavepath/data/workspace.db` when XDG data is configured,

@@ -21,9 +21,8 @@ test = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["graph_core*", "api*"]
+include = ["graph_core*", "api*", "agent_runtime*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-asyncio_default_fixture_loop_scope = "function"

@@ -1,6 +1,6 @@
 # 总体架构与领域模型
 
-本文主要描述目标架构。当前 Phase 1 已建立 SQLite GraphStore、FastAPI 路由、可运行 React chat/graph 页面和最小 OpenAI-compatible 同步 LLM adapter；正式 application ports/adapters、SSE、服务端事件流和 migration runner 仍是目标结构。当前两个同源浏览器窗口通过 `BroadcastChannel + postMessage` 同步 activate，不使用 WebSocket。
+本文主要描述目标架构。当前 Phase 1 已建立 SQLite GraphStore、schema v3 前向迁移、FastAPI 路由、可运行 React chat/graph 页面和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。Route-to-Agent Run v1 已完成窄范围 **Verified local preview** 验收，但不等于完整 Agent Runtime 或阶段完成。当前两个同源浏览器窗口通过 `BroadcastChannel + postMessage` 同步 activate，不使用 WebSocket。
 
 ## 分层
 
@@ -21,6 +21,7 @@ UI 只持有临时 selection、zoom、language 等展示状态。结构真相必
 - Host operation saga：协调 SQLite 与不可事务化的宿主副作用。
 - Event service（目标）：未来按需要通过 WebSocket 发布 `graph.changed`、`instance.activated`、`checkpoint.ready`；当前浏览器窗口仅用 browser events 同步 activate。
 - Context builder：只沿选定祖先路线构建上下文。
+- Agent Runtime service（本机预览）：从具体 instance 冻结有效路线消息和 execution brief，驱动同步 model/tool loop，并把 run、step、event、tool call/result 和最终答案写入 SQLite。
 
 ### graph-core
 
@@ -53,6 +54,7 @@ MemorySummarizer
 EventPublisher
 CredentialStore
 Clock / IdGenerator
+AgentModelPort / ToolRegistry
 ```
 
 ## 路线实例模型
@@ -134,6 +136,21 @@ D1 和 D2 可以在 UI 中聚合显示为一个 D，并提供两条路线选择�
 - 后台 metabolize 以 `instance_id + expected_content_revision/checkpoint_id` 提交，禁止把迟到结果写到新的路线状态。
 - 外部命令要求 `idempotency_key`。
 
+## Route-to-Agent Run v1 本机预览
+
+当前物理包是 `backend/agent_runtime/`，通过 `backend/api/app.py` 暴露同步 HTTP 入口。该窄切片已完成本机自动化与浏览器 E2E 验证，但它不是完整的长期 Agent Runtime，也没有生产部署保证。
+
+- 一个 run 绑定一个 `workflow_id + instance_id + input_content_revision`。
+- frozen context 保存该具体路线的 `memoryRoute`、当次 `availableTools`、有效消息和 execution brief；兄弟路线不参与组装。
+- 模型元数据通过 allowlist 后持久化，API key/token 不进入 model snapshot。
+- 生产路径使用用户已配置的 OpenAI-compatible provider；`ScriptedMockAgentAdapter` 只通过测试注入。
+- 当前唯一工具是 `safe_calculator` / `1.0.0`，无 shell、文件系统或网络能力。
+- 同步请求最多执行有限轮 model/tool loop；无后台队列、SSE、取消或 resume。
+- completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
+- 启动时遗留的 `queued` / `running` run 转为 `interrupted`，不会自动继续执行。
+
+当前 schema v3 的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
+
 ## HostAdapter 能力协议
 
 ```python
@@ -166,7 +183,7 @@ UI 根据 capability 显示动作。缺失导航能力时打开 companion app，
 - StandaloneAdapter：Core Service 持有消息；从 checkpoint 创建本地子会话。
 - CodexAdapter：从 legacy v4 的 metadata、`callHostTool` 和验证逻辑演化；默认只保存 task binding 和图元数据。
 - ClaudeAdapter：只实现公开能力；无法原生导航时返回明确降级结果。
-- MockAdapter：用于 saga、revision 和错误恢复的确定性测试。
+- Host MockAdapter（目标）：用于 host saga、revision 和错误恢复的确定性测试；不要与当前 Agent Runtime 的测试专用 `ScriptedMockAgentAdapter` 混为生产 adapter。
 
 适配器不能决定 parent/topic/prune 语义，也不能绕过 graph-core 直接改数据库。
 
