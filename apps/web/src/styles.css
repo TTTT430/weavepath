@@ -691,6 +691,10 @@ html[data-appearance="light"] .composer:focus-within { border-color: #6d95d0; bo
 html[data-appearance="light"] .composer textarea { color: var(--h-text); }
 html[data-appearance="light"] .canvas-stack,
 html[data-appearance="light"] .graph-canvas { background: #f3f6fa; }
+html[data-appearance="light"] .canvas-stack .react-flow__background pattern path { stroke: #d8e0eb; }
+html[data-appearance="light"] .canvas-stack .react-flow__minimap { background: #fff; border-color: #cbd6e3; box-shadow: 0 6px 18px #52647a1a; }
+html[data-appearance="light"] .canvas-stack .react-flow__minimap-mask { fill: #edf2f8b8; }
+html[data-appearance="light"] .canvas-stack .react-flow__minimap-node { fill: #9eb8dc; stroke: #6f91c1; }
 html[data-appearance="light"] .canvas-inspector,
 html[data-appearance="light"] .inspector { color: var(--h-text); background: #fff; border-color: var(--h-border); }
 html[data-appearance="light"] .flow-node,
@@ -852,6 +856,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .canvas-stack .react-flow__controls-button { color: var(--h-muted); background: #171c25; border-bottom-color: var(--h-border); fill: currentColor; }
 .canvas-stack .react-flow__edge-path { stroke: #60718a; }
 .canvas-stack .react-flow__handle { background: #7da9ed; border-color: #0d1117; }
+.canvas-stack .react-flow__background pattern path { stroke: #252e3d; }
+.canvas-stack .react-flow__minimap { overflow: hidden; background: #171c25; border: 1px solid #303a49; border-radius: 10px; box-shadow: 0 8px 22px #00000038; }
+.canvas-stack .react-flow__minimap-mask { fill: #0d1117b8; }
+.canvas-stack .react-flow__minimap-node { fill: #5d78a0; stroke: #89a9dc; }
+.canvas-stack .react-flow__attribution { display: none; }
 .flow-node, .turn-node {
   color: var(--h-text);
   background: #171c25;
