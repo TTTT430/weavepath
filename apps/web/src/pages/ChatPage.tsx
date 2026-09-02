@@ -257,12 +257,19 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  async function retryAnswer(){
   const failed=failedReply.current,workflow=graph?.workflowId,instance=activeRouteId;
   if(!failed||failed.owner!==owner||!workflow||!instance)return;
-  const latest=[...messages].reverse().find(item=>item.role==='user'&&!item.inherited&&item.content===failed.content);
-  if(!latest)return;
-  const targetOwner=`${workflow}:${instance}`,expected=nodeRevision;
+  const targetOwner=`${workflow}:${instance}`;
   if(!lockRoute(targetOwner))return;
   setReply({owner:targetOwner,state:'thinking',error:''});setStreamingText('');
   try{
+   // Refresh first: a failed stream may have durably appended the user
+   // message after the optimistic snapshot was rendered. Using the stale
+   // revision makes the retry look like a no-op (the API correctly returns
+   // 409), so always derive the anchor from the current route projection.
+   await refreshRouteMessages(workflow,instance,0,true);
+   const refreshed=snapshotRef.current;
+   const latest=[...refreshed.messages].reverse().find(item=>item.role==='user'&&!item.inherited&&item.content===failed.content);
+   if(!latest)throw new ApiError(t('aiGenericError'),409,'contentConflict');
+   const expected=refreshed.contentRevision;
    const value=await api.regenerate(workflow,instance,latest.id,failed.content,expected);
    const generation=nextSnapshotGeneration(targetOwner);applySnapshot(targetOwner,value,generation,expected,true);
    failedReply.current=null;
