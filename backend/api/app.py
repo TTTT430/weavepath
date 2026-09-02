@@ -571,6 +571,14 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         key = body.idempotency_key.strip() if body.idempotency_key else None
         return key, f"{workflow_id}:{instance_id}:{key or ''}:{body.content}"
 
+    def _body_with_header_key(request: Request, body: ChatInput) -> ChatInput:
+        if body.idempotency_key:
+            return body
+        header = request.headers.get("Idempotency-Key", "").strip()
+        if len(header) > 200:
+            raise Validation("idempotencyKey must be at most 200 characters")
+        return body.model_copy(update={"idempotency_key": header}) if header else body
+
     def _chat_begin(workflow_id: str, instance_id: str, body: ChatInput) -> tuple[str | None, str, Event | None, dict[str, object] | None]:
         key, signature = _chat_identity(workflow_id, instance_id, body)
         if key is None:
@@ -675,6 +683,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat")
     def chat(request: Request, workflow_id: str, instance_id: str, body: ChatInput):
+        body = _body_with_header_key(request, body)
         if "text/event-stream" in request.headers.get("accept", ""):
             return _stream_chat(workflow_id, instance_id, body)
         if not llm.status()["configured"]:
@@ -695,8 +704,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             raise
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat/stream")
-    def chat_stream(workflow_id: str, instance_id: str, body: ChatInput):
-        return _stream_chat(workflow_id, instance_id, body)
+    def chat_stream(request: Request, workflow_id: str, instance_id: str, body: ChatInput):
+        return _stream_chat(workflow_id, instance_id, _body_with_header_key(request, body))
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat/{request_id}/cancel")
     def cancel_chat(workflow_id: str, instance_id: str, request_id: str):
