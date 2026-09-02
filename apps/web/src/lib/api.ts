@@ -1,4 +1,4 @@
-import type {AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentToolSpec,ApiErrorPayload,Artifact,BranchComparison,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,Route,TurnCanvasSnapshot,WorkflowSummary} from '../domain/types';
+import type {AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentToolSpec,ApiErrorPayload,Artifact,BranchComparison,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,Route,TurnCanvasSnapshot,WorkflowSummary} from '../domain/types';
 const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number){super(message);this.name='ApiError'}
@@ -20,6 +20,8 @@ export const api={
  graph:(w:string)=>request<Graph>(`/workflows/${enc(w)}/graph`),
  messages:(w:string,i:string,scope:'local'|'effective'='local')=>request<{messages:Message[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`).then(x=>x.messages),
  messageSnapshot:(w:string,i:string,scope:'local'|'effective'='local')=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`),
+ contextPreview:(w:string,i:string,maxChars=120000)=>request<ContextPreview>(`/workflows/${enc(w)}/instances/${enc(i)}/context-preview?maxChars=${maxChars}`),
+ hostCapabilities:()=>request<{adapter:string;capabilities:Record<string,unknown>}>('/host/capabilities'),
  turns:(w:string,i:string)=>request<TurnCanvasSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/turn-tree`),
  regenerate:(w:string,i:string,messageId:string|number,content:string,expectedRevision:number)=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages/${enc(String(messageId))}/regenerate`,{method:'POST',body:JSON.stringify({content,expectedRevision})}),
  send:(w:string,i:string,content:string)=>request<Message>(`/workflows/${enc(w)}/instances/${enc(i)}/messages`,{method:'POST',body:JSON.stringify({role:'user',content})}),

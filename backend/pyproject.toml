@@ -20,11 +20,11 @@ test = [
 ]
 
 [tool.setuptools]
-py-modules = ["engineering"]
+py-modules = ["engineering", "runtime_events"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["graph_core*", "api*", "agent_runtime*"]
+include = ["graph_core*", "api*", "agent_runtime*", "host_adapters*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

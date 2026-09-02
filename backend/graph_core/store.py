@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import threading
 import uuid
@@ -38,6 +39,10 @@ def _now() -> str:
 
 def _loads(value: str | None, default: Any) -> Any:
     return json.loads(value) if value else default
+
+
+def _stable_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _prompt_branch_title(initial_message: str | None) -> str | None:
@@ -261,6 +266,170 @@ class GraphStore:
                     "contentRevision": instance["content_revision"],
                     "eventRevision": wf["content_revision"],
                     "messages": messages}
+
+    def context_preview(self, workflow_id: str, instance_id: str,
+                        *, max_chars: int = 120_000) -> dict[str, Any]:
+        """Return a read-only, provenance-aware projection of one route's context.
+
+        The projection is assembled from the live parent chain, exactly like
+        ``list_messages(scope='effective')``. Checkpoint snapshots are exposed
+        only as audit metadata; they never become the source of runtime memory.
+        """
+        if max_chars < 1:
+            raise Validation("max_chars must be positive")
+        with self._lock:
+            instance = self._instance(self._conn, workflow_id, instance_id, active=True)
+            wf = self._workflow(self._conn, workflow_id)
+            route_ids = self._route_ids(self._conn, workflow_id, instance_id)
+            route: list[dict[str, Any]] = []
+            messages: list[dict[str, Any]] = []
+            for route_id in route_ids:
+                row = self._instance(self._conn, workflow_id, route_id)
+                route.append({"instanceId": route_id, "topicId": row["topic_id"],
+                              "title": row["title"], "contentRevision": row["content_revision"],
+                              "source": "current" if route_id == instance_id else "inherited"})
+                for message in self._local_messages(self._conn, route_id):
+                    messages.append({**message, "sourceInstanceId": route_id,
+                                     "sourceTitle": row["title"],
+                                     "inherited": route_id != instance_id})
+            checkpoint = self._conn.execute(
+                "SELECT source_instance_id,source_content_revision,source_cursor_kind,"
+                "source_cursor_value,messages_json,created_at FROM checkpoints WHERE id=?",
+                (instance["checkpoint_id"],),
+            ).fetchone()
+            checkpoint_meta = None
+            if checkpoint:
+                snapshot = _loads(checkpoint["messages_json"], [])
+                checkpoint_meta = {
+                    "checkpointId": instance["checkpoint_id"],
+                    "sourceInstanceId": checkpoint["source_instance_id"],
+                    "sourceContentRevision": checkpoint["source_content_revision"],
+                    "cursorKind": checkpoint["source_cursor_kind"],
+                    "cursorValue": checkpoint["source_cursor_value"],
+                    "snapshotMessageCount": len(snapshot) if isinstance(snapshot, list) else 0,
+                    "createdAt": checkpoint["created_at"],
+                    "usedForRuntimeContext": False,
+                }
+            serialized = _stable_json(messages)
+            truncated = len(serialized) > max_chars
+            if truncated:
+                # Keep message boundaries intact when possible and make the
+                # limit explicit to clients rather than silently clipping JSON.
+                kept: list[dict[str, Any]] = []
+                size = 2
+                for message in messages:
+                    cost = len(_stable_json(message)) + (1 if kept else 0)
+                    if kept and size + cost > max_chars:
+                        break
+                    kept.append(message)
+                    size += cost
+                messages = kept
+            content_digest = hashlib.sha256(_stable_json(messages).encode("utf-8")).hexdigest()
+            return {
+                "workflowId": workflow_id,
+                "instanceId": instance_id,
+                "memoryRoute": route,
+                "messages": messages,
+                "messageCount": len(messages),
+                "inheritedMessageCount": sum(1 for message in messages if message["inherited"]),
+                "localMessageCount": sum(1 for message in messages if not message["inherited"]),
+                "contentRevision": instance["content_revision"],
+                "eventRevision": wf["content_revision"],
+                "contextSha256": content_digest,
+                "estimatedCharacters": sum(len(str(message.get("content", ""))) for message in messages),
+                "estimatedTokens": max(1, round(sum(len(str(message.get("content", ""))) for message in messages) / 4)) if messages else 0,
+                "truncated": truncated,
+                "checkpoint": checkpoint_meta,
+            }
+
+    def recover_chat_requests(self) -> int:
+        """Mark requests left mid-stream by a crashed process as retryable."""
+        with self.tx() as cx:
+            now = _now()
+            changed = cx.execute(
+                "UPDATE chat_requests SET status='failed',error_code='chatInterrupted',"
+                "updated_at=?,completed_at=? WHERE status='started'",
+                (now, now),
+            ).rowcount
+        return changed
+
+    def begin_chat_request(self, workflow_id: str, instance_id: str,
+                           idempotency_key: str, request: dict[str, Any],
+                           signature: str) -> dict[str, Any]:
+        """Durably claim an idempotent chat request.
+
+        Failed/cancelled requests may be retried with the same key. The
+        recorded user message is reused so a restart cannot duplicate it.
+        """
+        if not idempotency_key.strip():
+            raise Validation("idempotencyKey must not be blank")
+        request_json = _stable_json(request)
+        request_sha = hashlib.sha256(request_json.encode("utf-8")).hexdigest()
+        with self.tx() as cx:
+            self._instance(cx, workflow_id, instance_id, active=True)
+            row = cx.execute(
+                "SELECT * FROM chat_requests WHERE workflow_id=? AND instance_id=? AND idempotency_key=?",
+                (workflow_id, instance_id, idempotency_key),
+            ).fetchone()
+            if row:
+                if row["request_sha256"] != request_sha or row["request_json"] != request_json:
+                    raise Conflict("idempotencyKey was already used with different content")
+                if row["status"] == "completed":
+                    return {"state": "completed", "result": _loads(row["result_json"], None)}
+                if row["status"] == "started":
+                    return {"state": "started", "userMessageId": row["user_message_id"]}
+                now = _now()
+                cx.execute(
+                    "UPDATE chat_requests SET status='started',error_code=NULL,result_json=NULL,"
+                    "assistant_message_id=NULL,updated_at=?,completed_at=NULL WHERE workflow_id=? AND instance_id=? AND idempotency_key=?",
+                    (now, workflow_id, instance_id, idempotency_key),
+                )
+                return {"state": "retry", "userMessageId": row["user_message_id"]}
+            now = _now()
+            cx.execute(
+                "INSERT INTO chat_requests(workflow_id,instance_id,idempotency_key,request_json,"
+                "request_sha256,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                (workflow_id, instance_id, idempotency_key, request_json, request_sha,
+                 "started", now, now),
+            )
+            return {"state": "new", "userMessageId": None}
+
+    def record_chat_user_message(self, workflow_id: str, instance_id: str,
+                                 idempotency_key: str, message_id: int) -> None:
+        with self.tx() as cx:
+            changed = cx.execute(
+                "UPDATE chat_requests SET user_message_id=?,updated_at=? "
+                "WHERE workflow_id=? AND instance_id=? AND idempotency_key=? AND status='started'",
+                (message_id, _now(), workflow_id, instance_id, idempotency_key),
+            ).rowcount
+            if changed != 1:
+                raise Conflict("chat request is no longer active")
+
+    def complete_chat_request(self, workflow_id: str, instance_id: str,
+                              idempotency_key: str, result: dict[str, Any]) -> None:
+        user = result.get("userMessage") or {}
+        assistant = result.get("assistantMessage") or {}
+        with self.tx() as cx:
+            changed = cx.execute(
+                "UPDATE chat_requests SET status='completed',user_message_id=?,assistant_message_id=?,"
+                "result_json=?,error_code=NULL,updated_at=?,completed_at=? "
+                "WHERE workflow_id=? AND instance_id=? AND idempotency_key=? AND status='started'",
+                (user.get("id"), assistant.get("id"), _stable_json(result), _now(), _now(),
+                 workflow_id, instance_id, idempotency_key),
+            ).rowcount
+            if changed != 1:
+                raise Conflict("chat request is no longer active")
+
+    def finish_chat_request(self, workflow_id: str, instance_id: str,
+                            idempotency_key: str, status: str, error_code: str | None = None) -> None:
+        if status not in {"failed", "cancelled"}:
+            raise Validation("chat request terminal status is invalid")
+        with self.tx() as cx:
+            cx.execute(
+                "UPDATE chat_requests SET status=?,error_code=?,updated_at=?,completed_at=? "
+                "WHERE workflow_id=? AND instance_id=? AND idempotency_key=? AND status='started'",
+                (status, error_code, _now(), _now(), workflow_id, instance_id, idempotency_key),
+            )
 
     def list_turns(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
         """Project one instance's local transcript into user-anchored turns.

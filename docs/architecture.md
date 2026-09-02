@@ -185,7 +185,16 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 
 schema v3 引入且在当前 schema v7 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线；schema v7 增加 `title_is_generated`，让自动标题和用户标题在重启后仍可可靠区分。旧数据迁移时统一视为用户标题，避免升级覆盖历史名称。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 
+聊天请求的幂等记录位于辅助表 `chat_requests`，包含请求签名、状态、用户/助手消息引用和完整结果。它不会提升 GraphStore 对外 schema 版本（仍为 v7），但会在每次打开数据库时幂等创建；启动恢复会将中断请求标记为可重试。
+
+Chat SSE 与 Agent Run journal 共用 `runtime_events.py` 的事件词汇和 schema 版本。现有 Agent Run 的历史 payload 保持兼容，新的 Chat SSE payload 带 `schemaVersion`，客户端可以用同一时间线渲染 message/tool/run 事件。
+
 ## HostAdapter 能力协议
+
+当前代码提供 `host_adapters.ports.HostAdapter`、`StandaloneHostAdapter` 和
+确定性的 `MockHostAdapter`。适配器只负责宿主能力翻译，GraphStore 仍是
+parent/topic/prune 与路线记忆的唯一真源。UI 可通过
+`GET /api/v1/host/capabilities` 协商能力后决定显示哪些动作。
 
 ```python
 class HostAdapter(Protocol):

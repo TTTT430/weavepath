@@ -78,3 +78,9 @@
 - 浏览器 E2E 验证的是桌面视口成功路径；失败 Run 目前有组件测试，真实窄屏响应式行为也尚未完成浏览器验收。
 
 逐项证据和剩余局限见 [Route-to-Agent Run v1](route-to-agent-run-v1.md)。本机验证仍不包含 SSE/cancel、任意 shell/文件/网络工具、自动 evaluator/scorer、参数矩阵、多 Agent 或正式 Codex/Claude adapter；当前也没有生产级认证、多租户授权和公网部署保证。
+# 本轮实现（跳过 Evaluation）
+
+- Chat 幂等请求已从进程内缓存升级为 SQLite `chat_requests` 辅助表，支持重启恢复、失败/取消重试、结果重放和用户消息去重。
+- 新增 HostAdapter 能力协议、Standalone/Mock 实现及 `/api/v1/host/capabilities` 能力协商入口。
+- Chat SSE 与 Agent Run journal 共用 `runtime_events.py` 事件词汇；旧 Agent journal payload 保持兼容。
+- 新增路线记忆上下文预览 API，明确 live parent route、消息来源、revision、token 估算与 checkpoint 仅审计语义。

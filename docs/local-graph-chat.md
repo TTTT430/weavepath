@@ -133,3 +133,12 @@ Route-to-Agent Run v1 已验证同步 durable run 的第一条窄链路。它不
 ## 后续阶段
 
 长期阶段编号只以 [Agent 工程路线图](agent-engineering-roadmap.md) 为准：Phase 4 streaming/cancellation/retry，Phase 5 evaluation，Phase 6 observability，Phase 7 artifacts，Phase 8 multi-agent，Phase 9 Codex/Claude adapters，Phase 10 automation，Phase 11 security/packaging/deployment。Desktop companion 是 Phase 11 packaging 的一部分，不另造一套领域状态。
+# 路线记忆上下文预览
+
+`GET /api/v1/workflows/{workflowId}/instances/{instanceId}/context-preview`
+提供当前具体路线的只读上下文投影。返回 `memoryRoute`、每条消息的
+`sourceInstanceId`、继承/本地计数、content revision、字符/token 估算及
+checkpoint 审计信息。预览沿父节点实时解析，不读取兄弟路线；checkpoint
+快照仅用于审计，不能写回 transcript，也不会替代运行时上下文。
+
+可用 `maxChars` 限制返回体积；截断时 `truncated=true`。

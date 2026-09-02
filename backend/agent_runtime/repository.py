@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from graph_core import Conflict, NotFound
+from runtime_events import validate_event_type
 
 
 def _now() -> str:
@@ -44,6 +45,7 @@ class AgentRunRepository:
 
     def _event(self, cx: sqlite3.Connection, run_id: str, event_type: str,
                payload: dict[str, Any] | None = None) -> None:
+        validate_event_type(event_type)
         sequence = cx.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM run_events WHERE run_id=?",
                               (run_id,)).fetchone()[0]
         cx.execute("INSERT INTO run_events VALUES(?,?,?,?,?)",

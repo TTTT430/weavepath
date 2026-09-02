@@ -21,6 +21,8 @@ from api.llm import LLMClient, LLMUnavailable, OpenAICompatibleLLM
 from api.model_settings import RuntimeModelSettings
 from engineering import EngineeringRepository
 from graph_core import Conflict, GraphStore, NotFound, Validation
+from host_adapters.standalone import StandaloneHostAdapter
+from runtime_events import event_payload
 
 
 _StoreResource = TypeVar("_StoreResource")
@@ -421,6 +423,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         llm: LLMClient = llm_client or settings
         run_repository = AgentRunRepository(graph_store._conn, graph_store._lock)
         engineering = EngineeringRepository(graph_store._conn, graph_store._lock)
+        host_adapter = StandaloneHostAdapter(graph_store)
         if agent_model is None:
             if isinstance(llm, OpenAICompatibleLLM):
                 agent_model = OpenAICompatibleAgentAdapter(lambda: llm)
@@ -442,6 +445,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     async def lifespan(_: FastAPI):
         try:
             run_repository.recover_interrupted()
+            graph_store.recover_chat_requests()
             yield
         finally:
             if owned:
@@ -456,10 +460,9 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     app.state.model_settings = settings
     app.state.agent_runs = run_repository
     app.state.engineering = engineering
-    # Chat request identity is deliberately process-local.  The graph remains
-    # the source of truth for messages; this registry only prevents duplicate
-    # clicks and lets a streaming request be cancelled without inventing a
-    # second transcript table.
+    app.state.host_adapter = host_adapter
+    # Fast same-process cancellation state; durable request identity/results
+    # live in GraphStore.chat_requests.
     chat_state_lock = Lock()
     chat_active: dict[str, Event] = {}
     chat_completed: dict[str, tuple[str, dict[str, object]]] = {}
@@ -516,6 +519,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         return {"ok": True, "service": "weavepath", "version": app.version,
                 "schemaVersion": 7, "aiConfigured": bool(llm.status()["configured"])}
 
+    @app.get(prefix + "/host/capabilities")
+    def host_capabilities():
+        return {"adapter": "standalone", "capabilities": host_adapter.capabilities().as_dict()}
+
     @app.get(prefix + "/ai/status")
     def ai_status():
         return llm.status()
@@ -567,6 +574,14 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                  scope: Literal["local", "effective"] = "effective"):
         return graph_store.list_messages(workflow_id, instance_id, scope=scope)
 
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/context-preview")
+    def context_preview(workflow_id: str, instance_id: str,
+                        max_chars: int = Query(120_000, alias="maxChars", ge=1, le=1_000_000)):
+        preview = graph_store.context_preview(workflow_id, instance_id, max_chars=max_chars)
+        preview["acceptedKnowledge"] = engineering.accepted_knowledge(workflow_id, instance_id)
+        preview["runtimeSource"] = "live-parent-route"
+        return preview
+
     @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/turns")
     def turns(workflow_id: str, instance_id: str):
         return graph_store.list_turns(workflow_id, instance_id)
@@ -591,25 +606,42 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             raise Validation("idempotencyKey must be at most 200 characters")
         return body.model_copy(update={"idempotency_key": header}) if header else body
 
-    def _chat_begin(workflow_id: str, instance_id: str, body: ChatInput) -> tuple[str | None, str, Event | None, dict[str, object] | None]:
+    def _chat_begin(workflow_id: str, instance_id: str, body: ChatInput) -> tuple[str | None, str, Event | None, dict[str, object] | None, int | None]:
         key, signature = _chat_identity(workflow_id, instance_id, body)
         if key is None:
-            return None, signature, None, None
+            return None, signature, None, None, None
         scoped = f"{workflow_id}:{instance_id}:{key}"
         with chat_state_lock:
             previous = chat_completed.get(scoped)
             if previous:
                 if previous[0] != signature:
                     raise Conflict("idempotencyKey was already used with different content")
-                return key, signature, None, previous[1]
+                return key, signature, None, previous[1], None
             if scoped in chat_active:
                 raise Conflict("chat request is already in progress")
             cancel_event = Event()
             chat_active[scoped] = cancel_event
-            return key, signature, cancel_event, None
+        try:
+            durable = graph_store.begin_chat_request(
+                workflow_id, instance_id, key, {"content": body.content}, signature
+            )
+        except Exception:
+            with chat_state_lock:
+                chat_active.pop(scoped, None)
+            raise
+        if durable["state"] == "completed":
+            with chat_state_lock:
+                chat_active.pop(scoped, None)
+            return key, signature, None, durable.get("result"), None
+        if durable["state"] == "started" and durable.get("userMessageId") is None:
+            with chat_state_lock:
+                chat_active.pop(scoped, None)
+            raise Conflict("chat request is already in progress")
+        return key, signature, cancel_event, None, durable.get("userMessageId")
 
     def _chat_finish(workflow_id: str, instance_id: str, key: str | None,
-                     signature: str, result: dict[str, object] | None) -> None:
+                     signature: str, result: dict[str, object] | None,
+                     terminal_status: str | None = None, error_code: str | None = None) -> None:
         if key is None:
             return
         scoped = f"{workflow_id}:{instance_id}:{key}"
@@ -620,6 +652,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 # Keep the registry bounded in the single-user desktop app.
                 while len(chat_completed) > 512:
                     chat_completed.pop(next(iter(chat_completed)))
+        if terminal_status:
+            graph_store.finish_chat_request(workflow_id, instance_id, key, terminal_status, error_code)
 
     def _chat_cancel(workflow_id: str, instance_id: str, request_id: str) -> bool:
         with chat_state_lock:
@@ -630,12 +664,13 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             return True
 
     def _sse(event: str, data: object) -> str:
-        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        payload = event_payload(event, data if isinstance(data, dict) else {"data": data})
+        return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def _stream_chat(workflow_id: str, instance_id: str, body: ChatInput) -> StreamingResponse:
         if not llm.status()["configured"]:
             raise LLMUnavailable(str(llm.status().get("reason") or "AI provider is not configured"))
-        key, signature, cancel_event, cached = _chat_begin(workflow_id, instance_id, body)
+        key, signature, cancel_event, cached, durable_user_id = _chat_begin(workflow_id, instance_id, body)
 
         def events():
             if cached is not None:
@@ -646,9 +681,15 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             event = cancel_event or Event()
             user_message = None
             try:
-                user_message = graph_store.append_message(
-                    workflow_id, instance_id, role="user", content=body.content
-                )
+                if durable_user_id is not None:
+                    local = graph_store.list_messages(workflow_id, instance_id, scope="local")["messages"]
+                    user_message = next((m for m in local if m["id"] == durable_user_id), None)
+                if user_message is None:
+                    user_message = graph_store.append_message(
+                        workflow_id, instance_id, role="user", content=body.content
+                    )
+                    if key is not None:
+                        graph_store.record_chat_user_message(workflow_id, instance_id, key, user_message["id"])
                 context = route_context(
                     workflow_id, instance_id,
                     graph_store.list_messages(workflow_id, instance_id)["messages"],
@@ -660,6 +701,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 parts: list[str] = []
                 for chunk in chunks:
                     if event.is_set():
+                        _chat_finish(workflow_id, instance_id, key, signature, None, "cancelled", "chatCancelled")
                         yield _sse("message.cancelled", {"requestId": key})
                         return
                     if not isinstance(chunk, str) or not chunk:
@@ -667,6 +709,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     parts.append(chunk)
                     yield _sse("message.delta", {"requestId": key, "delta": chunk})
                 if event.is_set():
+                    _chat_finish(workflow_id, instance_id, key, signature, None, "cancelled", "chatCancelled")
                     yield _sse("message.cancelled", {"requestId": key})
                     return
                 answer = "".join(parts).strip()
@@ -676,19 +719,22 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     workflow_id, instance_id, role="assistant", content=answer
                 )
                 result = {"userMessage": user_message, "assistantMessage": assistant_message}
+                if key is not None:
+                    graph_store.complete_chat_request(workflow_id, instance_id, key, result)
                 _chat_finish(workflow_id, instance_id, key, signature, result)
                 yield _sse("message.completed", result)
             except LLMUnavailable as exc:
-                _chat_finish(workflow_id, instance_id, key, signature, None)
+                _chat_finish(workflow_id, instance_id, key, signature, None, "failed", exc.code)
                 yield _sse("message.failed", {"requestId": key, "code": exc.code, "error": str(exc)})
             except Exception:
-                _chat_finish(workflow_id, instance_id, key, signature, None)
+                _chat_finish(workflow_id, instance_id, key, signature, None, "failed", "aiUnavailable")
                 yield _sse("message.failed", {"requestId": key, "code": "aiUnavailable", "error": "AI provider is unavailable"})
             finally:
                 # A client disconnect can close the generator before the
                 # provider yields another token.  Always release the active
                 # request slot; an already-completed replay remains cached.
-                _chat_finish(workflow_id, instance_id, key, signature, None)
+                _chat_finish(workflow_id, instance_id, key, signature, None,
+                             "failed", "chatInterrupted")
 
         return StreamingResponse(events(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -700,19 +746,31 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             return _stream_chat(workflow_id, instance_id, body)
         if not llm.status()["configured"]:
             raise LLMUnavailable(str(llm.status().get("reason") or "AI provider is not configured"))
-        key, signature, _, cached = _chat_begin(workflow_id, instance_id, body)
+        key, signature, _, cached, durable_user_id = _chat_begin(workflow_id, instance_id, body)
         if cached is not None:
             return cached
         try:
-            user_message = graph_store.append_message(workflow_id, instance_id, role="user", content=body.content)
+            user_message = None
+            if durable_user_id is not None:
+                local = graph_store.list_messages(workflow_id, instance_id, scope="local")["messages"]
+                user_message = next((m for m in local if m["id"] == durable_user_id), None)
+            if user_message is None:
+                user_message = graph_store.append_message(workflow_id, instance_id, role="user", content=body.content)
+                if key is not None:
+                    graph_store.record_chat_user_message(workflow_id, instance_id, key, user_message["id"])
             context = route_context(workflow_id, instance_id, graph_store.list_messages(workflow_id, instance_id)["messages"])
             assistant_text = llm.complete(context)
             assistant_message = graph_store.append_message(workflow_id, instance_id, role="assistant", content=assistant_text)
             result = {"userMessage": user_message, "assistantMessage": assistant_message}
+            if key is not None:
+                graph_store.complete_chat_request(workflow_id, instance_id, key, result)
             _chat_finish(workflow_id, instance_id, key, signature, result)
             return result
+        except LLMUnavailable as exc:
+            _chat_finish(workflow_id, instance_id, key, signature, None, "failed", exc.code)
+            raise
         except Exception:
-            _chat_finish(workflow_id, instance_id, key, signature, None)
+            _chat_finish(workflow_id, instance_id, key, signature, None, "failed", "aiUnavailable")
             raise
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat/stream")

@@ -125,6 +125,26 @@ ADD COLUMN title_is_generated INTEGER NOT NULL DEFAULT 0
 CHECK(title_is_generated IN (0,1));
 """
 
+V8 = """
+CREATE TABLE IF NOT EXISTS chat_requests(
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('started','completed','failed','cancelled')),
+    user_message_id INTEGER REFERENCES local_messages(id) ON DELETE SET NULL,
+    assistant_message_id INTEGER REFERENCES local_messages(id) ON DELETE SET NULL,
+    result_json TEXT,
+    error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    PRIMARY KEY(workflow_id,instance_id,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_requests_status ON chat_requests(status,updated_at);
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
@@ -241,4 +261,8 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         # Existing titles predate explicit provenance tracking. Treat them as
         # user-owned so an upgrade can never overwrite a historical name.
         conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)", (_now(),))
+    # Chat request durability is an auxiliary table and does not change the
+    # graph schema contract (currently v7). Create it for both fresh and
+    # already-migrated databases without advancing the graph schema version.
+    conn.executescript(V8)
     conn.commit()

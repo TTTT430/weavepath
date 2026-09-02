@@ -114,6 +114,32 @@ def test_ai_status_and_route_aware_chat_round_trip():
     store.close()
 
 
+def test_chat_idempotency_is_durable_and_context_preview_has_provenance(tmp_path):
+    path = tmp_path / "chat.db"
+    store = GraphStore(path)
+    llm = FakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        graph = client.post("/api/v1/workflows", json={"name": "W", "rootTitle": "A", "rootInstanceId": "A"}).json()
+        workflow_id = graph["workflowId"]
+        first = client.post(f"/api/v1/workflows/{workflow_id}/instances/A/chat",
+                            json={"content": "hello", "idempotencyKey": "same"})
+        replay = client.post(f"/api/v1/workflows/{workflow_id}/instances/A/chat",
+                             json={"content": "hello", "idempotencyKey": "same"})
+        assert first.status_code == replay.status_code == 200
+        assert replay.json() == first.json()
+        assert llm.calls == 1
+        preview = client.get(f"/api/v1/workflows/{workflow_id}/instances/A/context-preview").json()
+        assert preview["memoryRoute"][0]["instanceId"] == "A"
+        assert all(item["sourceInstanceId"] == "A" for item in preview["messages"])
+    store.close()
+    reopened = GraphStore(path)
+    with TestClient(create_app(reopened, FakeLLM())) as client:
+        replay = client.post(f"/api/v1/workflows/{workflow_id}/instances/A/chat",
+                             json={"content": "hello", "idempotencyKey": "same"})
+        assert replay.status_code == 200
+    reopened.close()
+
+
 def test_fork_chat_answers_from_an_exact_turn_and_is_idempotent_without_sibling_leakage():
     store, llm = GraphStore(":memory:"), FakeLLM()
     with TestClient(create_app(store, llm)) as client:
