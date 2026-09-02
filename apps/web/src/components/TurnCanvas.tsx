@@ -86,7 +86,7 @@ export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPosi
  const fit=()=>void instance?.fitView({nodes,duration:220,padding:.24,maxZoom:1});
  return <div className="turn-canvas">
   {!nodes.length&&<p className="turn-canvas-empty">{labels.empty}</p>}
-  <ReactFlow<TurnFlowNode> className="synapse-flow" nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.2,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable elementsSelectable={false} nodesConnectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)}>
+  <ReactFlow<TurnFlowNode> className="synapse-flow" nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.2,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable elementsSelectable={false} nodesConnectable={false} deleteKeyCode={null} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)}>
    <Background color="var(--canvas-grid-dot)" gap={20} size={1}/>{nodes.length>=8&&<MiniMap/>}<Controls/>
    <Panel position="top-right" className="canvas-tools"><button type="button" onClick={locate} disabled={!nodes.length} aria-label={labels.locate}>◎</button><button type="button" onClick={fit} disabled={!nodes.length} aria-label={labels.fit}>↔</button></Panel>
   </ReactFlow>

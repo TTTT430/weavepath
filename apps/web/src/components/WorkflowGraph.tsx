@@ -102,7 +102,7 @@ export function WorkflowGraph({graph,selectedId,collapsedNodeIds=[],nodePosition
   appliedFocus.current=key;
   void instance.fitView({nodes:target,duration:220,padding:.7,maxZoom:1.1});
  },[focusRequest,instance,nodes]);
- return <ReactFlow<ConversationFlowNode> className="synapse-flow" nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.2,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable nodesConnectable={false} elementsSelectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)} {...wrapperEvents}>
+ return <ReactFlow<ConversationFlowNode> className="synapse-flow" nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.2,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable nodesConnectable={false} deleteKeyCode={null} elementsSelectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)} {...wrapperEvents}>
   <Background color="var(--canvas-grid-dot)" gap={20} size={1}/>{shouldShowMiniMap(nodes.length)&&<MiniMap/>}<Controls/>
   <Panel position="top-right" className="canvas-tools"><button type="button" onClick={locate} disabled={!nodes.length} aria-label={resolvedLabels.locate}>◎</button><button type="button" onClick={fit} disabled={!nodes.length} aria-label={resolvedLabels.fit}>↔</button></Panel>
  </ReactFlow>;
