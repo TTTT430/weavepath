@@ -1,6 +1,6 @@
 # 总体架构与领域模型
 
-本文主要描述目标架构。当前自动化验证基线包含 SQLite GraphStore、schema v5 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布、Engineering Lab v1 和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 已完成窄范围真实浏览器验收，Engineering Lab v1 已完成自动化验证；这些都不等于完整 Agent Runtime、跨宿主集成或阶段完成。
+本文主要描述目标架构。当前自动化验证基线包含 SQLite GraphStore、schema v6 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布、Engineering Lab v1 和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 已完成窄范围真实浏览器验收，Engineering Lab v1 已完成自动化验证；这些都不等于完整 Agent Runtime、跨宿主集成或阶段完成。
 
 ## 分层
 
@@ -135,9 +135,9 @@ D1 和 D2 可以在 UI 中聚合显示为一个 D，并提供两条路线选择�
 
 顶层 Workflow Graph 的卡片始终代表具体 `ConversationInstance`，边仍由 `parent_instance_id` 推导。它不能混入单条消息、工具调用或纯视觉分组节点，否则 prune、route choice 和 checkpoint 语义会变得含糊。
 
-双击顶层卡片进入该实例的 Turn Canvas。Turn Canvas 是按需构造的 `scope=local` 读模型：每个本地用户消息开始一个 turn，直到下一条本地用户消息之前的本地 assistant/tool message 都归入该 turn；failure/operation 在相应事件投影可用后扩展同一时间线。祖先 checkpoint 消息只用于有效上下文，不在子实例画布中重复投影；UI 单独显示 memory route、checkpoint anchor 和继承消息数量。
+双击顶层卡片进入该实例的 Turn Canvas。Turn Canvas 是按需构造的 `scope=local` 读模型：每个本地用户消息开始一个 turn，直到下一条本地用户消息之前的本地 assistant/tool message 都归入该 turn；failure/operation 在相应事件投影可用后扩展同一时间线。祖先路线消息动态用于有效上下文，但不在子实例画布中重复投影；UI 单独显示 memory route、checkpoint anchor 和继承消息数量。
 
-Turn Canvas surface 同时暴露受控命令入口，但不维护第二份 transcript：画布 composer 调用与 Chat 相同的 route-aware chat/message API；轮次卡片的分支动作携带精确 `anchorMessageId`、`expectedContentRevision` 和 `idempotencyKey`，创建真实子 `ConversationInstance` 后生成首个回答。成功写入通过 workflow event 通知 Chat/Canvas 刷新，因此两端只是在操作同一 SQLite 真源。
+Turn Canvas surface 同时暴露受控命令入口，但不维护第二份 transcript：画布 composer 调用与 Chat 相同的 route-aware chat/message API；轮次卡片的分支动作携带精确 `anchorMessageId`、`expectedContentRevision` 和 `idempotencyKey`，创建 `surface_scope=turn` 的真实内部 `ConversationInstance` 后生成首个回答。内部实例拥有独立 checkpoint/transcript，归属于一个顶层 owner，只在 Turn Tree 出现；`GET graph` 和 topic route chooser 只返回 `surface_scope=workflow`。激活内部路线时 graph 同时返回顶层 `activeInstanceId` 与具体 `activeRouteInstanceId`，Chat 使用后者读写同一 SQLite 真源。
 
 ```text
 Workflow Graph
@@ -155,10 +155,10 @@ Workflow Graph
 
 从某一 turn 创建子实例时，fork 命令携带 `source_instance_id + cursor kind/value + expected_content_revision`。Standalone 当前使用：
 
-- `localUserTurn`：value 为本地用户消息 ID，冻结内容截至下一条本地用户消息之前；
+- `localUserTurn`：value 为本地用户消息 ID，记录精确分支锚点；创建时快照截至该轮，但运行时上下文跟随父实例最新状态；
 - `instanceHead`：value 对应请求接受时的实例 content revision。
 
-checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点。内容 revision 已变化时拒绝 fork，不能把旧 turn selection 默默应用到新实例头。外部宿主由 adapter 把自己的 seed/turn/message cursor 映射为通用 `HostCheckpointRef`；不支持精确 cursor 时必须结构化降级，不能静默改为整段会话继承。
+checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点；运行时有效上下文沿 parent 链递归读取当前消息，不依赖静态快照，因此父节点后续新增或修改会进入子路线。内容 revision 已变化时拒绝 fork，不能把旧 turn selection 默默应用到新实例头。外部宿主由 adapter 把自己的 seed/turn/message cursor 映射为通用 `HostCheckpointRef`；不支持精确 cursor 时必须结构化降级，不能静默改为整段会话继承。
 
 ## Revision 与并发
 
@@ -181,7 +181,7 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 - completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
 - 启动时遗留的 `queued` / `running` run 转为 `interrupted`，不会自动继续执行。
 
-schema v3 引入且在当前 schema v5 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
+schema v3 引入且在当前 schema v6 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 
 ## HostAdapter 能力协议
 

@@ -36,16 +36,15 @@ const graph={
   {id:'leaf',parentId:'child',topicId:'topic-leaf',title:'大模型实验',status:'active' as const,contentRevision:4},
  ],
 };
-const graphWithForked={...graph,graphRevision:4,nodes:[...graph.nodes,{id:'forked',parentId:'leaf',topicId:'topic-forked',title:'模块 B',status:'active' as const,contentRevision:0}]};
-
 const snapshot={
- workflowId:'wf',instanceId:'leaf',scope:'local' as const,contentRevision:9,eventRevision:11,
+ workflowId:'wf',instanceId:'leaf',ownerInstanceId:'leaf',activeRouteInstanceId:'leaf',scope:'local' as const,contentRevision:9,eventRevision:11,
  memoryRoute:[{instanceId:'root',title:'数据集'},{instanceId:'child',title:'情感分析'},{instanceId:'leaf',title:'大模型实验'}],
+ routeContentRevisions:{leaf:9},routeMemoryRoutes:{leaf:[{instanceId:'root',title:'数据集'},{instanceId:'child',title:'情感分析'},{instanceId:'leaf',title:'大模型实验'}]},routeInheritedMessageCounts:{leaf:6},routeTitles:{leaf:'大模型实验'},
  inheritedMessageCount:6,checkpointAnchor:{kind:'localUserTurn'},preamble:[],eventExtensions:[],
- turns:[{id:'turn-77',sequence:1,anchorMessageId:77,userMessage:{id:707,role:'user' as const,content:'当前节点问题'},responses:[{id:708,role:'assistant' as const,content:'当前节点回答'}],status:'completed' as const}],
+ turns:[{id:'turn-77',sequence:1,anchorMessageId:77,routeInstanceId:'leaf',routeTitle:'大模型实验',parentTurnId:null,userMessage:{id:707,role:'user' as const,content:'当前节点问题'},responses:[{id:708,role:'assistant' as const,content:'当前节点回答'}],status:'completed' as const}],
  inheritedMessages:[{id:'secret',role:'user',content:'不应显示的父节点正文'}],
 };
-const forkedSnapshot={...snapshot,instanceId:'forked',contentRevision:2,memoryRoute:[...snapshot.memoryRoute,{instanceId:'forked',title:'模块 B'}],inheritedMessageCount:8,turns:[{id:'turn-88',sequence:1,anchorMessageId:88,userMessage:{id:808,role:'user' as const,content:'测试模块 B'},responses:[{id:809,role:'assistant' as const,content:'模块 B 回答'}],status:'completed' as const}]};
+const forkedSnapshot={...snapshot,routeContentRevisions:{leaf:9,forked:2},routeMemoryRoutes:{...snapshot.routeMemoryRoutes,forked:[...snapshot.memoryRoute,{instanceId:'forked',title:'模块 B'}]},routeInheritedMessageCounts:{leaf:6,forked:8},routeTitles:{leaf:'大模型实验',forked:'模块 B'},turns:[...snapshot.turns,{id:'turn-88',sequence:1,anchorMessageId:88,routeInstanceId:'forked',routeTitle:'模块 B',parentTurnId:'turn-77',userMessage:{id:808,role:'user' as const,content:'测试模块 B'},responses:[{id:809,role:'assistant' as const,content:'模块 B 回答'}],status:'completed' as const}]};
 
 class FakeBroadcastChannel{
  constructor(_name:string){}
@@ -64,7 +63,7 @@ beforeEach(()=>{
  localStorage.clear();localStorage.setItem('cw.locale','zh-CN');localStorage.setItem('weavepath.canvas.v1:wf',JSON.stringify({workflow:{selectedId:'leaf',viewport:{x:14,y:-22,zoom:.8},collapsedNodeIds:[],positions:{}},turns:{}}));
  vi.stubGlobal('BroadcastChannel',FakeBroadcastChannel);
  vi.stubGlobal('crypto',{randomUUID:vi.fn(()=> 'fork-idempotency-1')});
- apiMock.graph.mockResolvedValue(graph);apiMock.turns.mockImplementation(async(_workflowId:string,instanceId:string)=>instanceId==='forked'?forkedSnapshot:snapshot);apiMock.routes.mockResolvedValue([]);
+ apiMock.graph.mockResolvedValue(graph);apiMock.turns.mockResolvedValue(snapshot);apiMock.routes.mockResolvedValue([]);
  apiMock.activate.mockResolvedValue({activeInstanceId:'leaf'});apiMock.fork.mockResolvedValue({node:{id:'forked'},graphRevision:4});
  apiMock.forkChat.mockResolvedValue({node:{id:'forked'},graphRevision:4,replyStatus:'completed',assistantMessage:{id:809,role:'assistant',content:'模块 B 回答'}});apiMock.aiStatus.mockResolvedValue({configured:true,provider:'fake',model:'test'});apiMock.chat.mockResolvedValue({});apiMock.send.mockResolvedValue({});
  apiMock.prunePlan.mockResolvedValue(null);apiMock.pruneCommit.mockResolvedValue({prunedInstanceIds:[]});
@@ -117,15 +116,16 @@ describe('native double canvas workspace',()=>{
  });
 
  it('forks from the selected backend anchor with the snapshot revision and an idempotency key',async()=>{
-  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce(graphWithForked);
+  apiMock.turns.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(forkedSnapshot);
  renderCanvas();await openLeafCanvas();
   fireEvent.click(await screen.findByRole('button',{name:'card-branch-turn-77'}));
   fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'模块 B'}});fireEvent.change(screen.getByLabelText('分支的首个问题'),{target:{value:'测试模块 B'}});fireEvent.click(screen.getByRole('button',{name:'创建分支并回答'}));
   await waitFor(()=>expect(apiMock.forkChat).toHaveBeenCalledOnce());
   expect(apiMock.forkChat).toHaveBeenCalledWith('wf','leaf',{title:'模块 B',initialMessage:'测试模块 B',anchorMessageId:77,expectedContentRevision:9,idempotencyKey:'fork-idempotency-1'});
-  await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledWith('wf','forked'));
-  expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-focus-id','forked');expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-focus-revision','4');
-  expect(screen.getByRole('navigation',{name:'工作流画布'})).toHaveTextContent('模块 B');expect(screen.getByRole('heading',{name:'轮次画布'})).toBeInTheDocument();
+  await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledTimes(2));
+  expect(screen.getByTestId('workflow-graph')).not.toHaveAttribute('data-focus-id','forked');
+  expect(screen.getByTestId('turn-canvas')).toHaveAttribute('data-selected','turn-88');
+  expect(screen.getByRole('navigation',{name:'工作流画布'})).toHaveTextContent('大模型实验');expect(screen.getByRole('heading',{name:'轮次画布'})).toBeInTheDocument();
  });
 
  it('refreshes the Turn snapshot after a fork revision conflict',async()=>{

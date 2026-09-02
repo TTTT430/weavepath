@@ -41,9 +41,11 @@ exist but a database exists in the former `CoThinker Workspace` or
 `co-thinker-workspace` data directory, WeavePath opens that old database directly.
 It does not copy, rename, or delete it. In a restricted sandbox that
 denies the user data directory, startup falls back to the operating-system temp
-directory, never the source tree. Every fork stores an immutable checkpoint of the parent's
-effective messages; later messages on the parent are therefore excluded from
-the child route. Graph mutations and content writes use independent revisions.
+directory, never the source tree. Every fork stores an immutable checkpoint
+anchor and creation-time snapshot of the parent's effective messages for audit.
+Runtime context follows the parent route dynamically, so later parent messages
+and edits are visible to the child while sibling routes remain excluded. Graph
+mutations and content writes use independent revisions.
 Each node's `contentRevision` changes only when that instance receives a local
 message. Workflow `eventRevision` is the monotonic global content-event sequence
 formerly stored in the `workflows.content_revision` column; it is not a route
@@ -55,8 +57,8 @@ provider. Set `WEAVEPATH_LLM_BASE_URL` and `WEAVEPATH_LLM_MODEL`; optionally set
 `WEAVEPATH_LLM_SYSTEM_PROMPT`. The former `COTHINKER_LLM_*` names remain supported
 as lower-priority compatibility aliases, and `OPENAI_API_KEY` remains the final
 API-key fallback. The chat route builds context
-from the selected conversation instance only, including its frozen ancestor
-checkpoint and excluding sibling routes. Without configuration, `/api/v1/ai/status`
+from the selected conversation instance and its current parent route, excluding
+sibling routes. Without configuration, `/api/v1/ai/status`
 reports record-only mode and the API never fabricates an assistant message.
 
 Runtime model settings are available at `/api/v1/ai/settings`. API keys are

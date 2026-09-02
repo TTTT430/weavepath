@@ -30,6 +30,7 @@ POST /api/v1/workflows/{workflowId}/instances/{id}/fork-chat  # exact turn + fir
 POST /api/v1/workflows/{workflowId}/instances/{id}/activate
 GET  /api/v1/workflows/{workflowId}/instances/{id}/messages
 GET  /api/v1/workflows/{workflowId}/instances/{id}/turns       # verified local-only projection
+GET  /api/v1/workflows/{workflowId}/instances/{id}/turn-tree   # owner + internal dialogue routes
 GET  /api/v1/workflows/{workflowId}/topics/{id}/routes
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-plan
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-commit
@@ -44,7 +45,7 @@ POST /api/v1/chat/stream                                      # planned SSE
 WS   /api/v1/events                                           # planned
 ```
 
-fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地用户 turn 时，checkpoint 只冻结到该 turn 完成处；源实例 revision 已变化则返回 409。schema v4 为 checkpoint 增加 provider-neutral 的 cursor kind/value；接口、迁移和冲突路径已完成本机测试。
+fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地用户 turn 时，checkpoint 快照记录到该 turn 完成处并保留为审计锚点；运行时上下文仍跟随源实例最新路线；源实例 revision 已变化则返回 409。schema v4 为 checkpoint 增加 provider-neutral 的 cursor kind/value；接口、迁移和冲突路径已完成本机测试。
 
 实现范围：
 
@@ -52,7 +53,7 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 - GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port 已实现，正式 Standalone HostAdapter 尚未拆出；
 - workflow、topic、instance、checkpoint、local message、tombstone；
 - Turn projector 只读取具体实例的 local messages，将一个用户问题及下一用户问题前的 assistant/tool message 组织为一张 turn 卡片；继承 checkpoint 不重复投影，failure/operation 事件扩展仍是后续工作；
-- Turn Canvas composer 与普通 Chat 调用同一条 route-aware 消息链路并写入同一 SQLite 消息真源，不复制 transcript；从 turn 卡片发起的 `fork-chat` 以精确 anchor 幂等创建子实例，并可立即生成首个回答；
+- Turn Canvas composer 与普通 Chat 调用同一条 route-aware 消息链路并写入同一 SQLite 消息真源，不复制 transcript；从 turn 卡片发起的 `fork-chat` 以精确 anchor 幂等创建 `surface_scope=turn` 的内部实例，并可立即生成首个回答；内部实例只进入 owner 的 Turn Tree，不进入第一层 graph；
 - 从 Co-Thinker 复用 SSE 与中断保护（planned）；
 - 从 v4 widget 提取正交布局、route chooser 和中英文界面，并借鉴 dsh-synapse 的画布检查体验；
 - 默认使用 `WorkspaceShell` 内的 Chat/Workflow 两个持久 surface；第一层 Workflow Graph 和第二层 Turn Canvas 复用一个按需加载的画布区域，不在每个节点中嵌套多个 React Flow；
@@ -84,7 +85,7 @@ A
 2. D 的 route chooser 同时显示 `A-B-C-D` 与 `A-E-D`；单击只选择具体实例，双击只进入该实例的 Turn Canvas，不 activate。**Verified local preview。**
 3. B 中写入 `B_ONLY` 后，D2 的 context、inspect 和摘要均不得出现它。**消息路线隔离已验证；摘要系统尚未实现。**
 4. E 中写入 `E_ONLY` 后，D1 不得出现它。**消息路线隔离已验证。**
-5. fork 后父节点继续聊天，已创建子节点仍使用原 checkpoint。**后端测试已验证。**
+5. fork 后父节点继续聊天，已创建子节点会动态看到父路线最新消息；创建时 checkpoint 快照仍保留用于审计。**后端测试已验证。**
 6. 双击 D2 不发送 activate；只有在 D2 inspector 或 Turn Canvas 中单击“继续对话”才发送一次 activate，成功后切回 D2 聊天且输入框原内容不变，失败则保留画布。**Verified local preview。**
 7. prune B 的计划只包含 B、C、D1，并按 leaf-first 顺序归档；E、D2 保持 active。
 8. revision 冲突返回 409，不覆盖新结构。
@@ -93,13 +94,14 @@ A
 11. 后台摘要迟到时不能写入错误 instance 或改变 graph revision。**Planned：metabolize 尚未实现。**
 12. E2E 测试不依赖 Codex/Claude；Agent Runtime 使用测试专用 `ScriptedMockAgentAdapter` 复现 model turns，正式 HostAdapter mock 仍是后续工作。
 13. 进入 B 的 Turn Canvas 时，只显示 B 本地用户 turns 及其本地 assistant/tool message；A 的 checkpoint 内容只显示为路线与继承摘要，不能成为 B 的卡片。failure/operation 扩展仍是后续工作。**Verified local preview。**
-14. 从 B 的第 2 个本地用户 turn 创建 C 时，C checkpoint 包含 B1、B2 及 B2 在下一用户问题前的响应，不包含 B3；stale `expectedContentRevision` 返回 409。**Verified local preview。**
+14. 从 B 的第 2 个本地用户 turn 创建 C 时，C 保留该精确 checkpoint 锚点和创建时快照；运行时上下文会继续跟随 B，因此 B3 及之后新增/修改的消息会进入 C；stale `expectedContentRevision` 仍返回 409。**Verified local preview。**
 15. 顶层与 B/D1/D2 各自的 viewport、节点位置、折叠和 selection 独立恢复，写入这些 UI metadata 不增加 graph/content revision。**Verified local preview。**
 16. 无 `can_read_local_turns` 的宿主不伪造 Turn Canvas；无精确 cursor fork 能力时禁用该动作或经确认降级到实例头；无 navigation 时不宣称已切换。**Planned adapter contract。**
 17. 在 B 的 Turn Canvas 发送问题后，刷新普通 Chat 与 Turn Canvas 必须看到同一条本地记录；发送动作不隐式 activate B。**Verified local preview。**
 18. 从 B 的任意 turn 卡片创建子分支时，首个问题写入新子实例并在模型可用时立即回答；幂等重放不得重复创建实例或回答，兄弟路线内容不得进入模型上下文。**Verified local preview。**
+19. 第 18 项创建的实例必须归属于 B 的内部 Turn Tree，第一层 Workflow Graph 仍只显示 B；选择内部路线并继续对话后，Chat 标题仍为 B，但消息 API 使用该内部路线 ID。schema v6 会把旧版误入第一层的 exact-turn 子节点原地迁移，不删除记录。**Verified local preview。**
 
-本机验证使用统一套件：后端 104 项、前端 66 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
+本机验证使用统一套件：后端 104 项、前端 68 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
 
 ## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
 

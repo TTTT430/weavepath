@@ -41,7 +41,7 @@ describe('turn canvas API contract',()=>{
   vi.stubGlobal('fetch',fetchMock);
   const snapshot=await api.turns('wf','b');
   expect(snapshot.turns[0].userMessage.content).toBe('本地问题');
-  expect(fetchMock).toHaveBeenCalledWith('/api/v1/workflows/wf/instances/b/turns',expect.any(Object));
+  expect(fetchMock).toHaveBeenCalledWith('/api/v1/workflows/wf/instances/b/turn-tree',expect.any(Object));
  });
 
  it('sends an anchored fork with revision and idempotency identity',async()=>{

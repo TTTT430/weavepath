@@ -47,11 +47,13 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const snapshotGenerations=useRef<Map<string,number>>(new Map());
  const snapshotRef=useRef(snapshot),activeKey=useRef('');
  const active=useMemo(()=>graph?.nodes.find(node=>node.id===graph.activeInstanceId),[graph]);
- const owner=graph?.activeInstanceId?`${graph.workflowId}:${graph.activeInstanceId}`:'';
+ const activeRouteId=graph?.activeRouteInstanceId||graph?.activeInstanceId||'';
+ const owner=activeRouteId&&graph?`${graph.workflowId}:${activeRouteId}`:'';
  activeKey.current=owner;
  snapshotRef.current=snapshot;
  const messages=snapshot.owner===owner?snapshot.messages:[];
- const nodeRevision=snapshot.owner===owner?snapshot.contentRevision:active?.contentRevision||0;
+ const nodeRevision=snapshot.owner===owner?snapshot.contentRevision:graph?.activeRouteContentRevision??active?.contentRevision??0;
+ const activeRoute=active&&activeRouteId?{...active,id:activeRouteId,title:graph?.activeRouteTitle||active.title,contentRevision:nodeRevision}:active;
  const inherited=inheritedState.owner===owner?inheritedState.items:[];
  const memoryOpen=memoryOpenOwner===owner;
  const memoryLoading=memoryLoadingOwner===owner;
@@ -152,8 +154,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   setEditingId('');
   setEditDraft('');
   setCopiedId('');
-  if(graph&&active&&owner)void refreshRouteMessages(graph.workflowId,active.id,active.contentRevision||0);
- },[owner,graph?.workflowId,active?.id,active?.contentRevision,refreshRouteMessages]);
+  if(graph&&activeRouteId&&owner)void refreshRouteMessages(graph.workflowId,activeRouteId,graph.activeRouteContentRevision||0);
+ },[owner,graph?.workflowId,activeRouteId,graph?.activeRouteContentRevision,refreshRouteMessages]);
  useEffect(()=>{const box=messagesRef.current;if(box)box.scrollTop=box.scrollHeight},[messages,replyState]);
  useEffect(()=>{onWorkspaceChange?.({workflowId,graph})},[workflowId,graph,onWorkspaceChange]);
  useEffect(()=>{
@@ -181,7 +183,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   const opening=memoryOpenOwner!==owner;
   setMemoryOpenOwner(opening?owner:'');
   if(!opening||inheritedState.owner===owner||memoryLoadingOwner===owner)return;
-  const workflow=graph?.workflowId,instance=graph?.activeInstanceId;
+  const workflow=graph?.workflowId,instance=activeRouteId;
   if(!workflow||!instance)return;
   const request=++memoryRequest.current,targetOwner=`${workflow}:${instance}`;
   setMemoryLoadingOwner(targetOwner);
@@ -227,7 +229,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  }
 
  async function regenerate(message:Message){
-  const content=editDraft.trim(),workflow=graph?.workflowId,instance=graph?.activeInstanceId;
+  const content=editDraft.trim(),workflow=graph?.workflowId,instance=activeRouteId;
   if(!content||!workflow||!instance)return;
   const targetOwner=`${workflow}:${instance}`,expected=nodeRevision;
   if(!lockRoute(targetOwner))return;
@@ -246,7 +248,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  }
 
  async function send(){
-  const text=draft.trim(),workflow=graph?.workflowId,instance=graph?.activeInstanceId;
+  const text=draft.trim(),workflow=graph?.workflowId,instance=activeRouteId;
   if(!text||!workflow||!instance)return;
   const targetOwner=`${workflow}:${instance}`;
   if(!lockRoute(targetOwner))return;
@@ -282,7 +284,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
 
  const lastUserId=([...messages].reverse().find(message=>message.role==='user'&&!message.inherited)?.id);
  const renderMessage=(message:Message,actions=false)=><article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<MarkdownMessage content={message.content}/>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions"><button type="button" onClick={()=>beginEdit(message)}>{t('editQuestion')}</button><button type="button" onClick={()=>void copyMessage(message)}>{copiedId===String(message.id)?t('copied'):t('copyMessage')}</button></div>}</>}</div></article>;
- const memoryPanel=active?.parentId?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><span>{memoryOpen?'▾':'▸'} {t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
+ const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><span>{memoryOpen?'▾':'▸'} {t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
  const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking" aria-live="polite"><div><span>{t('thinking')}</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></article>}{replyState==='error'&&<article className="message system reply-error" role="alert"><div>{replyError}</div></article>}</div>;
 
  return <main className="chat-shell">
@@ -296,7 +298,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   <section className="chat">
    <header>
     <div><h1>{active?.title||graph?.name||t('app')}</h1><p>{t('route')}: {graph&&active?routeLabel(graph,active.id):'—'}</p><span className={`ai-status ${aiStatus?.configured?'connected':'local'}`}>{aiStatus?.configured?`${t('aiConnected')} · ${aiStatus.model}`:t('recordOnly')}</span></div>
-    <AgentRunWorkspace graph={graph} active={active} contentRevision={nodeRevision} aiStatus={aiStatus} onRunCompleted={async target=>{await refreshRouteMessages(target.workflowId,target.instanceId,target.inputContentRevision)}}/>
+    <AgentRunWorkspace graph={graph} active={activeRoute} contentRevision={nodeRevision} aiStatus={aiStatus} onRunCompleted={async target=>{await refreshRouteMessages(target.workflowId,target.instanceId,target.inputContentRevision)}}/>
     <button className="workflow-launch" disabled={!graph} onClick={openGraph}>⌘ {t('workflow')}</button>
    </header>
    <ErrorBanner message={error} onRetry={()=>{setError('');void loadGraph()}}/>

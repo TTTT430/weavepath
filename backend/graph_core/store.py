@@ -41,7 +41,13 @@ def _loads(value: str | None, default: Any) -> Any:
 
 
 class GraphStore:
-    """SQLite graph repository. A child checkpoint freezes its parent's effective history."""
+    """SQLite graph repository with route-aware, live parent inheritance.
+
+    Fork checkpoints retain the source route and a creation-time snapshot for
+    auditability, while effective context follows the parent instance's
+    current messages. This means a child sees later parent edits/messages but
+    never sees a sibling route.
+    """
 
     def __init__(self, db_path: str | Path = ":memory:") -> None:
         self.db_path = str(db_path)
@@ -147,6 +153,7 @@ class GraphStore:
             "id": row["id"], "topicId": row["topic_id"], "parentId": row["parent_id"],
             "title": row["title"], "status": row["status"], "provider": row["provider"],
             "providerConversationId": row["provider_conversation_id"],
+            "surfaceScope": row["surface_scope"], "ownerInstanceId": row["owner_instance_id"],
             "contentRevision": row["content_revision"],
             "memoryRoute": self._route_ids(cx, workflow_id, row["id"]),
             "checkpointAnchor": self._checkpoint_anchor(cx, row),
@@ -183,10 +190,21 @@ class GraphStore:
         with self._lock:
             wf = self._workflow(self._conn, workflow_id)
             rows = self._conn.execute(
-                "SELECT * FROM conversation_instances WHERE workflow_id=? ORDER BY created_at,id", (workflow_id,)
+                "SELECT * FROM conversation_instances WHERE workflow_id=? "
+                "AND surface_scope='workflow' ORDER BY created_at,id", (workflow_id,)
             ).fetchall()
+            active_route = (self._instance(self._conn, workflow_id, wf["active_instance_id"])
+                            if wf["active_instance_id"] else None)
+            active_instance_id = None
+            if active_route is not None:
+                active_instance_id = (active_route["owner_instance_id"]
+                                      if active_route["surface_scope"] == "turn"
+                                      else active_route["id"])
             return {"schemaVersion": 1, "workflowId": wf["id"], "name": wf["name"],
-                    "rootInstanceId": wf["root_instance_id"], "activeInstanceId": wf["active_instance_id"],
+                    "rootInstanceId": wf["root_instance_id"], "activeInstanceId": active_instance_id,
+                    "activeRouteInstanceId": active_route["id"] if active_route else None,
+                    "activeRouteTitle": active_route["title"] if active_route else None,
+                    "activeRouteContentRevision": active_route["content_revision"] if active_route else 0,
                     "graphRevision": wf["graph_revision"], "eventRevision": wf["content_revision"],
                     "nodes": [self._node(self._conn, workflow_id, row) for row in rows]}
 
@@ -201,11 +219,18 @@ class GraphStore:
 
     def _effective_messages(self, cx: sqlite3.Connection, workflow_id: str, instance_id: str) -> list[dict[str, Any]]:
         instance = self._instance(cx, workflow_id, instance_id)
-        checkpoint = cx.execute("SELECT messages_json FROM checkpoints WHERE id=?", (instance["checkpoint_id"],)).fetchone()
-        inherited = _loads(checkpoint[0], []) if checkpoint else []
+        # Checkpoints are immutable audit snapshots, not the live memory
+        # source. Resolve the current parent route recursively so a child
+        # created at B continues to receive B's later messages/edits. Every
+        # message coming from an ancestor is marked inherited for the current
+        # concrete instance; local messages remain owned by this instance.
+        inherited: list[dict[str, Any]] = []
+        if instance["parent_id"]:
+            inherited = [
+                {**message, "inherited": True}
+                for message in self._effective_messages(cx, workflow_id, instance["parent_id"])
+            ]
         local = self._local_messages(cx, instance_id)
-        for message in inherited:
-            message["inherited"] = True
         return inherited + local
 
     def list_messages(self, workflow_id: str, instance_id: str,
@@ -237,11 +262,10 @@ class GraphStore:
             instance = self._instance(self._conn, workflow_id, instance_id)
             wf = self._workflow(self._conn, workflow_id)
             local = self._local_messages(self._conn, instance_id)
-            checkpoint = self._conn.execute(
-                "SELECT messages_json FROM checkpoints WHERE id=?",
-                (instance["checkpoint_id"],),
-            ).fetchone()
-            inherited_message_count = len(_loads(checkpoint["messages_json"], [])) if checkpoint else 0
+            inherited_message_count = sum(
+                1 for message in self._effective_messages(self._conn, workflow_id, instance_id)
+                if message.get("inherited")
+            )
             route_ids = self._route_ids(self._conn, workflow_id, instance_id)
             memory_route = [
                 {
@@ -285,6 +309,92 @@ class GraphStore:
             "preamble": preamble,
             "turns": turns,
             "eventExtensions": [],
+        }
+
+    def list_turn_tree(self, workflow_id: str, owner_instance_id: str) -> dict[str, Any]:
+        """Return the internal dialogue tree owned by one top-level conversation.
+
+        The owner transcript is the base route. Exact-turn forks are stored as
+        internal ConversationInstances so every route keeps an isolated local
+        transcript while remaining absent from the workflow graph.
+        """
+        with self._lock:
+            owner = self._instance(self._conn, workflow_id, owner_instance_id, active=True)
+            if owner["surface_scope"] != "workflow":
+                raise Validation("turn tree owner must be a workflow conversation")
+            internal_rows = self._conn.execute(
+                "SELECT * FROM conversation_instances WHERE workflow_id=? "
+                "AND surface_scope='turn' AND owner_instance_id=? AND status='active' "
+                "ORDER BY created_at,id",
+                (workflow_id, owner_instance_id),
+            ).fetchall()
+            ordered_rows: list[sqlite3.Row] = []
+            resolved = {owner_instance_id}
+            remaining = list(internal_rows)
+            while remaining:
+                ready = [row for row in remaining if row["parent_id"] in resolved]
+                if not ready:
+                    # Corrupt/cyclic relationships are still returned for
+                    # diagnosis; _route_ids will reject an actual cycle.
+                    ready = [remaining[0]]
+                for row in ready:
+                    ordered_rows.append(row)
+                    resolved.add(row["id"])
+                    remaining.remove(row)
+            rows = [owner, *ordered_rows]
+            wf = self._workflow(self._conn, workflow_id)
+
+        route_snapshots = [self.list_turns(workflow_id, row["id"]) for row in rows]
+        turns: list[dict[str, Any]] = []
+        turn_by_anchor: dict[tuple[str, int], str] = {}
+        route_content_revisions: dict[str, int] = {}
+        route_memory_routes: dict[str, list[dict[str, Any]]] = {}
+        route_inherited_counts: dict[str, int] = {}
+        route_titles: dict[str, str] = {}
+
+        for row, snapshot in zip(rows, route_snapshots):
+            route_id = row["id"]
+            route_content_revisions[route_id] = snapshot["contentRevision"]
+            route_memory_routes[route_id] = snapshot["memoryRoute"]
+            route_inherited_counts[route_id] = snapshot["inheritedMessageCount"]
+            route_titles[route_id] = row["title"]
+            parent_turn_id: str | None = None
+            anchor = snapshot["checkpointAnchor"]
+            if row["surface_scope"] == "turn" and anchor and anchor.get("anchorMessageId") is not None:
+                parent_turn_id = turn_by_anchor.get(
+                    (str(anchor.get("sourceInstanceId")), int(anchor["anchorMessageId"]))
+                )
+            for turn in snapshot["turns"]:
+                item = dict(turn)
+                item["routeInstanceId"] = route_id
+                item["routeTitle"] = row["title"]
+                item["parentTurnId"] = parent_turn_id
+                turns.append(item)
+                turn_by_anchor[(route_id, int(turn["anchorMessageId"]))] = turn["id"]
+                parent_turn_id = turn["id"]
+
+        active_route_id = wf["active_instance_id"]
+        if active_route_id not in route_content_revisions:
+            active_route_id = owner_instance_id
+        owner_snapshot = route_snapshots[0]
+        return {
+            "workflowId": workflow_id,
+            "instanceId": owner_instance_id,
+            "ownerInstanceId": owner_instance_id,
+            "activeRouteInstanceId": active_route_id,
+            "scope": "local",
+            "memoryRoute": owner_snapshot["memoryRoute"],
+            "inheritedMessageCount": owner_snapshot["inheritedMessageCount"],
+            "contentRevision": route_content_revisions[owner_instance_id],
+            "eventRevision": wf["content_revision"],
+            "checkpointAnchor": owner_snapshot["checkpointAnchor"],
+            "preamble": owner_snapshot["preamble"],
+            "turns": turns,
+            "eventExtensions": [],
+            "routeContentRevisions": route_content_revisions,
+            "routeMemoryRoutes": route_memory_routes,
+            "routeInheritedMessageCounts": route_inherited_counts,
+            "routeTitles": route_titles,
         }
 
     def append_message(self, workflow_id: str, instance_id: str, *, role: str, content: str) -> dict[str, Any]:
@@ -454,12 +564,15 @@ class GraphStore:
              initial_message: str | None = None,
              anchor_message_id: int | None = None,
              expected_content_revision: int | None = None,
-             idempotency_key: str | None = None) -> dict[str, Any]:
+             idempotency_key: str | None = None,
+             surface_scope: str = "workflow") -> dict[str, Any]:
         if not title.strip():
             raise Validation("title is required")
         if idempotency_key is not None and not idempotency_key.strip():
             raise Validation("idempotencyKey must not be blank")
         normalized_key = idempotency_key.strip() if idempotency_key is not None else None
+        if surface_scope not in {"workflow", "turn"}:
+            raise Validation("surfaceScope must be workflow or turn")
         if anchor_message_id is not None:
             if expected_content_revision is None:
                 raise Validation(
@@ -477,6 +590,7 @@ class GraphStore:
             "initialMessage": initial_message.strip() if initial_message and initial_message.strip() else None,
             "anchorMessageId": anchor_message_id,
             "expectedContentRevision": expected_content_revision,
+            "surfaceScope": surface_scope,
         }
         child_id, checkpoint_id, now = instance_id or _id("ci"), _id("cp"), _now()
         with self.tx() as cx:
@@ -493,6 +607,12 @@ class GraphStore:
                         return _loads(existing["response_json"], {})
                     raise Conflict("command is already in progress")
             parent = self._instance(cx, workflow_id, parent_id, active=True)
+            if surface_scope == "workflow" and parent["surface_scope"] != "workflow":
+                raise Validation("workflow branches require a workflow conversation source")
+            owner_instance_id = None
+            if surface_scope == "turn":
+                owner_instance_id = (parent["owner_instance_id"]
+                                     if parent["surface_scope"] == "turn" else parent["id"])
             if (expected_content_revision is not None
                     and parent["content_revision"] != expected_content_revision):
                 raise Conflict(
@@ -529,10 +649,12 @@ class GraphStore:
             )
             cx.execute("INSERT INTO conversation_instances "
                        "(id,workflow_id,topic_id,parent_id,checkpoint_id,title,status,provider,"
-                       "provider_conversation_id,content_revision,created_at,updated_at) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       "provider_conversation_id,content_revision,created_at,updated_at,"
+                       "surface_scope,owner_instance_id) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (child_id, workflow_id, child_topic, parent_id, checkpoint_id, title.strip(), "active",
-                        provider or parent["provider"], provider_conversation_id, 0, now, now))
+                        provider or parent["provider"], provider_conversation_id, 0, now, now,
+                        surface_scope, owner_instance_id))
             if initial_message and initial_message.strip():
                 cx.execute(
                     "INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) VALUES(?,?,?,?,?)",
@@ -568,7 +690,7 @@ class GraphStore:
     def topic_routes(self, workflow_id: str, topic_id: str, include_pruned: bool = False) -> dict[str, Any]:
         with self._lock:
             self._workflow(self._conn, workflow_id)
-            sql = "SELECT * FROM conversation_instances WHERE workflow_id=? AND topic_id=?"
+            sql = "SELECT * FROM conversation_instances WHERE workflow_id=? AND topic_id=? AND surface_scope='workflow'"
             args: list[Any] = [workflow_id, topic_id]
             if not include_pruned:
                 sql += " AND status='active'"

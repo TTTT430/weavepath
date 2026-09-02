@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from api.app import create_app
@@ -41,7 +43,7 @@ def test_camel_case_api_round_trip():
     with TestClient(create_app(store)) as client:
         health = client.get("/api/v1/health").json()
         assert health["ok"] is True
-        assert health["schemaVersion"] == 5
+        assert health["schemaVersion"] == 6
         created = client.post("/api/v1/workflows", json={
             "name": "Workflow", "rootTitle": "A", "rootTopicId": "A", "rootInstanceId": "A"
         })
@@ -119,6 +121,26 @@ def test_fork_chat_answers_from_an_exact_turn_and_is_idempotent_without_sibling_
         ]
         assert "shared question" in str(llm.messages)
         assert "sibling-only secret" not in str(llm.messages)
+
+        top_graph = client.get(f"/api/v1/workflows/{wf}/graph").json()
+        assert {node["id"] for node in top_graph["nodes"]} == {"A", "E"}
+        assert child_id not in {node["id"] for node in top_graph["nodes"]}
+        turn_tree = client.get(
+            f"/api/v1/workflows/{wf}/instances/A/turn-tree"
+        ).json()
+        child_turn = next(
+            turn for turn in turn_tree["turns"] if turn["routeInstanceId"] == child_id
+        )
+        assert child_turn["parentTurnId"] == str(anchor["id"])
+        assert child_turn["userMessage"]["content"] == "branch question"
+
+        activated = client.post(
+            f"/api/v1/workflows/{wf}/instances/{child_id}/activate", json={}
+        )
+        assert activated.status_code == 200
+        active_graph = client.get(f"/api/v1/workflows/{wf}/graph").json()
+        assert active_graph["activeInstanceId"] == "A"
+        assert active_graph["activeRouteInstanceId"] == child_id
 
         replay = client.post(f"/api/v1/workflows/{wf}/instances/A/fork-chat", json=body)
         assert replay.json()["node"]["id"] == child_id
@@ -232,7 +254,7 @@ def test_turn_canvas_and_fork_from_turn_api_contract():
         assert replay.json() == forked.json()
         child = client.get(f"/api/v1/workflows/{wf}/instances/C/messages").json()["messages"]
         assert [message["content"] for message in child] == [
-            "A context", "B1", "B1 answer", "B2", "B2 answer"
+            "A context", "B1", "B1 answer", "B2", "B2 answer", "B3", "B3 answer"
         ]
         child_node = next(
             node for node in client.get(f"/api/v1/workflows/{wf}/graph").json()["nodes"]
@@ -388,7 +410,7 @@ def test_regenerate_rechecks_revision_after_model_call():
     store.close()
 
 
-def test_fork_during_generation_sees_old_complete_checkpoint_not_half_state():
+def test_fork_during_generation_keeps_audit_snapshot_but_tracks_parent_after_commit():
     store = GraphStore(":memory:")
     state: dict[str, str] = {}
     llm = CallbackLLM(lambda: store.fork(state["wf"], "B", title="C", instance_id="C"))
@@ -410,6 +432,12 @@ def test_fork_during_generation_sees_old_complete_checkpoint_not_half_state():
             "edited question", "replacement answer"
         ]
         assert [item["content"] for item in store.list_messages(wf, "C")["messages"]] == [
+            "edited question", "replacement answer"
+        ]
+        checkpoint = store._conn.execute(
+            "SELECT messages_json FROM checkpoints WHERE id=(SELECT checkpoint_id FROM conversation_instances WHERE id='C')"
+        ).fetchone()
+        assert [item["content"] for item in json.loads(checkpoint["messages_json"])] == [
             "old question", "old answer"
         ]
     store.close()

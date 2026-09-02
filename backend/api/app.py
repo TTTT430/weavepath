@@ -473,7 +473,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @app.get(prefix + "/health")
     def health():
         return {"ok": True, "service": "weavepath", "version": app.version,
-                "schemaVersion": 5, "aiConfigured": bool(llm.status()["configured"])}
+                "schemaVersion": 6, "aiConfigured": bool(llm.status()["configured"])}
 
     @app.get(prefix + "/ai/status")
     def ai_status():
@@ -529,6 +529,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/turns")
     def turns(workflow_id: str, instance_id: str):
         return graph_store.list_turns(workflow_id, instance_id)
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/turn-tree")
+    def turn_tree(workflow_id: str, instance_id: str):
+        return graph_store.list_turn_tree(workflow_id, instance_id)
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/messages", status_code=201)
     def append(workflow_id: str, instance_id: str, body: MessageInput):
@@ -638,7 +642,9 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/fork-chat", status_code=201)
     def fork_chat(workflow_id: str, instance_id: str, body: ForkChatInput):
-        result = graph_store.fork(workflow_id, instance_id, **body.model_dump(by_alias=False))
+        result = graph_store.fork(
+            workflow_id, instance_id, **body.model_dump(by_alias=False), surface_scope="turn"
+        )
         child_id = result["node"]["id"]
         local = graph_store.list_messages(workflow_id, child_id, scope="local")["messages"]
         existing_answer = next((message for message in reversed(local)
@@ -663,8 +669,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             except Exception:
                 reply_status, reply_error = "failed", "aiUnavailable"
         graph = graph_store.get_graph(workflow_id)
-        node = next(item for item in graph["nodes"] if item["id"] == child_id)
-        return {"node": node, "graphRevision": graph["graphRevision"],
+        return {"node": result["node"], "graphRevision": graph["graphRevision"],
                 "replyStatus": reply_status, "replyErrorCode": reply_error,
                 "assistantMessage": assistant_message}
 

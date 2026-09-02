@@ -114,6 +114,11 @@ CREATE TABLE IF NOT EXISTS experiments(
 CREATE INDEX IF NOT EXISTS idx_experiments_workflow ON experiments(workflow_id,created_at);
 """
 
+V6 = """
+CREATE INDEX IF NOT EXISTS idx_instances_turn_owner
+ON conversation_instances(workflow_id,owner_instance_id,surface_scope,created_at);
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
@@ -157,4 +162,70 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     if 5 not in applied:
         conn.executescript(V5)
         conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)", (_now(),))
+    if 6 not in applied:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_instances)")}
+        if "surface_scope" not in columns:
+            conn.execute(
+                "ALTER TABLE conversation_instances ADD COLUMN surface_scope TEXT NOT NULL "
+                "DEFAULT 'workflow' CHECK(surface_scope IN ('workflow','turn'))"
+            )
+        if "owner_instance_id" not in columns:
+            conn.execute(
+                "ALTER TABLE conversation_instances ADD COLUMN owner_instance_id TEXT "
+                "REFERENCES conversation_instances(id)"
+            )
+
+        # Before schema v6 the second-layer fork command reused a normal
+        # ConversationInstance. Exact local-turn checkpoints therefore leaked
+        # into the top-level workflow graph. Reclassify those rows as internal
+        # turn routes and keep their original messages/checkpoints intact.
+        candidates = conn.execute(
+            "SELECT ci.id,ci.workflow_id,ci.parent_id FROM conversation_instances ci "
+            "JOIN checkpoints cp ON cp.id=ci.checkpoint_id "
+            "WHERE cp.source_cursor_kind='localUserTurn' ORDER BY ci.created_at,ci.id"
+        ).fetchall()
+        for instance_id, workflow_id, parent_id in candidates:
+            parent = conn.execute(
+                "SELECT id,surface_scope,owner_instance_id FROM conversation_instances "
+                "WHERE workflow_id=? AND id=?",
+                (workflow_id, parent_id),
+            ).fetchone()
+            if parent:
+                owner_id = parent[2] if parent[1] == "turn" else parent[0]
+                conn.execute(
+                    "UPDATE conversation_instances SET surface_scope='turn',owner_instance_id=? "
+                    "WHERE workflow_id=? AND id=?",
+                    (owner_id, workflow_id, instance_id),
+                )
+
+        # Normalize nested exact-turn rows even when parent and child share the
+        # same second-level created_at value and were visited out of order.
+        while True:
+            changed = conn.execute(
+                "UPDATE conversation_instances SET owner_instance_id=("
+                "SELECT parent.owner_instance_id FROM conversation_instances parent "
+                "WHERE parent.id=conversation_instances.parent_id"
+                ") WHERE surface_scope='turn' AND parent_id IN ("
+                "SELECT id FROM conversation_instances WHERE surface_scope='turn'"
+                ") AND owner_instance_id IS NOT (SELECT parent.owner_instance_id "
+                "FROM conversation_instances parent WHERE parent.id=conversation_instances.parent_id)"
+            ).rowcount
+            if not changed:
+                break
+
+        # Any descendants of a migrated internal route belong to the same
+        # second-layer canvas even if their older checkpoint used instanceHead.
+        while True:
+            changed = conn.execute(
+                "UPDATE conversation_instances SET surface_scope='turn',owner_instance_id=("
+                "SELECT parent.owner_instance_id FROM conversation_instances parent "
+                "WHERE parent.id=conversation_instances.parent_id"
+                ") WHERE surface_scope='workflow' AND parent_id IN ("
+                "SELECT id FROM conversation_instances WHERE surface_scope='turn'"
+                ")"
+            ).rowcount
+            if not changed:
+                break
+        conn.executescript(V6)
+        conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)", (_now(),))
     conn.commit()

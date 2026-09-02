@@ -44,7 +44,7 @@ WorkspaceShell
 
 - 双击顶层实例卡片进入该实例的 Turn Canvas，不激活对话。
 - 一个 turn 以该实例的本地 `user` message 开始，并包含下一条本地 `user` message 之前的本地 assistant、tool message；failure/operation 在相应事件投影可用后作为同一 turn 的扩展时间线。
-- Turn Canvas 的显示数据是 `scope=local` 的只读投影；surface 可提交 route-scoped chat/fork 命令，但不维护第二份 transcript。祖先 checkpoint 中的继承消息不得再次渲染成当前实例的卡片。
+- Turn Canvas 是顶层对话 owner 的内部 Turn Tree；owner 基础路线与 `surface_scope=turn` 的内部路线共同投影为逐轮卡片，surface 可提交 route-scoped chat/fork 命令，但不维护第二份 transcript。祖先 checkpoint 中的继承消息不得再次渲染成当前路线的卡片。
 - 继承信息只在路线面包屑、checkpoint 摘要和 `inheritedMessageCount` 中展示，并可通过显式检查入口查看。
 - 返回第一层时恢复顶层 viewport、节点位置、折叠和 selection；再次进入同一实例时恢复该实例自己的 Turn Canvas 状态。
 
@@ -69,7 +69,7 @@ WorkspaceShell
 
 ### 4. 从具体 turn 分支必须冻结精确 checkpoint cursor
 
-从 Turn Canvas 中的某轮创建子实例时，命令必须同时携带：
+从 Turn Canvas 中的某轮创建内部路线时，命令必须同时携带：
 
 ```text
 source_instance_id
@@ -84,9 +84,9 @@ Standalone 的当前 cursor 约定为：
 - `localUserTurn`：`source_cursor_value` 是源实例中的本地用户消息 ID；checkpoint 包含该用户问题以及下一次本地用户提问之前产生的回答、工具和失败事件。
 - `instanceHead`：没有选择具体 turn 时，cursor 指向请求接受时的实例头，并记录对应 `source_content_revision`。
 
-checkpoint 继续保存冻结的有效消息快照；cursor 是可审计的分支锚点，不替代快照。请求还必须带 `expected_content_revision`，源实例已变化时返回 409，不能在新的内容头上悄悄重放旧 selection。
+checkpoint 继续保存创建时的有效消息快照；cursor 是可审计的分支锚点，不替代快照。运行时有效上下文沿 parent 链读取最新消息，因此源实例后续新增或修改会进入已有子路线。请求还必须带 `expected_content_revision`，源实例已变化时返回 409，不能在新的内容头上悄悄重放旧 selection。
 
-Standalone 的 `fork-chat` 命令使用同一 idempotency key 覆盖“创建子实例 + 生成首个回答”。子实例创建成功而模型失败时保留用户问题并返回稳定 `replyErrorCode`，UI 继续打开该子实例并显示失败状态；相同命令重试不得重复创建子实例或重复已完成的回答。
+Standalone 的 `fork-chat` 命令使用同一 idempotency key 覆盖“创建内部路线实例 + 生成首个回答”。内部实例必须带 `surface_scope=turn` 和顶层 `owner_instance_id`，不能出现在第一层 Workflow Graph。创建成功而模型失败时保留用户问题并返回稳定 `replyErrorCode`，UI 继续选中该内部路线并显示失败状态；相同命令重试不得重复创建实例或重复已完成的回答。
 
 未来 HostAdapter 使用 provider-neutral 的 checkpoint reference：
 
@@ -164,6 +164,8 @@ can_navigate
 - 只有显式“继续对话”可以 activate；成功前不得离开工作流 surface。
 - 从 turn 分支必须冻结到该 turn 的 cursor，并拒绝 stale `expected_content_revision`。
 - Turn Canvas composer 与 Chat 必须写入同一个实例消息真源；任一 surface 刷新后看到的本地 turns 必须一致。
+- 精确轮次分支只能出现在 owner 的第二层 Turn Tree；第一层 graph、topic route chooser 和实验分支列表不得把它当作新的工作流对话框。
+- 激活内部路线后，普通 Chat 的标题仍是顶层 owner 名称，但消息读写目标必须是具体 `activeRouteInstanceId`。
 - 画布发送和精确分支不得隐式 activate 当前实例或子实例。
 - UI metadata 的写入不得改变 graph/content revision。
 - 同 topic 多路线必须先解析到具体 instance，Turn Canvas 和继续对话都不能使用逻辑 topic 代替实例 ID。
@@ -171,6 +173,6 @@ can_navigate
 
 ## 本机验证记录
 
-2026-09-01 的统一验证基线包含后端 104 项测试、前端 66 项测试、Python compileall、TypeScript typecheck 和 production build。自动化路径确认了原生三视图切换、双击只钻入 Turn Canvas、local-only 内容投影、画布/Chat 共用消息真源、从具体 turn 幂等创建并回答子分支、画布状态恢复，以及只有显式“继续对话”才 activate；真实浏览器继续覆盖只读钻入与交互 surface。
+2026-09-02 的统一验证基线包含后端 104 项测试、前端 68 项测试、Python compileall、TypeScript typecheck 和 production build。自动化路径确认了原生三视图切换、双击只钻入 Turn Canvas、内部分支不泄漏到顶层、画布/Chat 通过具体 `activeRouteInstanceId` 共用消息真源、从具体 turn 幂等创建并回答内部路线、画布状态恢复，以及只有显式“继续对话”才 activate；真实浏览器继续覆盖现有数据库 v6 迁移与交互 surface。
 
 该记录只适用于单用户、本机、Standalone Local Graph Chat 纵向切片。`/graph` 是兼容入口；正式 HostAdapter 的 capability degradation 仍需 adapter contract 与对应宿主 E2E。

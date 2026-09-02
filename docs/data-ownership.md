@@ -10,7 +10,7 @@ WeavePath 保存完成 Agent 工作路线所需的最小数据。图元数据由
 | Host task/session ID | 全局 SQLite | 是 | 只保存 binding 和必要 capability |
 | Codex/Claude transcript | 对应宿主 | 否 | 按需 inspect；索引需用户开启 |
 | Standalone transcript | 全局 SQLite | 是 | Local Chat 自己拥有 |
-| Checkpoint | 全局 SQLite | 是 | 分支时冻结，绑定具体 instance/revision |
+| Checkpoint | 全局 SQLite | 是 | 分支时记录不可变锚点、创建时快照并绑定具体 instance/revision；运行时上下文沿 parent 路线动态读取 |
 | Foundation、route digest | 全局 SQLite（planned） | 尚未实现 | 未来必须绑定具体 instance/checkpoint |
 | Agent run brief、状态、step、event | 全局 SQLite | 是 | Route-to-Agent Run v1 verified local preview；run 绑定具体 instance/revision |
 | Agent frozen context snapshot | 全局 SQLite | 是 | 复制当次具体路线的完整 effective messages、memory route、工具规格与 brief；用于可复现性，不是缓存 |
@@ -51,14 +51,14 @@ Run summary/detail 会返回 context hash、memory route 与 available tool 规�
 Context builder 只可读取：
 
 1. 当前实例自己的消息；
-2. 每个祖先在子分支创建时冻结的 checkpoint；
+2. parent 链上祖先实例当前的消息（沿路线动态读取）；checkpoint 创建时快照仅用于审计；
 3. 用户显式授权的跨路线 transfer。
 
 禁止自动读取：
 
 - sibling transcript；
 - 相同 `topic_id` 的其他实例；
-- 当前 checkpoint 之后新增的祖先消息；
+- 兄弟路线的消息；
 - 另一个 workspace 的内容。
 
 显式 transfer 必须保存 source instance、source checkpoint、target instance、用户确认和摘要/hash，以便审计其来源。

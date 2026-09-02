@@ -18,9 +18,9 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 - `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
 - 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
 
-当前仓库已有 SQLite `GraphStore`、schema v5 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布显示具体 `ConversationInstance` 路线，双击节点进入只投影该实例本地记录的 Turn Canvas。第二层画布现在也是同一对话实例的命令入口：可直接继续提问并获得回答，也可从任意轮次卡片精确创建子分支并生成首个回答；所有写入与普通 Chat 共用同一消息真源。双击仍不 activate，只有显式“继续对话”才切换当前 Chat。继承内容不会在子实例中重复冒充本地卡片。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前自动化基线为后端 104 项、前端 66 项通过，并完成 compileall、typecheck 和 production build。`/graph` 只保留为兼容入口。
+当前仓库已有 SQLite `GraphStore`、schema v6 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，双击节点进入该对话内部的 Turn Tree。第二层画布可直接继续提问，也可从任意轮次精确创建隔离的内部路线并生成首个回答；内部路线仍使用真实 checkpoint/消息记录，但不会泄漏为第一层工作流框。选择内部路线并“继续对话”后，普通 Chat 读取和写入同一路线。双击仍不 activate。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前自动化基线为后端 104 项、前端 68 项通过，并完成 compileall、typecheck 和 production build。`/graph` 只保留为兼容入口。
 
-第一版 OpenAI-compatible 同步 AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止，已有子节点继续使用编辑前的冻结 checkpoint。SSE、migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
+第一版 OpenAI-compatible 同步 AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。SSE、migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
 
 ### Route-to-Agent Run v1（本机预览已验证）
 
@@ -28,7 +28,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 
 该 preview 当前是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。官方 app factory 已用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；跨进程 run owner/lease 仍属于后续运行时硬化范围。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
 
-2026-09-01 的当前统一本机验证基线包括 104 项后端测试、66 项前端测试、Python compileall、TypeScript/production build 和双层画布/Route-to-Agent Run/Engineering Lab 真实浏览器验收。其中 Route-to-Agent Run 路径使用受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。schema v5 进一步加入 Engineering Lab preview，但不把它宣称为完整 Evaluation 或 Artifact 阶段。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。SSE、取消、任意 shell/文件/网络工具、自动 evaluator/scorer、多 Agent，以及正式 Codex/Claude adapter 仍未包含。
+2026-09-02 的当前统一本机验证基线包括 104 项后端测试、68 项前端测试、Python compileall、TypeScript/production build 和双层画布/Route-to-Agent Run/Engineering Lab 真实浏览器验收。其中 Route-to-Agent Run 路径使用受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，但不把它们宣称为完整 Evaluation 或 Artifact 阶段。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。SSE、取消、任意 shell/文件/网络工具、自动 evaluator/scorer、多 Agent，以及正式 Codex/Claude adapter 仍未包含。
 
 ### Engineering Lab（本机预览）
 
@@ -98,10 +98,10 @@ graph-core 不调用 Codex/Claude、LLM、Widget 或文件系统宿主 API。外
 - 一个 `ConversationInstance` 只有一个 `parent_instance_id`，因此只有一条不可变祖先路线。
 - 多个实例可以共享同一个 `topic_id`，但绝不能共享可变 transcript。
 - `root_instance_id` 是图属性；`current`、`selected`、`last opened` 是不同来源的状态。
-- 分支绑定父节点的稳定 `Checkpoint`；父节点后来继续聊天不得改变已创建子路线的记忆。
+- 分支绑定父节点的稳定 `Checkpoint` 锚点；checkpoint 快照用于审计和复现创建时状态，但有效上下文沿父路线动态读取，父节点后来新增或修改的消息会进入已创建子路线。
 - 默认禁止读取兄弟路线；跨路线内容必须由用户显式授权并记录 provenance。
 - 图结构变更使用 `graph_revision`；消息和摘要更新使用实例级 `content_revision`。
-- Turn Canvas 只投影具体实例的本地 turns；画布命令仍写入该具体实例的同一消息表，祖先 checkpoint 只作为路线记忆和继承摘要。
+- Turn Canvas 只投影具体实例的本地 turns；画布命令仍写入该具体实例的同一消息表，祖先路线消息作为动态继承记忆，checkpoint 快照和锚点仅用于审计摘要。
 - selection 与双击钻入只改变 UI metadata；只有显式“继续对话”才 activate。
 - “从工作流移除”表示 leaf-first 归档并保留 tombstone，不是永久删除账户数据。
 
@@ -109,14 +109,14 @@ graph-core 不调用 Codex/Claude、LLM、Widget 或文件系统宿主 API。外
 
 第一个可运行版本是 **Local Graph Chat**：
 
-- FastAPI + React + schema v5 全局 SQLite；
+- FastAPI + React + schema v6 全局 SQLite；
 - StandaloneAdapter 拥有本地 transcript；
 - 原生 `WorkspaceShell` 在同一页面切换 Chat 和 Workflow surface，并保持草稿、滚动与画布状态；
 - 顶层 Workflow Graph 管理具体实例路线，双击按需进入节点内部 local-only Turn Canvas；可在画布中继续对话或从具体 turn 创建并回答新分支；
 - 只有显式“继续对话”才 activate；可以从具体 turn 精确分支；
 - 创建、fork、activate、inspect、topic route choice、prune plan/commit；
 - `/graph` 与 popup 仅为兼容入口，继续用 `BroadcastChannel + postMessage` 同步真实 mutation；WebSocket 尚未实现；
-- 使用稳定 checkpoint 验证 `A-B-C-D1` 与 `A-E-D2` 的记忆隔离。
+- 使用 checkpoint 锚点和动态父路线验证 `A-B-C-D1` 与 `A-E-D2` 的记忆隔离。
 
 完整验收见 [Local Graph Chat](docs/local-graph-chat.md)。
 
@@ -250,7 +250,7 @@ $env:WEAVEPATH_LLM_TIMEOUT = "60"
 
 ```text
 apps/web/                     React WorkspaceShell、Workflow/Turn 双层画布与 Agent Run 面板
-backend/graph_core/           SQLite GraphStore、schema v5 migrations、turn cursor checkpoint 与 revision
+backend/graph_core/           SQLite GraphStore、schema v6 migrations、turn cursor checkpoint 与双层路线
 backend/agent_runtime/        Agent Run、event journal、OpenAI-compatible adapter 与安全工具注册表
 backend/api/                  FastAPI `api.app:create_app` factory 与 schemaVersion 4 API
 backend/tests/                graph-core、API、AI 设置/路线、迁移与 Agent Runtime 测试

@@ -22,7 +22,7 @@ The current **Conversation Workflow / Local Graph Chat** implementation is the P
 - revision-aware editing and regeneration of the latest local user message.
 - an Engineering Lab preview for transcript-free branch comparison, explicit knowledge transfer, versioned artifacts and datasets, and frozen experiment snapshots.
 
-Phase 1 is **not complete**. A schema v5 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
+Phase 1 is **not complete**. A schema v6 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
 
 A **Verified local preview** named **Route-to-Agent Run v1** now exercises one bounded synchronous run from a frozen concrete-route context, with an execution brief, durable event journal, `safe_calculator` / `1.0.0`, the configured OpenAI-compatible production adapter, a test-only scripted mock, revision/idempotency/interruption safeguards, and a readable web execution timeline. A separate **Engineering Lab v1** slice adds branch comparison, explicit accepted-knowledge records, versioned artifacts/datasets, and immutable experiment snapshots. These narrow previews do not make Phase 1, Phase 2, Phase 5, or Phase 7 complete.
 
@@ -84,7 +84,7 @@ Deliver a reliable standalone route-aware conversation graph before expanding in
 
 **Current capabilities** are listed in “What exists today.” Remaining work includes:
 
-- hardening the existing schema v5 forward migrations with upgrade matrices, backup/recovery, and rollback/downgrade policy;
+- hardening the existing schema v6 forward migrations with upgrade matrices, backup/recovery, and rollback/downgrade policy;
 - extending restart, archive, and conflict E2E coverage; `/graph` popup lifecycle is compatibility coverage, not a completion condition for the default WorkspaceShell;
 - stable command/query application services and adapter contracts;
 - clearer recovery for partially completed operations;

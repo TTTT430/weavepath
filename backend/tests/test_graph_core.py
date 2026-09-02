@@ -29,14 +29,14 @@ def test_route_instances_are_isolated_and_same_topic_has_two_routes(store: Graph
     assert {row["id"] for row in routes} == {"D1", "D2"}
 
 
-def test_fork_freezes_parent_checkpoint(store: GraphStore):
+def test_fork_inherits_parent_messages_added_after_creation(store: GraphStore):
     wf = create(store)
     store.append_message(wf, "A", role="user", content="before fork")
     store.fork(wf, "A", title="B", topic_id="B", instance_id="B")
     store.append_message(wf, "A", role="user", content="after fork")
     child = store.list_messages(wf, "B")["messages"]
-    assert [item["content"] for item in child] == ["before fork"]
-    assert child[0]["inherited"] is True
+    assert [item["content"] for item in child] == ["before fork", "after fork"]
+    assert all(item["inherited"] is True for item in child)
 
 
 def test_fork_initial_message_is_child_local_and_bumps_content_revision(store: GraphStore):
@@ -92,7 +92,7 @@ def test_turn_canvas_groups_local_messages_and_exposes_route_context_counts(stor
     assert "sibling secret" not in str(canvas)
 
 
-def test_fork_from_local_user_turn_freezes_complete_turn_and_excludes_later_turns(store: GraphStore):
+def test_fork_from_local_user_turn_keeps_anchor_but_tracks_later_parent_messages(store: GraphStore):
     wf = create(store)
     store.append_message(wf, "A", role="user", content="A context")
     store.fork(wf, "A", title="B", instance_id="B")
@@ -112,7 +112,8 @@ def test_fork_from_local_user_turn_freezes_complete_turn_and_excludes_later_turn
     )
 
     assert [message["content"] for message in store.list_messages(wf, "C")["messages"]] == [
-        "A context", "B1", "B1 answer", "B2", "B2 system response", "B2 answer", "B2 tool"
+        "A context", "B1", "B1 answer", "B2", "B2 system response", "B2 answer", "B2 tool",
+        "B3", "B3 answer"
     ]
     assert forked["checkpointAnchor"] == {
         "kind": "localUserTurn",
@@ -125,7 +126,7 @@ def test_fork_from_local_user_turn_freezes_complete_turn_and_excludes_later_turn
         "sourceContentRevision": latest["contentRevision"],
     }
     store.append_message(wf, "B", role="user", content="B4 after fork")
-    assert "B4 after fork" not in [
+    assert "B4 after fork" in [
         message["content"] for message in store.list_messages(wf, "C")["messages"]
     ]
 
@@ -241,14 +242,15 @@ def test_local_and_effective_message_scopes_keep_routes_isolated(store: GraphSto
     ]
     assert [(item["content"], item["inherited"]) for item in effective] == [
         ("parent before fork", True),
+        ("parent after fork", True),
         ("child B local", False),
     ]
     assert default == effective
-    assert "parent after fork" not in [item["content"] for item in effective]
+    assert "parent after fork" in [item["content"] for item in effective]
     assert "sibling E local" not in [item["content"] for item in effective]
 
 
-def test_edit_latest_local_user_preserves_frozen_children_and_siblings(store: GraphStore):
+def test_edit_latest_local_user_updates_children_but_not_siblings(store: GraphStore):
     wf = create(store)
     store.append_message(wf, "A", role="user", content="root context")
     store.fork(wf, "A", title="B", instance_id="B")
@@ -278,7 +280,7 @@ def test_edit_latest_local_user_preserves_frozen_children_and_siblings(store: Gr
         ("edited question", False)
     ]
     assert [item["content"] for item in store.list_messages(wf, "C")["messages"]] == [
-        "root context", "old question", "old answer", "old tool"
+        "root context", "edited question"
     ]
     assert [item["content"] for item in store.list_messages(wf, "E")["messages"]] == [
         "root context", "sibling work"
@@ -322,7 +324,7 @@ def test_schema_and_revisions(store: GraphStore):
     assert store._conn.execute("PRAGMA journal_mode").fetchone()[0] in {"memory", "wal"}
     tables = {row[0] for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"workflows", "topics", "conversation_instances", "checkpoints", "local_messages", "tombstones", "commands", "schema_migrations"} <= tables
-    assert store._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 5
+    assert store._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 6
     before = store.get_graph(wf)
     store.append_message(wf, "A", role="user", content="hello")
     after_message = store.get_graph(wf)

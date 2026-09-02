@@ -11,7 +11,7 @@
 
 - `Topic` 是逻辑分组和显示名称。
 - `ConversationInstance` 是具体、可继续的对话实例。
-- 每个实例只有一个 `parent_instance_id` 和一个冻结的 `parent_checkpoint_id`。
+- 每个实例只有一个 `parent_instance_id` 和一个不可变的 `parent_checkpoint_id` 锚点；checkpoint 快照用于审计，运行时上下文沿 parent 链动态读取。
 - 相同 topic 可有任意多个实例；它们拥有独立 transcript、host binding、checkpoint 和 content revision。
 - UI 可以聚合显示同 topic，但继续前必须选择具体路线实例。
 - 路线从 parent 链推导，不存可变路径数组。
@@ -34,5 +34,5 @@
 
 - 一个 host thread/session binding 只能属于一个 active instance。
 - 同 topic 不代表共享 transcript。
-- 子节点只继承 fork 时 checkpoint 之前的祖先状态。
+- 子节点只继承其 parent 路线的消息；parent 后续新增或修改会动态进入子节点，兄弟路线永不进入。
 - pruned ancestor 下不能存在 active descendant。
