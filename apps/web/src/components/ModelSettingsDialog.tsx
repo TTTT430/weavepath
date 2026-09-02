@@ -2,6 +2,7 @@ import{useEffect,useState}from'react';
 import type{AISettingsInput}from'../domain/types';
 import{api,ApiError}from'../lib/api';
 import{useI18n,type Locale}from'../lib/i18n';
+import{AppearanceSelect}from'./AppearanceSelect';
 import'../settings.css';
 
 const presets={
@@ -23,7 +24,7 @@ export function ModelSettingsDialog({onClose,onSaved}:{onClose:()=>void;onSaved:
  async function save(){setBusy(true);setNotice('');try{await api.saveAISettings(body());await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
  async function reset(){setBusy(true);try{await api.resetAISettings();await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e));setBusy(false)}}
  return <div className="modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="model-settings-title"><header><h2 id="model-settings-title">{t('modelSettings')}</h2><button aria-label={t('close')} onClick={onClose}>×</button></header>
-  <label>{t('language')}<select value={locale} onChange={e=>setLocale(e.target.value as Locale)}><option value="zh-CN">中文</option><option value="en">English</option></select></label>
+  <label>{t('language')}<select value={locale} onChange={e=>setLocale(e.target.value as Locale)}><option value="zh-CN">中文</option><option value="en">English</option></select></label><AppearanceSelect/>
   <label>{t('provider')}<select value={provider} onChange={e=>choose(e.target.value as Preset)}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="lmstudio">LM Studio</option><option value="ollama">Ollama</option><option value="custom">{t('customProvider')}</option></select></label>
   <label>{t('baseUrl')}<input value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="https://…/v1"/></label>
   <label>{t('model')}<input list="available-models" value={model} onChange={e=>setModel(e.target.value)} placeholder={t('modelPlaceholder')}/><datalist id="available-models">{models.map(x=><option key={x} value={x}/>)}</datalist><small>{t('manualModelHint')}</small></label>
