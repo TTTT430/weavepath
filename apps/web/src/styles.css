@@ -71,6 +71,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 }
 
 .workspace-topbar > strong { color: #1f2937; font-size: 13px; }
+.canvas-breadcrumb form { display: flex; align-items: center; gap: 5px; }
+.canvas-breadcrumb form input { width: min(260px, 36vw); padding: 5px 7px; border: 1px solid #cbd5dc; border-radius: 7px; }
+.breadcrumb-edit { padding: 2px 5px; color: #71808b; font-size: 11px; background: transparent; border-color: transparent; }
 .workspace-topbar > span { overflow: hidden; color: #7c8798; font-size: 11px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .workspace-view-tabs { display: flex; gap: 2px; padding: 3px; background: #f4f5f6; border: 1px solid #d1d5db; border-radius: 999px; }
 .workspace-view-tabs button { min-width: 92px; min-height: 28px; padding: 3px 13px; background: transparent; border-color: transparent; border-radius: 999px; box-shadow: none; }
@@ -254,6 +257,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .reply-thinking .stop-generating:hover,
 .reply-error button:hover { background: #e7f1f0; }
 .reply-cancelled > div { color: #68777d; background: #f5f7f7; }
+.auto-name-hint { margin: -3px 0 4px; color: #68777d; font-size: 11px; }
 
 @keyframes thinking-pulse {
   0%, 70%, 100% { opacity: .28; transform: translateY(0); }

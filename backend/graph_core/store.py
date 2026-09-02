@@ -123,14 +123,16 @@ class GraphStore:
     def create_workflow(self, *, name: str, root_title: str, root_topic_id: str | None = None,
                         provider: str = "local", root_instance_id: str | None = None,
                         provider_conversation_id: str | None = None) -> dict[str, Any]:
-        if not name.strip() or not root_title.strip():
-            raise Validation("name and rootTitle are required")
+        # Names are optional at creation time.  The first user message will
+        # replace these generated placeholders with a concise title.
+        normalized_name = name.strip() or "新工作流"
+        normalized_root_title = root_title.strip() or "新对话"
         workflow_id, instance_id = _id("wf"), root_instance_id or _id("ci")
         topic_id, checkpoint_id, now = root_topic_id or _id("topic"), _id("cp"), _now()
         with self.tx() as cx:
             cx.execute("INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?)",
-                       (workflow_id, name.strip(), instance_id, instance_id, 1, 0, now, now))
-            self._ensure_topic(cx, workflow_id, topic_id, root_title.strip())
+                       (workflow_id, normalized_name, instance_id, instance_id, 1, 0, now, now))
+            self._ensure_topic(cx, workflow_id, topic_id, normalized_root_title)
             cx.execute(
                 "INSERT INTO checkpoints"
                 "(id,workflow_id,source_instance_id,source_content_revision,messages_json,created_at,"
@@ -139,10 +141,11 @@ class GraphStore:
             )
             cx.execute("INSERT INTO conversation_instances "
                        "(id,workflow_id,topic_id,parent_id,checkpoint_id,title,status,provider,"
-                       "provider_conversation_id,content_revision,created_at,updated_at) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (instance_id, workflow_id, topic_id, None, checkpoint_id, root_title.strip(),
-                        "active", provider, provider_conversation_id, 0, now, now))
+                       "provider_conversation_id,content_revision,created_at,updated_at,title_is_generated) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (instance_id, workflow_id, topic_id, None, checkpoint_id, normalized_root_title,
+                        "active", provider, provider_conversation_id, 0, now, now,
+                        1 if not root_title.strip() else 0))
         return self.get_graph(workflow_id)
 
     def _route_ids(self, cx: sqlite3.Connection, workflow_id: str, instance_id: str) -> list[str]:
@@ -436,8 +439,10 @@ class GraphStore:
         now = _now()
         with self.tx() as cx:
             instance = self._instance(cx, workflow_id, instance_id, active=True)
+            workflow = self._workflow(cx, workflow_id)
             first_local_user = False
             generated_title: str | None = None
+            generated_workflow_name: str | None = None
             if role == "user" and instance["title_is_generated"]:
                 first_local_user = not bool(cx.execute(
                     "SELECT 1 FROM local_messages "
@@ -446,6 +451,8 @@ class GraphStore:
                 ).fetchone())
                 if first_local_user:
                     generated_title = _prompt_branch_title(content)
+            if role == "user" and first_local_user and workflow["name"] == "新工作流":
+                generated_workflow_name = _prompt_branch_title(content)
             cur = cx.execute("INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) VALUES(?,?,?,?,?)",
                              (workflow_id, instance_id, role, content, now))
             if generated_title:
@@ -460,10 +467,15 @@ class GraphStore:
                     "WHERE id=?",
                     (now, instance_id),
                 )
+            if generated_workflow_name:
+                cx.execute(
+                    "UPDATE workflows SET name=?,updated_at=? WHERE id=?",
+                    (generated_workflow_name, now, workflow_id),
+                )
             cx.execute(
                 "UPDATE workflows SET content_revision=content_revision+1,"
                 "graph_revision=graph_revision+?,updated_at=? WHERE id=?",
-                (1 if generated_title else 0, now, workflow_id),
+                (1 if generated_title or generated_workflow_name else 0, now, workflow_id),
             )
             updated_wf = self._workflow(cx, workflow_id)
             event_revision = updated_wf["content_revision"]
@@ -785,6 +797,31 @@ class GraphStore:
                 "graphRevision": updated_wf["graph_revision"],
                 "eventRevision": updated_wf["content_revision"],
             }
+
+    def rename_workflow(self, workflow_id: str, *, name: str,
+                        expected_revision: int) -> dict[str, Any]:
+        normalized = name.strip()
+        if not normalized:
+            raise Validation("name must not be blank")
+        if len(normalized) > 240:
+            raise Validation("name must be at most 240 characters")
+        now = _now()
+        with self.tx() as cx:
+            wf = self._workflow(cx, workflow_id)
+            if wf["graph_revision"] != expected_revision:
+                raise Conflict(
+                    "stale graph revision: expected "
+                    f"{expected_revision}, actual {wf['graph_revision']}"
+                )
+            if wf["name"] != normalized:
+                cx.execute(
+                    "UPDATE workflows SET name=?,graph_revision=graph_revision+1,updated_at=? WHERE id=?",
+                    (normalized, now, workflow_id),
+                )
+            updated = self._workflow(cx, workflow_id)
+            return {"workflowId": workflow_id, "name": updated["name"],
+                    "graphRevision": updated["graph_revision"],
+                    "eventRevision": updated["content_revision"]}
 
     def activate(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
         with self.tx() as cx:

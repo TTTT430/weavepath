@@ -27,7 +27,7 @@ function excerpt(value:string,limit=420){const clean=value.trim();return clean.l
 function TurnCard({data,selected=false}:{data:TurnData;selected?:boolean}){
  const{turn}=data;
  const placeholder=!!turn.isRoutePlaceholder,routeId=turn.routeInstanceId||'';
- return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''} ${placeholder?'is-route-placeholder':''}`} onClick={()=>data.onSelect(turn.id,routeId)}>
+ return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''} ${placeholder?'is-route-placeholder':''}`} onClick={()=>data.onSelect(turn.id,routeId)} onDoubleClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId)}} title={data.detailsLabel}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
   <button type="button" className="turn-collapse" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}>{data.collapsed?'＋':'−'}</button>
   {!placeholder&&data.onBranch&&<button type="button" className="turn-branch" aria-label={`${data.branchLabel}: ${turn.sequence}`} title={data.branchLabel} onClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId);data.onBranch?.(turn)}}>＋</button>}
@@ -59,7 +59,7 @@ function emptyMessage(id:string,content:string):Message{return{id,role:'user',co
 
 export function canvasTurns(snapshot:TurnCanvasSnapshot,emptyBranchLabel:string):CanvasTurn[]{
  const turns:CanvasTurn[]=snapshot.turns.map(turn=>({...turn}));
- const routes=snapshot.routeNodes||[];
+ const routes=(snapshot.routeNodes||[]).filter(route=>(route as TurnRouteNodeWithStatus).status!=='pruned');
  if(!routes.length)return turns;
  const represented=new Set(turns.map(turn=>turn.routeInstanceId||snapshot.instanceId));
  const turnByAnchor=new Map(turns.map(turn=>[`${turn.routeInstanceId||snapshot.instanceId}:${turn.anchorMessageId}`,turn.id]));
@@ -70,6 +70,8 @@ export function canvasTurns(snapshot:TurnCanvasSnapshot,emptyBranchLabel:string)
  }
  return turns;
 }
+
+type TurnRouteNodeWithStatus=TurnCanvasSnapshot['routeNodes'] extends Array<infer T>?T&{status?:string}:{status?:string};
 
 export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPositions={},initialViewport,onSelect,onToggleCollapse,onViewportChange,onNodePositionChange,onBranch,labels}:TurnCanvasProps){
  const[instance,setInstance]=useState<ReactFlowInstance<TurnFlowNode>|null>(null),collapsed=new Set(collapsedTurnIds);

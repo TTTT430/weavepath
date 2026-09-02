@@ -10,7 +10,7 @@ export type ConversationTurnStatus='completed'|'pending'|'running'|'failed'|'int
 export interface ConversationTurn {id:string;sequence:number;anchorMessageId:number;userMessage:Message;responses:Message[];status:ConversationTurnStatus;routeInstanceId?:string;routeTitle?:string;parentTurnId?:string|null}
 export interface TurnCanvasSnapshot {workflowId:string;instanceId:string;ownerInstanceId?:string;activeRouteInstanceId?:string;scope:'local';contentRevision:number;eventRevision:number;memoryRoute:TurnMemoryRouteNode[];inheritedMessageCount:number;checkpointAnchor:Record<string,unknown>|null;preamble:Message[];turns:ConversationTurn[];eventExtensions:unknown[];routeContentRevisions?:Record<string,number>;routeMemoryRoutes?:Record<string,TurnMemoryRouteNode[]>;routeInheritedMessageCounts?:Record<string,number>;routeTitles?:Record<string,string>;routeNodes?:TurnRouteNode[]}
 export interface Route {id:string;topicId:string;title:string;memoryRoute:string[];status:Status}
-export interface PrunePlan {graphRevision:number;nodes:Array<{id:string;title?:string}>;rootRemoval?:boolean}
+export interface PrunePlan {graphRevision:number;targetInstanceId?:string;nodes:Array<{id:string;title?:string}>;rootRemoval?:boolean}
 export interface ApiErrorPayload {message?:string;error?:string;code?:string;runId?:string|number}
 export interface AIStatus {configured:boolean;provider:string;model:string|null;reason?:string|null}
 export interface AISettings extends AIStatus {baseUrl:string|null;timeoutSeconds:number;systemPrompt:string;hasApiKey:boolean;source:string;persistence:'memory'|'local'}

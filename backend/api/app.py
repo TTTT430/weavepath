@@ -211,8 +211,8 @@ class CamelModel(BaseModel):
 
 
 class CreateWorkflow(CamelModel):
-    name: str
-    root_title: str = Field(alias="rootTitle")
+    name: str = ""
+    root_title: str = Field("", alias="rootTitle")
     root_topic_id: str | None = Field(None, alias="rootTopicId")
     provider: str = "local"
     root_instance_id: str | None = Field(None, alias="rootInstanceId")
@@ -325,6 +325,18 @@ class RenameInstanceInput(CamelModel):
     def title_must_not_be_blank(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("title must not be blank")
+        return value.strip()
+
+
+class RenameWorkflowInput(CamelModel):
+    name: str = Field(min_length=1, max_length=240)
+    expected_revision: int = Field(alias="expectedRevision", ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be blank")
         return value.strip()
 
 
@@ -836,6 +848,12 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         return graph_store.rename_instance(
             workflow_id, instance_id, title=body.title,
             expected_revision=body.expected_revision,
+        )
+
+    @app.patch(prefix + "/workflows/{workflow_id}")
+    def rename_workflow(workflow_id: str, body: RenameWorkflowInput):
+        return graph_store.rename_workflow(
+            workflow_id, name=body.name, expected_revision=body.expected_revision,
         )
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/activate")

@@ -30,12 +30,13 @@ function hiddenByCollapsed(node:Instance,map:Map<string,Instance>,collapsed:Set<
 }
 
 function layout(graph:Graph,collapsedIds:string[],positions:Record<string,CanvasPosition>,onSelect:(id:string)=>void,onOpenCanvas:(id:string)=>void,onToggleCollapse:(id:string)=>void,onBranch:((id:string)=>void)|undefined,labels:{collapse:string;expand:string;branch:string;openCanvas:string;details:string;emptySummary:string}):ConversationFlowNode[]{
- const collapsed=new Set(collapsedIds),map=new Map(graph.nodes.map(node=>[node.id,node]));
- const visible=graph.nodes.filter(node=>!hiddenByCollapsed(node,map,collapsed));
+ const activeNodes=graph.nodes.filter(node=>node.status!=='pruned');
+ const collapsed=new Set(collapsedIds),map=new Map(activeNodes.map(node=>[node.id,node]));
+ const visible=activeNodes.filter(node=>!hiddenByCollapsed(node,map,collapsed));
  const depths=new Map<string,number>();
  const depth=(node:Instance):number=>{if(depths.has(node.id))return depths.get(node.id)!;const value=node.parentId&&map.has(node.parentId)?depth(map.get(node.parentId)!)+1:0;depths.set(node.id,value);return value};
  const rows=new Map<number,number>();
- return visible.map(node=>{const column=depth(node),row=rows.get(column)||0;rows.set(column,row+1);return{id:node.id,type:'conversation',position:positions[node.id]||{x:48+column*365,y:52+row*320},data:{instance:node,active:node.id===graph.activeInstanceId,collapsed:collapsed.has(node.id),hasChildren:graph.nodes.some(candidate=>candidate.parentId===node.id),collapseLabel:labels.collapse,expandLabel:labels.expand,branchLabel:labels.branch,openCanvasLabel:labels.openCanvas,detailsLabel:labels.details,emptySummaryLabel:labels.emptySummary,onSelect,onOpenCanvas,onToggleCollapse,onBranch}}});
+ return visible.map(node=>{const column=depth(node),row=rows.get(column)||0;rows.set(column,row+1);return{id:node.id,type:'conversation',position:positions[node.id]||{x:48+column*365,y:52+row*320},data:{instance:node,active:node.id===graph.activeInstanceId,collapsed:collapsed.has(node.id),hasChildren:activeNodes.some(candidate=>candidate.parentId===node.id),collapseLabel:labels.collapse,expandLabel:labels.expand,branchLabel:labels.branch,openCanvasLabel:labels.openCanvas,detailsLabel:labels.details,emptySummaryLabel:labels.emptySummary,onSelect,onOpenCanvas,onToggleCollapse,onBranch}}});
 }
 
 export function nodeSubtitle(instance:Instance){return instance.summary?.trim()||''}

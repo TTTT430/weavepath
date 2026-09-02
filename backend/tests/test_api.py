@@ -65,6 +65,31 @@ def test_camel_case_api_round_trip():
     store.close()
 
 
+def test_workflow_names_can_be_omitted_and_are_generated_from_first_message():
+    store = GraphStore(":memory:")
+    with TestClient(create_app(store, DisabledLLM())) as client:
+        created = client.post("/api/v1/workflows", json={}).json()
+        wf = created["workflowId"]
+        assert created["name"] == "新工作流"
+        assert created["nodes"][0]["title"] == "新对话"
+        root = created["rootInstanceId"]
+        message = client.post(
+            f"/api/v1/workflows/{wf}/instances/{root}/messages",
+            json={"role": "user", "content": "设计多模态情感分析数据集"},
+        )
+        assert message.status_code == 201
+        graph = client.get(f"/api/v1/workflows/{wf}/graph").json()
+        assert graph["name"] == "设计多模态情感分析数据集"
+        assert graph["nodes"][0]["title"] == "设计多模态情感分析数据集"
+        # Subsequent messages do not keep renaming the generated route.
+        client.post(
+            f"/api/v1/workflows/{wf}/instances/{root}/messages",
+            json={"role": "user", "content": "后续问题"},
+        )
+        assert client.get(f"/api/v1/workflows/{wf}/graph").json()["name"] == "设计多模态情感分析数据集"
+    store.close()
+
+
 def test_ai_status_and_route_aware_chat_round_trip():
     store = GraphStore(":memory:")
     llm = FakeLLM()

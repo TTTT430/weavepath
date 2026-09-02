@@ -206,10 +206,9 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  }
 
  async function create(){
-  if(!newName.trim()||!rootTitle.trim())return;
   setWorkflowBusy(true);
   try{
-   const workflow=await api.createWorkflow({name:newName.trim(),rootTitle:rootTitle.trim(),rootTopicId:crypto.randomUUID()});
+   const workflow=await api.createWorkflow({...(newName.trim()?{name:newName.trim()}:{}),...(rootTitle.trim()?{rootTitle:rootTitle.trim()}:{}),rootTopicId:crypto.randomUUID()});
    setCreating(false);
    setWorkflowId(workflow.workflowId);
    await loadWorkflows();
@@ -371,6 +370,6 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
    </form>
   </section>
   {settingsOpen&&<ModelSettingsDialog onClose={()=>setSettingsOpen(false)} onSaved={refreshAI}/>}
-  {creating&&<div className="modal-backdrop"><form className="modal" onSubmit={event=>{event.preventDefault();void create()}}><h2>{t('newWorkflow')}</h2><label>{t('workflowName')}<input autoFocus required value={newName} onChange={event=>setNewName(event.target.value)}/></label><label>{t('rootTitle')}<input required value={rootTitle} onChange={event=>setRootTitle(event.target.value)}/></label><div className="modal-actions"><button type="button" onClick={()=>setCreating(false)}>{t('cancel')}</button><button className="primary" disabled={workflowBusy}>{t('createOpen')}</button></div></form></div>}
+  {creating&&<div className="modal-backdrop"><form className="modal" onSubmit={event=>{event.preventDefault();void create()}}><h2>{t('newWorkflow')}</h2><label>{t('workflowName')}<input autoFocus value={newName} onChange={event=>setNewName(event.target.value)}/></label><label>{t('rootTitle')}<input value={rootTitle} onChange={event=>setRootTitle(event.target.value)}/></label><p className="auto-name-hint">{t('autoNameHint')}</p><div className="modal-actions"><button type="button" onClick={()=>setCreating(false)}>{t('cancel')}</button><button className="primary" disabled={workflowBusy}>{t('createOpen')}</button></div></form></div>}
  </main>;
 }
