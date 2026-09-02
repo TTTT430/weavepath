@@ -331,7 +331,10 @@ def test_schema_v1_database_upgrades_to_latest_without_losing_graph_data(tmp_pat
     conn.close()
     store = GraphStore(path)
     versions = [row[0] for row in store._conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-    assert versions == [1, 2, 3, 4, 5, 6]
+    assert versions == [1, 2, 3, 4, 5, 6, 7]
+    assert store._conn.execute(
+        "SELECT title_is_generated FROM conversation_instances WHERE id='A'"
+    ).fetchone()[0] == 0
     assert store._conn.execute("SELECT name FROM sqlite_master WHERE name='agent_runs'").fetchone()
     assert store.get_graph("legacy")["nodes"][0]["title"] == "Legacy root"
     child = next(node for node in store.get_graph("legacy")["nodes"] if node["id"] == "B")
@@ -378,7 +381,7 @@ def test_schema_v2_upgrade_backfills_immutable_completed_run_result(tmp_path):
     assert repo.get("run_legacy")["finalAnswer"] == "durable answer"
     assert [row[0] for row in store._conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    )] == [1, 2, 3, 4, 5, 6]
+    )] == [1, 2, 3, 4, 5, 6, 7]
     store.close()
     reopened = GraphStore(path)
     assert AgentRunRepository(reopened._conn, reopened._lock).get("run_legacy")["finalAnswer"] == "durable answer"

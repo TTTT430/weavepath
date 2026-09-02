@@ -2,7 +2,7 @@ import{cleanup,fireEvent,render,screen}from'@testing-library/react';
 import{afterEach,describe,expect,it,vi}from'vitest';
 import{ConversationCard,nodeSubtitle,reactFlowNodePointerProps,shouldShowMiniMap}from'./WorkflowGraph';import type{Instance}from'../domain/types';
 const node:Instance={id:'n1',parentId:null,topicId:'internal-topic-id',title:'数据集设计',status:'active'};
-const data=(select=vi.fn(),open=vi.fn())=>({instance:node,active:false,collapsed:false,hasChildren:false,collapseLabel:'折叠',expandLabel:'展开',onSelect:select,onOpenCanvas:open,onToggleCollapse:vi.fn()});
+const data=(select=vi.fn(),open=vi.fn(),branch?:ReturnType<typeof vi.fn>)=>({instance:node,active:false,collapsed:false,hasChildren:false,collapseLabel:'折叠',expandLabel:'展开',branchLabel:'添加分支',onSelect:select,onOpenCanvas:open,onToggleCollapse:vi.fn(),...(branch?{onBranch:branch}:{})});
 afterEach(()=>{cleanup();vi.clearAllTimers();vi.useRealTimers()});
 describe('workflow graph presentation',()=>{
  it('hides the minimap for small graphs',()=>{expect(shouldShowMiniMap(3)).toBe(false);expect(shouldShowMiniMap(7)).toBe(false);expect(shouldShowMiniMap(8)).toBe(true)});
@@ -12,4 +12,5 @@ describe('workflow graph presentation',()=>{
  it('cancels selection and opens exactly once for a browser double-click sequence',()=>{vi.useFakeTimers();const select=vi.fn(),open=vi.fn();render(<ConversationCard data={data(select,open)}/>);const title=screen.getByText('数据集设计');fireEvent.click(title,{detail:1});fireEvent.click(title,{detail:2});fireEvent.doubleClick(title,{detail:2});vi.runAllTimers();expect(select).not.toHaveBeenCalled();expect(open).toHaveBeenCalledOnce();expect(open).toHaveBeenCalledWith('n1')});
  it('opens from click detail 2 even when the browser emits no dblclick event',()=>{vi.useFakeTimers();const select=vi.fn(),open=vi.fn();render(<ConversationCard data={data(select,open)}/>);const title=screen.getByText('数据集设计');fireEvent.click(title,{detail:1});fireEvent.click(title,{detail:2});vi.runAllTimers();expect(select).not.toHaveBeenCalled();expect(open).toHaveBeenCalledOnce();expect(open).toHaveBeenCalledWith('n1')});
  it('selects after the single-click arbitration delay',()=>{vi.useFakeTimers();const select=vi.fn(),open=vi.fn();render(<ConversationCard data={data(select,open)}/>);fireEvent.click(screen.getByText('数据集设计'));expect(select).not.toHaveBeenCalled();vi.runAllTimers();expect(select).toHaveBeenCalledOnce();expect(select).toHaveBeenCalledWith('n1');expect(open).not.toHaveBeenCalled()});
+ it('creates a branch from the card action without opening the node canvas',()=>{const select=vi.fn(),open=vi.fn(),branch=vi.fn();render(<ConversationCard data={data(select,open,branch)}/>);fireEvent.click(screen.getByRole('button',{name:'添加分支: 数据集设计'}));expect(select).toHaveBeenCalledWith('n1');expect(branch).toHaveBeenCalledOnce();expect(branch).toHaveBeenCalledWith('n1');expect(open).not.toHaveBeenCalled()});
 });

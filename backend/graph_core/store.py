@@ -40,6 +40,16 @@ def _loads(value: str | None, default: Any) -> Any:
     return json.loads(value) if value else default
 
 
+def _prompt_branch_title(initial_message: str | None) -> str | None:
+    """Build a compact, deterministic title from a branch's first prompt."""
+    if not initial_message:
+        return None
+    summary = " ".join(initial_message.split())
+    if not summary:
+        return None
+    return summary if len(summary) <= 48 else summary[:47].rstrip() + "…"
+
+
 class GraphStore:
     """SQLite graph repository with route-aware, live parent inheritance.
 
@@ -154,6 +164,7 @@ class GraphStore:
             "title": row["title"], "status": row["status"], "provider": row["provider"],
             "providerConversationId": row["provider_conversation_id"],
             "surfaceScope": row["surface_scope"], "ownerInstanceId": row["owner_instance_id"],
+            "titleGenerated": bool(row["title_is_generated"]),
             "contentRevision": row["content_revision"],
             "memoryRoute": self._route_ids(cx, workflow_id, row["id"]),
             "checkpointAnchor": self._checkpoint_anchor(cx, row),
@@ -351,6 +362,7 @@ class GraphStore:
         route_memory_routes: dict[str, list[dict[str, Any]]] = {}
         route_inherited_counts: dict[str, int] = {}
         route_titles: dict[str, str] = {}
+        route_nodes: list[dict[str, Any]] = []
 
         for row, snapshot in zip(rows, route_snapshots):
             route_id = row["id"]
@@ -359,7 +371,24 @@ class GraphStore:
             route_inherited_counts[route_id] = snapshot["inheritedMessageCount"]
             route_titles[route_id] = row["title"]
             parent_turn_id: str | None = None
-            anchor = snapshot["checkpointAnchor"]
+            is_owner = route_id == owner_instance_id
+            # The top-level conversation is the root of this Turn Canvas even
+            # when it has a parent in the outer workflow graph.
+            anchor = None if is_owner else snapshot["checkpointAnchor"]
+            anchor_message_id = anchor.get("anchorMessageId") if anchor else None
+            route_nodes.append({
+                "routeInstanceId": route_id,
+                "title": row["title"],
+                "titleGenerated": bool(row["title_is_generated"]),
+                "parentRouteInstanceId": None if is_owner else row["parent_id"],
+                "anchorMessageId": anchor_message_id,
+                "checkpointAnchor": anchor,
+                "contentRevision": snapshot["contentRevision"],
+                "memoryRoute": snapshot["memoryRoute"],
+                "inheritedMessageCount": snapshot["inheritedMessageCount"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            })
             if row["surface_scope"] == "turn" and anchor and anchor.get("anchorMessageId") is not None:
                 parent_turn_id = turn_by_anchor.get(
                     (str(anchor.get("sourceInstanceId")), int(anchor["anchorMessageId"]))
@@ -395,6 +424,10 @@ class GraphStore:
             "routeMemoryRoutes": route_memory_routes,
             "routeInheritedMessageCounts": route_inherited_counts,
             "routeTitles": route_titles,
+            # A route can exist before it has a local user message. Keep a
+            # separate route-level projection so the Turn Canvas can render
+            # that empty branch immediately instead of silently losing it.
+            "routeNodes": route_nodes,
         }
 
     def append_message(self, workflow_id: str, instance_id: str, *, role: str, content: str) -> dict[str, Any]:
@@ -402,17 +435,43 @@ class GraphStore:
             raise Validation("invalid role or empty content")
         now = _now()
         with self.tx() as cx:
-            self._instance(cx, workflow_id, instance_id, active=True)
+            instance = self._instance(cx, workflow_id, instance_id, active=True)
+            first_local_user = False
+            generated_title: str | None = None
+            if role == "user" and instance["title_is_generated"]:
+                first_local_user = not bool(cx.execute(
+                    "SELECT 1 FROM local_messages "
+                    "WHERE workflow_id=? AND instance_id=? AND role='user' LIMIT 1",
+                    (workflow_id, instance_id),
+                ).fetchone())
+                if first_local_user:
+                    generated_title = _prompt_branch_title(content)
             cur = cx.execute("INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) VALUES(?,?,?,?,?)",
                              (workflow_id, instance_id, role, content, now))
-            cx.execute("UPDATE conversation_instances SET content_revision=content_revision+1,updated_at=? WHERE id=?",
-                       (now, instance_id))
-            cx.execute("UPDATE workflows SET content_revision=content_revision+1,updated_at=? WHERE id=?", (now, workflow_id))
-            event_revision = self._workflow(cx, workflow_id)["content_revision"]
+            if generated_title:
+                cx.execute(
+                    "UPDATE conversation_instances SET title=?,content_revision=content_revision+1,"
+                    "updated_at=? WHERE id=?",
+                    (generated_title, now, instance_id),
+                )
+            else:
+                cx.execute(
+                    "UPDATE conversation_instances SET content_revision=content_revision+1,updated_at=? "
+                    "WHERE id=?",
+                    (now, instance_id),
+                )
+            cx.execute(
+                "UPDATE workflows SET content_revision=content_revision+1,"
+                "graph_revision=graph_revision+?,updated_at=? WHERE id=?",
+                (1 if generated_title else 0, now, workflow_id),
+            )
+            updated_wf = self._workflow(cx, workflow_id)
+            event_revision = updated_wf["content_revision"]
+            graph_revision = updated_wf["graph_revision"]
             revision = self._instance(cx, workflow_id, instance_id)["content_revision"]
         return {"id": cur.lastrowid, "instanceId": instance_id, "role": role, "content": content,
                 "createdAt": now, "inherited": False, "contentRevision": revision,
-                "eventRevision": event_revision}
+                "eventRevision": event_revision, "graphRevision": graph_revision}
 
     def _validate_latest_local_user_edit(self, cx: sqlite3.Connection, workflow_id: str,
                                          instance_id: str, message_id: int,
@@ -558,7 +617,8 @@ class GraphStore:
             "nextExcludedLocalUserMessageId": next_user_id,
         }
 
-    def fork(self, workflow_id: str, parent_id: str, *, title: str, topic_id: str | None = None,
+    def fork(self, workflow_id: str, parent_id: str, *, title: str | None = None,
+             topic_id: str | None = None,
              provider: str | None = None, instance_id: str | None = None,
              provider_conversation_id: str | None = None,
              initial_message: str | None = None,
@@ -566,8 +626,11 @@ class GraphStore:
              expected_content_revision: int | None = None,
              idempotency_key: str | None = None,
              surface_scope: str = "workflow") -> dict[str, Any]:
-        if not title.strip():
-            raise Validation("title is required")
+        normalized_title = title.strip() if title and title.strip() else None
+        if normalized_title is not None and len(normalized_title) > 240:
+            raise Validation("title must be at most 240 characters")
+        normalized_message = (initial_message.strip()
+                              if initial_message and initial_message.strip() else None)
         if idempotency_key is not None and not idempotency_key.strip():
             raise Validation("idempotencyKey must not be blank")
         normalized_key = idempotency_key.strip() if idempotency_key is not None else None
@@ -582,12 +645,12 @@ class GraphStore:
                 raise Validation("idempotencyKey is required when anchorMessageId is provided")
         request = {
             "sourceInstanceId": parent_id,
-            "title": title.strip(),
+            "title": normalized_title,
             "topicId": topic_id,
             "provider": provider,
             "instanceId": instance_id,
             "providerConversationId": provider_conversation_id,
-            "initialMessage": initial_message.strip() if initial_message and initial_message.strip() else None,
+            "initialMessage": normalized_message,
             "anchorMessageId": anchor_message_id,
             "expectedContentRevision": expected_content_revision,
             "surfaceScope": surface_scope,
@@ -620,8 +683,17 @@ class GraphStore:
                     f"{expected_content_revision}, actual {parent['content_revision']}"
                 )
             wf = self._workflow(cx, workflow_id)
+            resolved_title = normalized_title or _prompt_branch_title(normalized_message)
+            title_is_generated = normalized_title is None
+            if resolved_title is None:
+                existing_children = cx.execute(
+                    "SELECT COUNT(*) FROM conversation_instances "
+                    "WHERE workflow_id=? AND parent_id=? AND surface_scope=?",
+                    (workflow_id, parent_id, surface_scope),
+                ).fetchone()[0]
+                resolved_title = f"新分支 {existing_children + 1}"
             child_topic = topic_id or _id("topic")
-            self._ensure_topic(cx, workflow_id, child_topic, title.strip())
+            self._ensure_topic(cx, workflow_id, child_topic, resolved_title)
             frozen, checkpoint_anchor = self._fork_checkpoint(
                 cx, workflow_id, parent_id, anchor_message_id
             )
@@ -650,15 +722,15 @@ class GraphStore:
             cx.execute("INSERT INTO conversation_instances "
                        "(id,workflow_id,topic_id,parent_id,checkpoint_id,title,status,provider,"
                        "provider_conversation_id,content_revision,created_at,updated_at,"
-                       "surface_scope,owner_instance_id) "
-                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (child_id, workflow_id, child_topic, parent_id, checkpoint_id, title.strip(), "active",
+                       "surface_scope,owner_instance_id,title_is_generated) "
+                       "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (child_id, workflow_id, child_topic, parent_id, checkpoint_id, resolved_title, "active",
                         provider or parent["provider"], provider_conversation_id, 0, now, now,
-                        surface_scope, owner_instance_id))
-            if initial_message and initial_message.strip():
+                        surface_scope, owner_instance_id, 1 if title_is_generated else 0))
+            if normalized_message:
                 cx.execute(
                     "INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) VALUES(?,?,?,?,?)",
-                    (workflow_id, child_id, "user", initial_message.strip(), now),
+                    (workflow_id, child_id, "user", normalized_message, now),
                 )
                 cx.execute("UPDATE conversation_instances SET content_revision=content_revision+1 WHERE id=?", (child_id,))
                 cx.execute("UPDATE workflows SET content_revision=content_revision+1 WHERE id=?", (workflow_id,))
@@ -678,6 +750,41 @@ class GraphStore:
                     (json.dumps(response), now, command_id),
                 )
             return response
+
+    def rename_instance(self, workflow_id: str, instance_id: str, *, title: str,
+                        expected_revision: int) -> dict[str, Any]:
+        """Rename one concrete route with graph-revision conflict protection."""
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise Validation("title must not be blank")
+        if len(normalized_title) > 240:
+            raise Validation("title must be at most 240 characters")
+        now = _now()
+        with self.tx() as cx:
+            wf = self._workflow(cx, workflow_id)
+            instance = self._instance(cx, workflow_id, instance_id, active=True)
+            if wf["graph_revision"] != expected_revision:
+                raise Conflict(
+                    "stale graph revision: expected "
+                    f"{expected_revision}, actual {wf['graph_revision']}"
+                )
+            if instance["title"] != normalized_title or instance["title_is_generated"]:
+                cx.execute(
+                    "UPDATE conversation_instances SET title=?,title_is_generated=0,updated_at=? "
+                    "WHERE workflow_id=? AND id=?",
+                    (normalized_title, now, workflow_id, instance_id),
+                )
+                cx.execute(
+                    "UPDATE workflows SET graph_revision=graph_revision+1,updated_at=? WHERE id=?",
+                    (now, workflow_id),
+                )
+            updated_wf = self._workflow(cx, workflow_id)
+            updated = self._instance(cx, workflow_id, instance_id)
+            return {
+                "node": self._node(cx, workflow_id, updated),
+                "graphRevision": updated_wf["graph_revision"],
+                "eventRevision": updated_wf["content_revision"],
+            }
 
     def activate(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
         with self.tx() as cx:

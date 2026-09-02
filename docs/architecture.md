@@ -1,6 +1,6 @@
 # 总体架构与领域模型
 
-本文主要描述目标架构。当前自动化验证基线包含 SQLite GraphStore、schema v6 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布、Engineering Lab v1 和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 已完成窄范围真实浏览器验收，Engineering Lab v1 已完成自动化验证；这些都不等于完整 Agent Runtime、跨宿主集成或阶段完成。
+本文主要描述目标架构。当前自动化验证基线包含 SQLite GraphStore、schema v7 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布、Engineering Lab v1 和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 已完成窄范围真实浏览器验收，Engineering Lab v1 已完成自动化验证；这些都不等于完整 Agent Runtime、跨宿主集成或阶段完成。
 
 ## 分层
 
@@ -14,7 +14,7 @@
 - Codex Widget：宿主内快速入口与迷你图。
 - Claude Command/Plugin：启动或聚焦 companion app，并提供宿主能力。
 
-UI 只持有临时 selection、viewport、节点视觉位置、折叠、language 等展示状态。它们必须按 workflow/instance 命名空间保存，且不得改变 parent/checkpoint、host binding、tombstone、`graph_revision` 或 `content_revision`。结构真相必须从 Core Service 获取。
+UI 只持有临时 selection、viewport、节点视觉位置、折叠、language/theme 等展示状态。它们必须按 workflow/instance 命名空间保存，且不得改变 parent/checkpoint、host binding、tombstone、`graph_revision` 或 `content_revision`。结构真相必须从 Core Service 获取。
 
 ### Application Services
 
@@ -84,7 +84,7 @@ Topic
 ConversationInstance
   id, workflow_id, topic_id
   parent_instance_id, parent_checkpoint_id
-  explicit_title, status, content_revision
+  title, title_is_generated, status, content_revision
   created_at, archived_at
 
 Checkpoint
@@ -137,7 +137,9 @@ D1 和 D2 可以在 UI 中聚合显示为一个 D，并提供两条路线选择�
 
 双击顶层卡片进入该实例的 Turn Canvas。Turn Canvas 是按需构造的 `scope=local` 读模型：每个本地用户消息开始一个 turn，直到下一条本地用户消息之前的本地 assistant/tool message 都归入该 turn；failure/operation 在相应事件投影可用后扩展同一时间线。祖先路线消息动态用于有效上下文，但不在子实例画布中重复投影；UI 单独显示 memory route、checkpoint anchor 和继承消息数量。
 
-Turn Canvas surface 同时暴露受控命令入口，但不维护第二份 transcript：画布 composer 调用与 Chat 相同的 route-aware chat/message API；轮次卡片的分支动作携带精确 `anchorMessageId`、`expectedContentRevision` 和 `idempotencyKey`，创建 `surface_scope=turn` 的真实内部 `ConversationInstance` 后生成首个回答。内部实例拥有独立 checkpoint/transcript，归属于一个顶层 owner，只在 Turn Tree 出现；`GET graph` 和 topic route chooser 只返回 `surface_scope=workflow`。激活内部路线时 graph 同时返回顶层 `activeInstanceId` 与具体 `activeRouteInstanceId`，Chat 使用后者读写同一 SQLite 真源。
+Turn Canvas surface 同时暴露受控命令入口，但不维护第二份 transcript：画布 composer 调用与 Chat 相同的 route-aware chat/message API；轮次卡片的快捷分支动作携带精确 `anchorMessageId`、`expectedContentRevision` 和 `idempotencyKey`，创建 `surface_scope=turn` 的真实内部 `ConversationInstance`。首条问题可以随创建命令提交并生成回答，也可以省略；省略时 `routeNodes` 读模型仍返回该空路线，UI 立即显示占位卡。内部实例拥有独立 checkpoint/transcript，归属于一个顶层 owner，只在 Turn Tree 出现；`GET graph` 和 topic route chooser 只返回 `surface_scope=workflow`。激活内部路线时 graph 同时返回顶层 `activeInstanceId` 与具体 `activeRouteInstanceId`，Chat 使用后者读写同一 SQLite 真源。
+
+两层画布共享 Synapse 式卡片几何、贝塞尔连线、画布控制和右侧 inspector，但领域命令仍不同：顶层卡片的 `＋` 创建 `surface_scope=workflow` 子实例，Turn 卡片的 `＋` 创建 `surface_scope=turn` 内部路线。两者都允许省略标题和首条内容。无显式标题且无首条内容时，Core 生成 `新分支 N`；如果该标题仍标记为系统生成，第一条本地用户消息会将它更新为最多 48 字的摘要。实例重命名使用 `expectedRevision` 保护并把标题标记为用户所有，自动命名不能覆盖它。
 
 ```text
 Workflow Graph
@@ -162,7 +164,7 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 
 ## Revision 与并发
 
-- `graph_revision` 只在 parent、status、host binding、tombstone 等结构变更时增加。
+- `graph_revision` 在 parent、status、host binding、tombstone、实例标题等图元数据变更时增加；系统根据第一条消息自动生成标题也属于一次图变更。
 - `content_revision` 属于具体实例，在消息、foundation 或摘要变化时增加。
 - fork/prune 接收 `expected_graph_revision`，不匹配返回 409。
 - 后台 metabolize 以 `instance_id + expected_content_revision/checkpoint_id` 提交，禁止把迟到结果写到新的路线状态。
@@ -181,7 +183,7 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 - completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
 - 启动时遗留的 `queued` / `running` run 转为 `interrupted`，不会自动继续执行。
 
-schema v3 引入且在当前 schema v6 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
+schema v3 引入且在当前 schema v7 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线；schema v7 增加 `title_is_generated`，让自动标题和用户标题在重启后仍可可靠区分。旧数据迁移时统一视为用户标题，避免升级覆盖历史名称。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 
 ## HostAdapter 能力协议
 

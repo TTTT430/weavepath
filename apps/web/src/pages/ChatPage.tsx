@@ -265,6 +265,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
    if(aiStatus?.configured)await api.chat(workflow,instance,text);
    else await api.send(workflow,instance,text);
    await refreshRouteMessages(workflow,instance,base.contentRevision,true);
+   // A previously untitled branch can receive its generated title on the first
+   // message. Refresh graph metadata only while this route is still active;
+   // loadGraph's request generation continues to reject stale graph responses.
+   if(activeKey.current===targetOwner)await loadGraph();
    if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'idle',error:''});
   }catch(caught){
    await refreshRouteMessages(workflow,instance,base.contentRevision,true);

@@ -6,9 +6,9 @@ export function readAppearance(): Appearance {
   try {
     const value = localStorage.getItem(STORAGE_KEY);
     // `soft` was used by the first preview; treat it as the new light theme.
-    return value === 'light' || value === 'soft' ? 'light' : 'dark';
+    return value === 'dark' ? 'dark' : 'light';
   } catch {
-    return 'dark';
+    return 'light';
   }
 }
 

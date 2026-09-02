@@ -23,15 +23,22 @@ export function ModelSettingsDialog({onClose,onSaved}:{onClose:()=>void;onSaved:
  async function validate(){setBusy(true);setNotice('');try{const hasSelectedModel=!!model.trim();const x=await api.validateAISettings(body());setModels(x.models);setNotice(t(!hasSelectedModel||x.selectedModelAvailable?'connectionOk':'connectionOkModelMissing'))}catch(e){setNotice(`${t('connectionFailed')}: ${discoveryError(e)}`)}finally{setBusy(false)}}
  async function save(){setBusy(true);setNotice('');try{await api.saveAISettings(body());await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
  async function reset(){setBusy(true);try{await api.resetAISettings();await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e));setBusy(false)}}
- return <div className="modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="model-settings-title"><header><h2 id="model-settings-title">{t('modelSettings')}</h2><button aria-label={t('close')} onClick={onClose}>×</button></header>
-  <label>{t('language')}<select value={locale} onChange={e=>setLocale(e.target.value as Locale)}><option value="zh-CN">中文</option><option value="en">English</option></select></label><AppearanceSelect/>
-  <label>{t('provider')}<select value={provider} onChange={e=>choose(e.target.value as Preset)}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="lmstudio">LM Studio</option><option value="ollama">Ollama</option><option value="custom">{t('customProvider')}</option></select></label>
-  <label>{t('baseUrl')}<input value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="https://…/v1"/></label>
-  <label>{t('model')}<input list="available-models" value={model} onChange={e=>setModel(e.target.value)} placeholder={t('modelPlaceholder')}/><datalist id="available-models">{models.map(x=><option key={x} value={x}/>)}</datalist><small>{t('manualModelHint')}</small></label>
-  <label>{t('apiKey')}<input type="password" autoComplete="new-password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={hasKey?t('keyRetained'):t('keyOptional')}/><small>{t('keyMemoryHint')}</small></label>
-  <label>{t('timeout')}<input type="number" min="1" max="300" value={timeout} onChange={e=>setTimeoutValue(Number(e.target.value))}/></label>
-  <label className="check"><input type="checkbox" checked={persist} onChange={e=>setPersist(e.target.checked)}/><span>{t('persistNonSecret')}</span></label>
-  {notice&&<p className="settings-notice" role="status">{notice}</p>}
-  {confirmReset?<div className="reset-confirm"><span>{t('resetConfirm')}</span><button onClick={()=>setConfirmReset(false)}>{t('cancel')}</button><button className="danger" disabled={busy} onClick={()=>void reset()}>{t('confirmReset')}</button></div>:<div className="modal-actions"><button className="danger-outline" onClick={()=>setConfirmReset(true)}>{t('reset')}</button><span/><button onClick={()=>void validate()} disabled={busy||!baseUrl.trim()}>{t('testFetch')}</button><button className="primary" onClick={()=>void save()} disabled={busy||!baseUrl.trim()||!model.trim()}>{t('save')}</button></div>}
+ return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="model-settings-title">
+  <header className="settings-modal-header"><h2 id="model-settings-title">{t('modelSettings')}</h2><button className="settings-close" type="button" aria-label={t('close')} onClick={onClose}>×</button></header>
+  <div className="settings-modal-body">
+   <div className="settings-form-grid">
+    <label>{t('language')}<select value={locale} onChange={e=>setLocale(e.target.value as Locale)}><option value="zh-CN">中文</option><option value="en">English</option></select></label><AppearanceSelect/>
+    <label className="settings-wide">{t('provider')}<select value={provider} onChange={e=>choose(e.target.value as Preset)}><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="lmstudio">LM Studio</option><option value="ollama">Ollama</option><option value="custom">{t('customProvider')}</option></select></label>
+    <label className="settings-wide">{t('baseUrl')}<input value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="https://…/v1"/></label>
+    <label className="settings-wide">{t('model')}<input list="available-models" value={model} onChange={e=>setModel(e.target.value)} placeholder={t('modelPlaceholder')}/><datalist id="available-models">{models.map(x=><option key={x} value={x}/>)}</datalist><small>{t('manualModelHint')}</small></label>
+    <label className="settings-wide">{t('apiKey')}<input type="password" autoComplete="new-password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={hasKey?t('keyRetained'):t('keyOptional')}/><small>{t('keyMemoryHint')}</small></label>
+    <label>{t('timeout')}<input type="number" min="1" max="300" value={timeout} onChange={e=>setTimeoutValue(Number(e.target.value))}/></label>
+    <label className="check settings-wide"><input type="checkbox" checked={persist} onChange={e=>setPersist(e.target.checked)}/><span>{t('persistNonSecret')}</span></label>
+   </div>
+   {notice&&<p className="settings-notice" role="status">{notice}</p>}
+  </div>
+  <footer className="settings-modal-footer">
+   {confirmReset?<div className="reset-confirm"><span>{t('resetConfirm')}</span><button type="button" onClick={()=>setConfirmReset(false)}>{t('cancel')}</button><button type="button" className="danger" disabled={busy} onClick={()=>void reset()}>{t('confirmReset')}</button></div>:<div className="modal-actions"><button type="button" className="danger-outline" onClick={()=>setConfirmReset(true)}>{t('reset')}</button><span/><button type="button" onClick={()=>void validate()} disabled={busy||!baseUrl.trim()}>{t('testFetch')}</button><button type="button" className="primary" onClick={()=>void save()} disabled={busy||!baseUrl.trim()||!model.trim()}>{t('save')}</button></div>}
+  </footer>
  </section></div>
 }

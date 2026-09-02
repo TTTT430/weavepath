@@ -55,6 +55,34 @@ describe('chat delivery mode',()=>{
   await waitFor(()=>expect(apiMock.chat).toHaveBeenCalledWith('wf-1','root','测试消息'));
   expect(apiMock.send).not.toHaveBeenCalled();expect(await screen.findByText('助手回复')).toBeInTheDocument();
  });
+ it('refreshes graph metadata after the first message reveals an automatically generated branch title',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  const untitled={...graph,nodes:[{...graph.nodes[0],title:'新分支 1'}]};
+  const titled={...graph,graphRevision:1,eventRevision:1,nodes:[{...graph.nodes[0],title:'情感分析数据集'}]};
+  apiMock.graph.mockResolvedValueOnce(untitled).mockResolvedValueOnce(titled);
+  apiMock.messageSnapshot.mockResolvedValueOnce({messages:[],contentRevision:0}).mockResolvedValueOnce({messages:[{id:'u1',role:'user',content:'研究情感分析数据集'}],contentRevision:1});
+  renderChat();
+  expect(await screen.findByRole('heading',{name:'新分支 1'})).toBeInTheDocument();
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'研究情感分析数据集'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
+  expect(await screen.findByRole('heading',{name:'情感分析数据集'})).toBeInTheDocument();
+ });
+ it('does not let a late post-send graph refresh overwrite a newer graph request',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};
+  let staleGraphDone!:(value:unknown)=>void;
+  const staleGraph=new Promise(resolve=>{staleGraphDone=resolve});
+  apiMock.graph.mockResolvedValueOnce(graph).mockReturnValueOnce(staleGraph).mockResolvedValueOnce(branch);
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'u1',role:'user',content:'触发自动命名'}],contentRevision:1});
+  renderChat();expect(await screen.findByRole('heading',{name:'数据集构建'})).toBeInTheDocument();
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'触发自动命名'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));
+  expect(await screen.findByRole('heading',{name:'模块B'})).toBeInTheDocument();
+  staleGraphDone({...graph,nodes:[{...graph.nodes[0],title:'过期自动标题'}]});
+  await waitFor(()=>expect(screen.queryByRole('heading',{name:'过期自动标题'})).not.toBeInTheDocument());
+  expect(screen.getByRole('heading',{name:'模块B'})).toBeInTheDocument();
+ });
  it('keeps the top-level conversation title while reading and writing the selected internal route',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
   apiMock.graph.mockResolvedValue({...graph,activeRouteInstanceId:'turn-route-b',activeRouteTitle:'LLM数据集',activeRouteContentRevision:4});

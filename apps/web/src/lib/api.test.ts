@@ -51,4 +51,16 @@ describe('turn canvas API contract',()=>{
   const init=fetchMock.mock.calls[0][1] as RequestInit;
   expect(JSON.parse(String(init.body))).toEqual({title:'分支',anchorMessageId:10,expectedContentRevision:4,idempotencyKey:'idem-1'});
  });
+
+ it('supports a one-click empty turn branch and a later rename',async()=>{
+  const fetchMock=vi.fn().mockResolvedValueOnce(response(201,{node:{id:'child',title:'新分支 1'},graphRevision:6})).mockResolvedValueOnce(response(200,{node:{id:'child',title:'模型对比'},graphRevision:7,eventRevision:9}));
+  vi.stubGlobal('fetch',fetchMock);
+  await api.forkChat('wf','b',{anchorMessageId:10,expectedContentRevision:4,idempotencyKey:'quick-1'});
+  await api.renameInstance('wf','child','模型对比',6);
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/workflows/wf/instances/b/fork-chat');
+  expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({anchorMessageId:10,expectedContentRevision:4,idempotencyKey:'quick-1'});
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/workflows/wf/instances/child');
+  expect(fetchMock.mock.calls[1][1]).toMatchObject({method:'PATCH'});
+  expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({title:'模型对比',expectedRevision:6});
+ });
 });

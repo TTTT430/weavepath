@@ -1,13 +1,14 @@
 export type Status='active'|'pruned'|'creating'|'error';
 export interface WorkflowSummary {id:string;name:string;activeInstanceId?:string}
-export interface Instance {id:string;workflowId?:string;parentId:string|null;topicId:string;title:string;summary?:string;status:Status;provider?:string;contentRevision?:number}
+export interface Instance {id:string;workflowId?:string;parentId:string|null;topicId:string;title:string;titleGenerated?:boolean;summary?:string;status:Status;provider?:string;contentRevision?:number}
 export interface Graph {workflowId:string;name:string;rootInstanceId:string;activeInstanceId:string|null;activeRouteInstanceId?:string|null;activeRouteTitle?:string|null;activeRouteContentRevision?:number;graphRevision:number;eventRevision:number;nodes:Instance[]}
-export interface Message {id:string|number;role:'user'|'assistant'|'system'|'tool';content:string;createdAt?:string;inherited?:boolean;contentRevision?:number}
+export interface Message {id:string|number;role:'user'|'assistant'|'system'|'tool';content:string;createdAt?:string;inherited?:boolean;contentRevision?:number;graphRevision?:number}
 export interface MessageSnapshot {messages:Message[];contentRevision:number;eventRevision?:number}
 export interface TurnMemoryRouteNode {instanceId:string;title:string}
+export interface TurnRouteNode {routeInstanceId:string;title:string;titleGenerated?:boolean;parentRouteInstanceId:string|null;anchorMessageId:number|null;checkpointAnchor:Record<string,unknown>|null;contentRevision:number;memoryRoute:TurnMemoryRouteNode[];inheritedMessageCount:number;createdAt?:string;updatedAt?:string}
 export type ConversationTurnStatus='completed'|'pending'|'running'|'failed'|'interrupted';
 export interface ConversationTurn {id:string;sequence:number;anchorMessageId:number;userMessage:Message;responses:Message[];status:ConversationTurnStatus;routeInstanceId?:string;routeTitle?:string;parentTurnId?:string|null}
-export interface TurnCanvasSnapshot {workflowId:string;instanceId:string;ownerInstanceId?:string;activeRouteInstanceId?:string;scope:'local';contentRevision:number;eventRevision:number;memoryRoute:TurnMemoryRouteNode[];inheritedMessageCount:number;checkpointAnchor:Record<string,unknown>|null;preamble:Message[];turns:ConversationTurn[];eventExtensions:unknown[];routeContentRevisions?:Record<string,number>;routeMemoryRoutes?:Record<string,TurnMemoryRouteNode[]>;routeInheritedMessageCounts?:Record<string,number>;routeTitles?:Record<string,string>}
+export interface TurnCanvasSnapshot {workflowId:string;instanceId:string;ownerInstanceId?:string;activeRouteInstanceId?:string;scope:'local';contentRevision:number;eventRevision:number;memoryRoute:TurnMemoryRouteNode[];inheritedMessageCount:number;checkpointAnchor:Record<string,unknown>|null;preamble:Message[];turns:ConversationTurn[];eventExtensions:unknown[];routeContentRevisions?:Record<string,number>;routeMemoryRoutes?:Record<string,TurnMemoryRouteNode[]>;routeInheritedMessageCounts?:Record<string,number>;routeTitles?:Record<string,string>;routeNodes?:TurnRouteNode[]}
 export interface Route {id:string;topicId:string;title:string;memoryRoute:string[];status:Status}
 export interface PrunePlan {graphRevision:number;nodes:Array<{id:string;title?:string}>;rootRemoval?:boolean}
 export interface ApiErrorPayload {message?:string;error?:string;code?:string;runId?:string|number}

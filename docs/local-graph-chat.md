@@ -16,7 +16,7 @@
 
 已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible 同步 AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。同步 AI 请求具有“正在思考”与本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；SSE、停止生成和 metabolize 尚未实现。
 
-依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：双击具体实例只进入该实例的 local-only Turn Canvas；只有显式“继续对话”才 activate；可以从选定本地用户 turn 冻结精确 checkpoint。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
+依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：双击具体实例只进入该实例的 local-only Turn Canvas；只有显式“继续对话”才 activate；可以从选定本地用户 turn 记录精确 checkpoint 锚点。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
 
 日常启动与验证分别使用根目录的 `scripts/dev.ps1` 和 `scripts/check.ps1`；前者固定 API 端口 8000，Web 默认端口 5173。
 
@@ -26,7 +26,8 @@
 POST /api/v1/workflows
 GET  /api/v1/workflows/{id}/graph
 POST /api/v1/workflows/{workflowId}/instances/{id}/fork
-POST /api/v1/workflows/{workflowId}/instances/{id}/fork-chat  # exact turn + first reply
+POST /api/v1/workflows/{workflowId}/instances/{id}/fork-chat  # exact turn route; first prompt optional
+PATCH /api/v1/workflows/{workflowId}/instances/{id}           # revision-safe rename
 POST /api/v1/workflows/{workflowId}/instances/{id}/activate
 GET  /api/v1/workflows/{workflowId}/instances/{id}/messages
 GET  /api/v1/workflows/{workflowId}/instances/{id}/turns       # verified local-only projection
@@ -49,13 +50,13 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 
 实现范围：
 
-- FastAPI、React 和已验证的 schemaVersion 4 SQLite checkpoint cursor migration；rollback/downgrade 尚未完成；
+- FastAPI、React 和已验证的 schemaVersion 7 SQLite 前向迁移；rollback/downgrade 尚未完成；
 - GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port 已实现，正式 Standalone HostAdapter 尚未拆出；
 - workflow、topic、instance、checkpoint、local message、tombstone；
-- Turn projector 只读取具体实例的 local messages，将一个用户问题及下一用户问题前的 assistant/tool message 组织为一张 turn 卡片；继承 checkpoint 不重复投影，failure/operation 事件扩展仍是后续工作；
-- Turn Canvas composer 与普通 Chat 调用同一条 route-aware 消息链路并写入同一 SQLite 消息真源，不复制 transcript；从 turn 卡片发起的 `fork-chat` 以精确 anchor 幂等创建 `surface_scope=turn` 的内部实例，并可立即生成首个回答；内部实例只进入 owner 的 Turn Tree，不进入第一层 graph；
+- Turn projector 只读取具体实例的 local messages，将一个用户问题及下一用户问题前的 assistant/tool message 组织为一张 turn 卡片；沿祖先路线动态继承的消息不重复投影，failure/operation 事件扩展仍是后续工作；
+- Turn Canvas composer 与普通 Chat 调用同一条 route-aware 消息链路并写入同一 SQLite 消息真源，不复制 transcript；从 turn 卡片发起的 `fork-chat` 以精确 anchor 幂等创建 `surface_scope=turn` 的内部实例。首条问题可省略，空路线由 `routeNodes` 立即投影为占位卡；提供首条问题时可立即生成回答。内部实例只进入 owner 的 Turn Tree，不进入第一层 graph；
 - 从 Co-Thinker 复用 SSE 与中断保护（planned）；
-- 从 v4 widget 提取正交布局、route chooser 和中英文界面，并借鉴 dsh-synapse 的画布检查体验；
+- 两层画布使用统一的 Synapse 式卡片、连线、卡片边缘快捷分支和右侧检查器，并提供一致的浅色/深色 token；这是对 dsh-synapse 画布体验的借鉴，不改变 WeavePath 的两层路线模型；
 - 默认使用 `WorkspaceShell` 内的 Chat/Workflow 两个持久 surface；第一层 Workflow Graph 和第二层 Turn Canvas 复用一个按需加载的画布区域，不在每个节点中嵌套多个 React Flow；
 - 顶层和每个实例的 viewport、视觉位置、折叠与 selection 是独立 UI metadata，不改变 graph/content revision；
 - `/graph` 与 `window.open` 仅保留为可选兼容入口；它可继续使用 `BroadcastChannel + postMessage` 同步真实 mutation，WebSocket/event stream 为后续能力。
@@ -101,7 +102,11 @@ A
 18. 从 B 的任意 turn 卡片创建子分支时，首个问题写入新子实例并在模型可用时立即回答；幂等重放不得重复创建实例或回答，兄弟路线内容不得进入模型上下文。**Verified local preview。**
 19. 第 18 项创建的实例必须归属于 B 的内部 Turn Tree，第一层 Workflow Graph 仍只显示 B；选择内部路线并继续对话后，Chat 标题仍为 B，但消息 API 使用该内部路线 ID。schema v6 会把旧版误入第一层的 exact-turn 子节点原地迁移，不删除记录。**Verified local preview。**
 
-本机验证使用统一套件：后端 104 项、前端 68 项，并通过 Python compileall、TypeScript typecheck、production build 和主路径真实浏览器 E2E。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
+20. 顶层实例卡和 turn 卡的 `＋` 可以不经必填表单直接创建对应 scope 的子分支。没有标题和首条内容时先生成 `新分支 N`；空 turn 路线必须立即显示，不能跑到第一层。**自动化已验证。**
+
+21. schema v7 持久化 `title_is_generated`。系统生成标题会在第一条本地用户消息到达时更新为最多 48 字摘要并增加 `graphRevision`；用户显式重命名后永不自动覆盖。旧数据库标题升级时一律按用户所有处理。**后端自动化已验证。**
+
+当前本机验证使用统一套件：后端 108 项并通过 Python compileall；前端继续通过统一测试、TypeScript typecheck 和 production build 验证。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
 
 ## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
 

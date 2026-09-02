@@ -49,6 +49,74 @@ def test_fork_initial_message_is_child_local_and_bumps_content_revision(store: G
     assert [(item["content"], item["inherited"]) for item in messages] == [("branch work", False)]
 
 
+def test_fork_generates_human_titles_when_title_is_omitted(store: GraphStore):
+    wf = create(store)
+    first = store.fork(wf, "A", instance_id="B")
+    second = store.fork(
+        wf, "A", title="   ", instance_id="C",
+        initial_message="  Compare   the two datasets\nfor sentiment analysis.  ",
+    )
+    long_prompt = "x" * 80
+    third = store.fork(wf, "A", instance_id="D", initial_message=long_prompt)
+
+    assert first["node"]["title"] == "新分支 1"
+    assert first["node"]["titleGenerated"] is True
+    assert second["node"]["title"] == "Compare the two datasets for sentiment analysis."
+    assert third["node"]["title"] == "x" * 47 + "…"
+
+    graph_revision = store.get_graph(wf)["graphRevision"]
+    first_message = store.append_message(
+        wf, "B", role="user", content="  Analyze   the new branch\nwith a larger model.  "
+    )
+    renamed_first = next(node for node in store.get_graph(wf)["nodes"] if node["id"] == "B")
+    assert renamed_first["title"] == "Analyze the new branch with a larger model."
+    assert renamed_first["titleGenerated"] is True
+    assert first_message["graphRevision"] == graph_revision + 1
+
+
+def test_rename_instance_uses_graph_revision_and_preserves_route_identity(store: GraphStore):
+    wf = create(store)
+    child = store.fork(wf, "A", instance_id="B")["node"]
+    revision = store.get_graph(wf)["graphRevision"]
+
+    renamed = store.rename_instance(wf, "B", title="  Better branch  ", expected_revision=revision)
+
+    assert renamed["node"]["id"] == child["id"]
+    assert renamed["node"]["title"] == "Better branch"
+    assert renamed["node"]["titleGenerated"] is False
+    assert renamed["graphRevision"] == revision + 1
+    first_message = store.append_message(
+        wf, "B", role="user", content="This must not replace the manual title"
+    )
+    assert first_message["graphRevision"] == renamed["graphRevision"]
+    assert next(node for node in store.get_graph(wf)["nodes"] if node["id"] == "B")["title"] == "Better branch"
+    with pytest.raises(Conflict, match="stale graph revision"):
+        store.rename_instance(wf, "B", title="stale", expected_revision=revision)
+    with pytest.raises(Validation, match="must not be blank"):
+        store.rename_instance(
+            wf, "B", title="   ", expected_revision=renamed["graphRevision"]
+        )
+
+
+def test_turn_tree_exposes_empty_turn_scope_branch_route_node(store: GraphStore):
+    wf = create(store)
+    anchor = store.append_message(wf, "A", role="user", content="source question")
+    child = store.fork(
+        wf, "A", anchor_message_id=anchor["id"],
+        expected_content_revision=anchor["contentRevision"],
+        idempotency_key="empty-turn-branch", surface_scope="turn",
+    )["node"]
+
+    assert {node["id"] for node in store.get_graph(wf)["nodes"]} == {"A"}
+    tree = store.list_turn_tree(wf, "A")
+    assert [route["routeInstanceId"] for route in tree["routeNodes"]] == ["A", child["id"]]
+    assert tree["routeNodes"][0]["parentRouteInstanceId"] is None
+    assert tree["routeNodes"][1]["parentRouteInstanceId"] == "A"
+    assert tree["routeNodes"][1]["anchorMessageId"] == anchor["id"]
+    assert tree["routeNodes"][1]["title"] == "新分支 1"
+    assert not any(turn["routeInstanceId"] == child["id"] for turn in tree["turns"])
+
+
 def test_turn_canvas_groups_local_messages_and_exposes_route_context_counts(store: GraphStore):
     wf = create(store)
     store.append_message(wf, "A", role="user", content="A inherited context")
@@ -324,7 +392,7 @@ def test_schema_and_revisions(store: GraphStore):
     assert store._conn.execute("PRAGMA journal_mode").fetchone()[0] in {"memory", "wal"}
     tables = {row[0] for row in store._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"workflows", "topics", "conversation_instances", "checkpoints", "local_messages", "tombstones", "commands", "schema_migrations"} <= tables
-    assert store._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 6
+    assert store._conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 7
     before = store.get_graph(wf)
     store.append_message(wf, "A", role="user", content="hello")
     after_message = store.get_graph(wf)

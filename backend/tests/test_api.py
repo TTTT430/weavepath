@@ -43,7 +43,7 @@ def test_camel_case_api_round_trip():
     with TestClient(create_app(store)) as client:
         health = client.get("/api/v1/health").json()
         assert health["ok"] is True
-        assert health["schemaVersion"] == 6
+        assert health["schemaVersion"] == 7
         created = client.post("/api/v1/workflows", json={
             "name": "Workflow", "rootTitle": "A", "rootTopicId": "A", "rootInstanceId": "A"
         })
@@ -146,6 +146,75 @@ def test_fork_chat_answers_from_an_exact_turn_and_is_idempotent_without_sibling_
         assert replay.json()["node"]["id"] == child_id
         assert replay.json()["replyStatus"] == "completed"
         assert llm.calls == 1
+    store.close()
+
+
+def test_empty_fork_chat_creates_visible_turn_route_and_can_be_renamed():
+    store, llm = GraphStore(":memory:"), FakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Canvas", "rootTitle": "A", "rootInstanceId": "A"
+        }).json()
+        wf = graph["workflowId"]
+        anchor = client.post(f"/api/v1/workflows/{wf}/instances/A/messages", json={
+            "role": "user", "content": "branch from here"
+        }).json()
+
+        forked = client.post(f"/api/v1/workflows/{wf}/instances/A/fork-chat", json={
+            "anchorMessageId": anchor["id"],
+            "expectedContentRevision": anchor["contentRevision"],
+            "idempotencyKey": "empty-api-turn-branch",
+        })
+
+        assert forked.status_code == 201
+        payload = forked.json()
+        child_id = payload["node"]["id"]
+        assert payload["node"]["title"] == "新分支 1"
+        assert payload["node"]["surfaceScope"] == "turn"
+        assert payload["replyStatus"] == "recorded"
+        assert payload["assistantMessage"] is None
+        assert llm.calls == 0
+        assert {node["id"] for node in client.get(
+            f"/api/v1/workflows/{wf}/graph"
+        ).json()["nodes"]} == {"A"}
+        route_nodes = client.get(
+            f"/api/v1/workflows/{wf}/instances/A/turn-tree"
+        ).json()["routeNodes"]
+        assert any(route["routeInstanceId"] == child_id for route in route_nodes)
+
+        first_message = client.post(
+            f"/api/v1/workflows/{wf}/instances/{child_id}/messages",
+            json={"role": "user", "content": "Try a larger sentiment model"},
+        )
+        assert first_message.status_code == 201
+        assert first_message.json()["graphRevision"] == payload["graphRevision"] + 1
+        updated_route = next(
+            route for route in client.get(
+                f"/api/v1/workflows/{wf}/instances/A/turn-tree"
+            ).json()["routeNodes"]
+            if route["routeInstanceId"] == child_id
+        )
+        assert updated_route["title"] == "Try a larger sentiment model"
+
+        renamed = client.patch(
+            f"/api/v1/workflows/{wf}/instances/{child_id}",
+            json={
+                "title": "Alternative analysis",
+                "expectedRevision": first_message.json()["graphRevision"],
+            },
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["node"]["title"] == "Alternative analysis"
+        stale = client.patch(
+            f"/api/v1/workflows/{wf}/instances/{child_id}",
+            json={"title": "Stale name", "expectedRevision": payload["graphRevision"]},
+        )
+        assert stale.status_code == 409
+        blank = client.patch(
+            f"/api/v1/workflows/{wf}/instances/{child_id}",
+            json={"title": "   ", "expectedRevision": renamed.json()["graphRevision"]},
+        )
+        assert blank.status_code == 422
     store.close()
 
 

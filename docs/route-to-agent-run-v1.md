@@ -78,7 +78,7 @@ Required invariants:
 
 1. `instanceId` belongs to `workflowId` and is active.
 2. `memoryRoute` is one parent chain ending at that instance.
-3. Effective messages contain the instance's inherited checkpoint plus its local messages, never sibling-route local messages.
+3. Effective messages contain the current messages resolved recursively along the instance's parent route plus its local messages, never sibling-route local messages. The immutable checkpoint snapshot remains an audit record and is not the live inheritance source.
 4. The accepted content revision is stored on the run.
 5. A stale revision creates no run, step, event, or tool record.
 6. Later chat regeneration may replace the visible assistant message but cannot change the run's stored final answer.

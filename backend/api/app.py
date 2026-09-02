@@ -287,24 +287,36 @@ class ModelSettingsValidationInput(ModelSettingsInput):
 
 
 class ForkInput(CamelModel):
-    title: str
+    title: str | None = Field(None, max_length=240)
     topic_id: str | None = Field(None, alias="topicId")
     provider: str | None = None
     instance_id: str | None = Field(None, alias="instanceId")
     provider_conversation_id: str | None = Field(None, alias="providerConversationId")
-    initial_message: str | None = Field(None, alias="initialMessage")
+    initial_message: str | None = Field(None, alias="initialMessage", max_length=20_000)
     anchor_message_id: int | None = Field(None, alias="anchorMessageId", ge=1)
     expected_content_revision: int | None = Field(None, alias="expectedContentRevision", ge=0)
     idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
 
 
 class ForkChatInput(CamelModel):
-    title: str = Field(min_length=1, max_length=240)
+    title: str | None = Field(None, max_length=240)
     topic_id: str | None = Field(None, alias="topicId", max_length=240)
-    initial_message: str = Field(alias="initialMessage", min_length=1, max_length=20_000)
-    anchor_message_id: int = Field(alias="anchorMessageId", ge=1)
-    expected_content_revision: int = Field(alias="expectedContentRevision", ge=0)
-    idempotency_key: str = Field(alias="idempotencyKey", min_length=1, max_length=200)
+    initial_message: str | None = Field(None, alias="initialMessage", max_length=20_000)
+    anchor_message_id: int | None = Field(None, alias="anchorMessageId", ge=1)
+    expected_content_revision: int | None = Field(None, alias="expectedContentRevision", ge=0)
+    idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
+
+
+class RenameInstanceInput(CamelModel):
+    title: str = Field(min_length=1, max_length=240)
+    expected_revision: int = Field(alias="expectedRevision", ge=0)
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("title must not be blank")
+        return value.strip()
 
 
 class ActivateInput(CamelModel):
@@ -473,7 +485,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @app.get(prefix + "/health")
     def health():
         return {"ok": True, "service": "weavepath", "version": app.version,
-                "schemaVersion": 6, "aiConfigured": bool(llm.status()["configured"])}
+                "schemaVersion": 7, "aiConfigured": bool(llm.status()["configured"])}
 
     @app.get(prefix + "/ai/status")
     def ai_status():
@@ -653,7 +665,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         assistant_message = existing_answer
         if existing_answer is not None:
             reply_status = "completed"
-        elif llm.status()["configured"]:
+        elif body.initial_message and body.initial_message.strip() and llm.status()["configured"]:
             try:
                 context = route_context(
                     workflow_id, child_id,
@@ -672,6 +684,13 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         return {"node": result["node"], "graphRevision": graph["graphRevision"],
                 "replyStatus": reply_status, "replyErrorCode": reply_error,
                 "assistantMessage": assistant_message}
+
+    @app.patch(prefix + "/workflows/{workflow_id}/instances/{instance_id}")
+    def rename_instance(workflow_id: str, instance_id: str, body: RenameInstanceInput):
+        return graph_store.rename_instance(
+            workflow_id, instance_id, title=body.title,
+            expected_revision=body.expected_revision,
+        )
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/activate")
     def activate(workflow_id: str, instance_id: str, body: ActivateInput):

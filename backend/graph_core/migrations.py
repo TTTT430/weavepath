@@ -119,6 +119,12 @@ CREATE INDEX IF NOT EXISTS idx_instances_turn_owner
 ON conversation_instances(workflow_id,owner_instance_id,surface_scope,created_at);
 """
 
+V7 = """
+ALTER TABLE conversation_instances
+ADD COLUMN title_is_generated INTEGER NOT NULL DEFAULT 0
+CHECK(title_is_generated IN (0,1));
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
@@ -228,4 +234,11 @@ def run_migrations(conn: sqlite3.Connection) -> None:
                 break
         conn.executescript(V6)
         conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)", (_now(),))
+    if 7 not in applied:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_instances)")}
+        if "title_is_generated" not in columns:
+            conn.executescript(V7)
+        # Existing titles predate explicit provenance tracking. Treat them as
+        # user-owned so an upgrade can never overwrite a historical name.
+        conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)", (_now(),))
     conn.commit()

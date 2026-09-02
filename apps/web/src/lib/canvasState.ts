@@ -10,6 +10,7 @@ export interface WorkflowCanvasState {
 
 export interface TurnCanvasState {
  selectedTurnId?:string
+ selectedRouteInstanceId?:string
  viewport?:CanvasViewport
  collapsedTurnIds:string[]
  positions:Record<string,CanvasPosition>
@@ -20,7 +21,8 @@ export interface PersistedCanvasState {
  turns:Record<string,TurnCanvasState>
 }
 
-const PREFIX='weavepath.canvas.v1:';
+const PREFIX='weavepath.canvas.v2:';
+const LEGACY_PREFIX='weavepath.canvas.v1:';
 const DEFAULT_WORKFLOW:WorkflowCanvasState={collapsedNodeIds:[],positions:{}};
 
 function viewport(value:unknown):CanvasViewport|undefined{
@@ -41,32 +43,40 @@ function positions(value:unknown):Record<string,CanvasPosition>{
  }));
 }
 
-function turnState(value:unknown):TurnCanvasState{
+function turnState(value:unknown,keepGeometry=true):TurnCanvasState{
  const item=value&&typeof value==='object'?value as Record<string,unknown>:{};
  return{
   ...(typeof item.selectedTurnId==='string'?{selectedTurnId:item.selectedTurnId}:{}),
-  ...(viewport(item.viewport)?{viewport:viewport(item.viewport)}:{}),
+  ...(typeof item.selectedRouteInstanceId==='string'?{selectedRouteInstanceId:item.selectedRouteInstanceId}:{}),
+  ...(keepGeometry&&viewport(item.viewport)?{viewport:viewport(item.viewport)}:{}),
   collapsedTurnIds:ids(item.collapsedTurnIds),
-  positions:positions(item.positions),
+  positions:keepGeometry?positions(item.positions):{},
  };
 }
 
-export function loadCanvasState(workflowId:string,storage:Pick<Storage,'getItem'>=localStorage):PersistedCanvasState{
- if(!workflowId)return{workflow:{...DEFAULT_WORKFLOW},turns:{}};
+function parseState(raw:string|null,keepGeometry:boolean):PersistedCanvasState|null{
+ if(!raw)return null;
  try{
-  const raw=storage.getItem(PREFIX+workflowId),value=raw?JSON.parse(raw) as Record<string,unknown>:{};
+  const value=JSON.parse(raw) as Record<string,unknown>;
   const workflow=value.workflow&&typeof value.workflow==='object'?value.workflow as Record<string,unknown>:{};
   const rawTurns=value.turns&&typeof value.turns==='object'?value.turns as Record<string,unknown>:{};
   return{
    workflow:{
     ...(typeof workflow.selectedId==='string'?{selectedId:workflow.selectedId}:{}),
-    ...(viewport(workflow.viewport)?{viewport:viewport(workflow.viewport)}:{}),
+    ...(keepGeometry&&viewport(workflow.viewport)?{viewport:viewport(workflow.viewport)}:{}),
     collapsedNodeIds:ids(workflow.collapsedNodeIds),
-    positions:positions(workflow.positions),
+    positions:keepGeometry?positions(workflow.positions):{},
    },
-   turns:Object.fromEntries(Object.entries(rawTurns).map(([key,item])=>[key,turnState(item)])),
+   turns:Object.fromEntries(Object.entries(rawTurns).map(([key,item])=>[key,turnState(item,keepGeometry)])),
   };
- }catch{return{workflow:{...DEFAULT_WORKFLOW},turns:{}}}
+ }catch{return null}
+}
+
+export function loadCanvasState(workflowId:string,storage:Pick<Storage,'getItem'>=localStorage):PersistedCanvasState{
+ if(!workflowId)return{workflow:{...DEFAULT_WORKFLOW},turns:{}};
+ return parseState(storage.getItem(PREFIX+workflowId),true)
+  ||parseState(storage.getItem(LEGACY_PREFIX+workflowId),false)
+  ||{workflow:{...DEFAULT_WORKFLOW},turns:{}};
 }
 
 export function saveCanvasState(workflowId:string,state:PersistedCanvasState,storage:Pick<Storage,'setItem'>=localStorage){

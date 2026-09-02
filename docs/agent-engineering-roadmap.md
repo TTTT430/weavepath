@@ -17,12 +17,12 @@ The current **Conversation Workflow / Local Graph Chat** implementation is the P
 - branch, activate, inspect, topic-route selection, and two-step cascade archival;
 - isolation between concrete routes, including multiple instances of the same logical topic;
 - a standalone OpenAI-compatible synchronous chat path and in-app model settings;
-- a native `WorkspaceShell` with “Chat / Workflow / Lab” switching, a top-level `ConversationInstance` graph, an actionable local-only Turn Canvas, and Chinese/English UI chrome; `/graph` remains a compatibility entry point;
-- separation between inherited checkpoint memory and messages written locally to the selected node;
+- a native `WorkspaceShell` with “Chat / Workflow / Lab” switching, a top-level `ConversationInstance` graph, a Synapse-style actionable local-only Turn Canvas, card-level quick branching, and Chinese/English UI chrome; `/graph` remains a compatibility entry point;
+- separation between dynamically inherited parent-route memory, immutable checkpoint audit snapshots, and messages written locally to the selected node;
 - revision-aware editing and regeneration of the latest local user message.
 - an Engineering Lab preview for transcript-free branch comparison, explicit knowledge transfer, versioned artifacts and datasets, and frozen experiment snapshots.
 
-Phase 1 is **not complete**. A schema v6 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
+Phase 1 is **not complete**. A schema v7 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. Schema v7 persists whether a branch title is system-generated or user-owned; it does not add a general memory summarizer. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
 
 A **Verified local preview** named **Route-to-Agent Run v1** now exercises one bounded synchronous run from a frozen concrete-route context, with an execution brief, durable event journal, `safe_calculator` / `1.0.0`, the configured OpenAI-compatible production adapter, a test-only scripted mock, revision/idempotency/interruption safeguards, and a readable web execution timeline. A separate **Engineering Lab v1** slice adds branch comparison, explicit accepted-knowledge records, versioned artifacts/datasets, and immutable experiment snapshots. These narrow previews do not make Phase 1, Phase 2, Phase 5, or Phase 7 complete.
 
@@ -84,7 +84,7 @@ Deliver a reliable standalone route-aware conversation graph before expanding in
 
 **Current capabilities** are listed in “What exists today.” Remaining work includes:
 
-- hardening the existing schema v6 forward migrations with upgrade matrices, backup/recovery, and rollback/downgrade policy;
+- hardening the existing schema v7 forward migrations with upgrade matrices, backup/recovery, and rollback/downgrade policy;
 - extending restart, archive, and conflict E2E coverage; `/graph` popup lifecycle is compatibility coverage, not a completion condition for the default WorkspaceShell;
 - stable command/query application services and adapter contracts;
 - clearer recovery for partially completed operations;
@@ -92,7 +92,7 @@ Deliver a reliable standalone route-aware conversation graph before expanding in
 
 **Exit criteria**
 
-- route isolation and frozen checkpoints survive restart and migration;
+- route isolation and immutable checkpoint audit records survive restart and migration, while effective child context continues to follow the latest messages on its parent route;
 - graph mutations are revision-safe and idempotent where required;
 - the standalone app completes create, branch, switch, inspect, and archive workflows without Codex or Claude;
 - legacy manifests can be imported without making them the active source of truth;

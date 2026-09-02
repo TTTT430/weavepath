@@ -1,11 +1,11 @@
-import{cleanup,fireEvent,render,screen,waitFor}from'@testing-library/react';
+import{cleanup,fireEvent,render,screen,waitFor,within}from'@testing-library/react';
 import{afterEach,beforeEach,describe,expect,it,vi}from'vitest';
 import{I18nProvider}from'../lib/i18n';
 import{ApiError}from'../lib/api';
 import{WorkspaceCanvas}from'./WorkspaceCanvas';
 
 const apiMock=vi.hoisted(()=>({
- graph:vi.fn(),turns:vi.fn(),messages:vi.fn(),routes:vi.fn(),activate:vi.fn(),fork:vi.fn(),forkChat:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),aiStatus:vi.fn(),chat:vi.fn(),send:vi.fn(),
+ graph:vi.fn(),turns:vi.fn(),messages:vi.fn(),routes:vi.fn(),activate:vi.fn(),fork:vi.fn(),forkChat:vi.fn(),renameInstance:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),aiStatus:vi.fn(),chat:vi.fn(),send:vi.fn(),
 }));
 
 vi.mock('../lib/api',()=>({
@@ -16,8 +16,9 @@ vi.mock('../lib/api',()=>({
 vi.mock('../components/WorkflowGraph',()=>({
  useClickArbitration:(onSelect:()=>void,onOpen:()=>void)=>({onClick:onSelect,onDoubleClick:onOpen}),
  WorkflowGraph:(props:any)=><div data-testid="workflow-graph" data-selected={props.selectedId} data-viewport={JSON.stringify(props.initialViewport??null)} data-focus-id={props.focusRequest?.id||''} data-focus-revision={props.focusRequest?.revision??''}>
-  <button type="button" onDoubleClick={()=>props.onOpenCanvas('leaf')}>open-leaf-canvas</button>
-  <button type="button" onClick={()=>props.onSelect('leaf')}>select-leaf</button>
+ <button type="button" onDoubleClick={()=>props.onOpenCanvas('leaf')}>open-leaf-canvas</button>
+ <button type="button" onClick={()=>props.onSelect('leaf')}>select-leaf</button>
+  <button type="button" onClick={()=>props.onBranch('leaf')}>quick-branch-leaf</button>
   <button type="button" onClick={()=>props.onToggleCollapse('root')}>collapse-root</button>
  </div>,
 }));
@@ -60,18 +61,45 @@ async function openLeafCanvas(){
 }
 
 beforeEach(()=>{
- localStorage.clear();localStorage.setItem('cw.locale','zh-CN');localStorage.setItem('weavepath.canvas.v1:wf',JSON.stringify({workflow:{selectedId:'leaf',viewport:{x:14,y:-22,zoom:.8},collapsedNodeIds:[],positions:{}},turns:{}}));
+ localStorage.clear();localStorage.setItem('cw.locale','zh-CN');localStorage.setItem('weavepath.canvas.v2:wf',JSON.stringify({workflow:{selectedId:'leaf',viewport:{x:14,y:-22,zoom:.8},collapsedNodeIds:[],positions:{}},turns:{}}));
  vi.stubGlobal('BroadcastChannel',FakeBroadcastChannel);
  vi.stubGlobal('crypto',{randomUUID:vi.fn(()=> 'fork-idempotency-1')});
  apiMock.graph.mockResolvedValue(graph);apiMock.turns.mockResolvedValue(snapshot);apiMock.routes.mockResolvedValue([]);
  apiMock.activate.mockResolvedValue({activeInstanceId:'leaf'});apiMock.fork.mockResolvedValue({node:{id:'forked'},graphRevision:4});
  apiMock.forkChat.mockResolvedValue({node:{id:'forked'},graphRevision:4,replyStatus:'completed',assistantMessage:{id:809,role:'assistant',content:'模块 B 回答'}});apiMock.aiStatus.mockResolvedValue({configured:true,provider:'fake',model:'test'});apiMock.chat.mockResolvedValue({});apiMock.send.mockResolvedValue({});
+ apiMock.renameInstance.mockResolvedValue({node:{id:'leaf',title:'大模型分析'},graphRevision:4,eventRevision:12});
  apiMock.prunePlan.mockResolvedValue(null);apiMock.pruneCommit.mockResolvedValue({prunedInstanceIds:[]});
 });
 
 afterEach(()=>{cleanup();vi.clearAllMocks();vi.unstubAllGlobals()});
 
 describe('native double canvas workspace',()=>{
+ it('uses the conversation sidebar to select and locate a workflow node, then opens it on double-click',async()=>{
+  renderCanvas();
+  const navigation=await screen.findByRole('navigation',{name:'对话'}),leaf=within(navigation).getByRole('button',{name:'大模型实验'}),child=within(navigation).getByRole('button',{name:'情感分析'});
+  expect(leaf).toHaveAttribute('aria-current','page');
+  fireEvent.click(child);
+  await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','child'));
+  expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-focus-id','child');
+  expect(child).toHaveAttribute('aria-current','page');
+  expect(apiMock.turns).not.toHaveBeenCalled();
+  fireEvent.doubleClick(child);
+  await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledWith('wf','child'));
+  expect(screen.getByTestId('workflow-layer')).toHaveAttribute('hidden');
+ });
+
+ it('switches directly between conversation turn canvases from the sidebar',async()=>{
+  const rootSnapshot={...snapshot,instanceId:'root',ownerInstanceId:'root',activeRouteInstanceId:'root',memoryRoute:[{instanceId:'root',title:'数据集'}],routeContentRevisions:{root:2},routeMemoryRoutes:{root:[{instanceId:'root',title:'数据集'}]},routeInheritedMessageCounts:{root:0},routeTitles:{root:'数据集'},inheritedMessageCount:0,turns:[]};
+  apiMock.turns.mockImplementation(async(_workflowId:string,instanceId:string)=>instanceId==='root'?rootSnapshot:snapshot);
+  renderCanvas();await openLeafCanvas();
+  const navigation=screen.getByRole('navigation',{name:'对话'}),root=within(navigation).getByRole('button',{name:'数据集'});
+  fireEvent.click(root);
+  await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledWith('wf','root'));
+  expect(root).toHaveAttribute('aria-current','page');
+  expect(screen.getByTestId('workflow-layer')).toHaveAttribute('hidden');
+  expect(screen.getByTestId('turn-layer')).not.toHaveAttribute('hidden');
+ });
+
  it('opens Turn Canvas on double-click without activating, and activates only through Continue conversation',async()=>{
   const onContinue=vi.fn();renderCanvas({onContinue});await openLeafCanvas();
   expect(screen.getByTestId('workflow-layer')).toHaveAttribute('hidden');expect(screen.getByTestId('turn-layer')).not.toHaveAttribute('hidden');
@@ -102,7 +130,7 @@ describe('native double canvas workspace',()=>{
  it('shows only local turns plus route/checkpoint metadata, never inherited transcript text',async()=>{
   renderCanvas();await openLeafCanvas();
   expect(screen.getAllByText('当前节点问题')).toHaveLength(2);expect(screen.getByText('当前节点回答')).toBeInTheDocument();
-  expect(screen.getByText('继承消息数: 6')).toBeInTheDocument();expect(screen.getByText('数据集')).toBeInTheDocument();expect(screen.getByText('情感分析')).toBeInTheDocument();
+  expect(screen.getByText('继承消息数: 6')).toBeInTheDocument();expect(screen.getAllByText('数据集')).toHaveLength(2);expect(screen.getAllByText('情感分析')).toHaveLength(2);
   expect(screen.queryByText('不应显示的父节点正文')).not.toBeInTheDocument();expect(apiMock.messages).not.toHaveBeenCalled();
  });
 
@@ -115,23 +143,22 @@ describe('native double canvas workspace',()=>{
   expect(await screen.findByText('直接从画布提问')).toBeInTheDocument();expect(apiMock.turns).toHaveBeenCalledTimes(2);
  });
 
- it('forks from the selected backend anchor with the snapshot revision and an idempotency key',async()=>{
-  apiMock.turns.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(forkedSnapshot);
+ it('creates an empty branch directly from the card with the exact anchor and an automatic name',async()=>{
+  const emptyForked={...forkedSnapshot,turns:snapshot.turns};
+  apiMock.turns.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(emptyForked);
  renderCanvas();await openLeafCanvas();
   fireEvent.click(await screen.findByRole('button',{name:'card-branch-turn-77'}));
-  fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'模块 B'}});fireEvent.change(screen.getByLabelText('分支的首个问题'),{target:{value:'测试模块 B'}});fireEvent.click(screen.getByRole('button',{name:'创建分支并回答'}));
   await waitFor(()=>expect(apiMock.forkChat).toHaveBeenCalledOnce());
-  expect(apiMock.forkChat).toHaveBeenCalledWith('wf','leaf',{title:'模块 B',initialMessage:'测试模块 B',anchorMessageId:77,expectedContentRevision:9,idempotencyKey:'fork-idempotency-1'});
+  expect(apiMock.forkChat).toHaveBeenCalledWith('wf','leaf',{anchorMessageId:77,expectedContentRevision:9,idempotencyKey:'fork-idempotency-1'});
   await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledTimes(2));
   expect(screen.getByTestId('workflow-graph')).not.toHaveAttribute('data-focus-id','forked');
-  expect(screen.getByTestId('turn-canvas')).toHaveAttribute('data-selected','turn-88');
+  expect(screen.getByTestId('turn-canvas')).toHaveAttribute('data-selected','route:forked');
   expect(screen.getByRole('navigation',{name:'工作流画布'})).toHaveTextContent('大模型实验');expect(screen.getByRole('heading',{name:'轮次画布'})).toBeInTheDocument();
  });
 
  it('refreshes the Turn snapshot after a fork revision conflict',async()=>{
   apiMock.forkChat.mockRejectedValueOnce(new ApiError('stale',409,'conflict'));
-  renderCanvas();await openLeafCanvas();fireEvent.click(await screen.findByRole('button',{name:'从此轮次创建分支'}));
-  fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'冲突分支'}});fireEvent.change(screen.getByLabelText('分支的首个问题'),{target:{value:'冲突问题'}});fireEvent.click(screen.getByRole('button',{name:'创建分支并回答'}));
+  renderCanvas();await openLeafCanvas();fireEvent.click(await screen.findByRole('button',{name:'card-branch-turn-77'}));
   await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledTimes(2));
   expect(screen.getByRole('alert')).toHaveTextContent('创建分支前对话内容已变化');
  });
@@ -139,17 +166,22 @@ describe('native double canvas workspace',()=>{
  it('explains an outdated backend when exact turn fork is unavailable and unlocks retry',async()=>{
   apiMock.forkChat.mockRejectedValueOnce(new ApiError('HTTP 404',404,'notFound'));
   renderCanvas();await openLeafCanvas();fireEvent.click(await screen.findByRole('button',{name:'card-branch-turn-77'}));
-  fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'LLM数据集'}});fireEvent.change(screen.getByLabelText('分支的首个问题'),{target:{value:'有哪些主流数据集'}});fireEvent.click(screen.getByRole('button',{name:'创建分支并回答'}));
   expect(await screen.findByRole('alert')).toHaveTextContent('后端版本过旧');
-  expect(screen.getByRole('button',{name:'创建分支并回答'})).toBeEnabled();
+  expect(screen.getByRole('button',{name:'card-branch-turn-77'})).toBeEnabled();
  });
 
  it('refreshes the workflow graph after a head-fork revision conflict',async()=>{
   apiMock.fork.mockRejectedValueOnce(new ApiError('stale',409,'conflict'));
   renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
-  fireEvent.click(screen.getByRole('button',{name:'新建分支'}));fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'顶层冲突分支'}});fireEvent.click(screen.getByRole('button',{name:'创建并打开'}));
+  fireEvent.click(screen.getByRole('button',{name:'quick-branch-leaf'}));
   await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
-  expect(apiMock.fork).toHaveBeenCalledWith('wf','leaf',{title:'顶层冲突分支',expectedContentRevision:4,idempotencyKey:'fork-idempotency-1'});
+  expect(apiMock.fork).toHaveBeenCalledWith('wf','leaf',{expectedContentRevision:4,idempotencyKey:'fork-idempotency-1'});
   expect(screen.getByRole('alert')).toHaveTextContent('最新画布数据已刷新');
+ });
+
+ it('renames the selected conversation from the inspector with revision protection',async()=>{
+  renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
+  fireEvent.click(screen.getByRole('button',{name:'重命名'}));fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'大模型分析'}});fireEvent.click(screen.getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(apiMock.renameInstance).toHaveBeenCalledWith('wf','leaf','大模型分析',3));
  });
 });
