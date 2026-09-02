@@ -13,16 +13,27 @@ const presets={
  custom:{url:'',model:''}
 }as const;
 type Preset=keyof typeof presets;
+const DRAFT_KEY='weavepath.model-settings.draft.v1';
+const SESSION_SECRET_KEY='weavepath.model-settings.api-key.session.v1';
+type SettingsDraft={provider?:Preset;baseUrl?:string;model?:string;timeout?:number;persist?:boolean};
+function readDraft():SettingsDraft{
+ try{const value=JSON.parse(localStorage.getItem(DRAFT_KEY)||'null');return value&&typeof value==='object'?value:{}}
+ catch{return {}}
+}
+function readSessionSecret(){try{return sessionStorage.getItem(SESSION_SECRET_KEY)||''}catch{return ''}}
 
 export function ModelSettingsDialog({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void}){
- const{t,locale,setLocale}=useI18n();const[provider,setProvider]=useState<Preset>('custom'),[baseUrl,setBaseUrl]=useState(''),[model,setModel]=useState(''),[apiKey,setApiKey]=useState(''),[timeout,setTimeoutValue]=useState(60),[persist,setPersist]=useState(false),[hasKey,setHasKey]=useState(false),[models,setModels]=useState<string[]>([]),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[confirmReset,setConfirmReset]=useState(false);
- useEffect(()=>{api.aiSettings().then(x=>{setBaseUrl(x.baseUrl||'');setModel(x.model||'');setTimeoutValue(x.timeoutSeconds);setPersist(x.persistence==='local');setHasKey(x.hasApiKey)}).catch(e=>setNotice(e.message))},[]);
+ const draft=useState(readDraft)[0];
+ const{t,locale,setLocale}=useI18n();const[provider,setProvider]=useState<Preset>(draft.provider&&draft.provider in presets?draft.provider:'custom'),[baseUrl,setBaseUrl]=useState(draft.baseUrl||''),[model,setModel]=useState(draft.model||''),[apiKey,setApiKey]=useState(readSessionSecret),[timeout,setTimeoutValue]=useState(draft.timeout||60),[persist,setPersist]=useState(draft.persist??false),[hasKey,setHasKey]=useState(false),[models,setModels]=useState<string[]>([]),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[confirmReset,setConfirmReset]=useState(false),[loaded,setLoaded]=useState(false);
+ useEffect(()=>{api.aiSettings().then(x=>{if(!draft.baseUrl)setBaseUrl(x.baseUrl||'');if(!draft.model)setModel(x.model||'');if(!draft.timeout)setTimeoutValue(x.timeoutSeconds);if(draft.persist===undefined)setPersist(x.persistence==='local');setHasKey(x.hasApiKey);setLoaded(true)}).catch(e=>{setNotice(e.message);setLoaded(true)})},[]);
+ useEffect(()=>{if(!loaded)return;try{localStorage.setItem(DRAFT_KEY,JSON.stringify({provider,baseUrl,model,timeout,persist}))}catch{/* Draft persistence is best-effort. */}},[loaded,provider,baseUrl,model,timeout,persist]);
+ useEffect(()=>{try{if(apiKey)sessionStorage.setItem(SESSION_SECRET_KEY,apiKey);else sessionStorage.removeItem(SESSION_SECRET_KEY)}catch{/* Session secret persistence is best-effort. */}},[apiKey]);
  function choose(value:Preset){setProvider(value);const p=presets[value];if(value!=='custom'){setBaseUrl(p.url);setModel(p.model)}}
  function body():AISettingsInput{return{baseUrl:baseUrl.trim(),model:model.trim(),...(apiKey?{apiKey}:{}),timeoutSeconds:Number(timeout),persistence:persist?'local':'memory'}}
  function discoveryError(error:unknown){if(error instanceof ApiError){const keys={modelDiscoveryTimeout:'modelDiscoveryTimeout',modelDiscoveryUnauthorized:'modelDiscoveryUnauthorized',modelDiscoveryUnsupported:'modelDiscoveryUnsupported',modelDiscoveryConnectionFailed:'modelDiscoveryConnectionFailed',modelDiscoveryInvalidResponse:'modelDiscoveryInvalidResponse'}as const;const key=error.code?keys[error.code as keyof typeof keys]:undefined;if(key)return t(key)}return error instanceof Error?error.message:String(error)}
  async function validate(){setBusy(true);setNotice('');try{const hasSelectedModel=!!model.trim();const x=await api.validateAISettings(body());setModels(x.models);setNotice(t(!hasSelectedModel||x.selectedModelAvailable?'connectionOk':'connectionOkModelMissing'))}catch(e){setNotice(`${t('connectionFailed')}: ${discoveryError(e)}`)}finally{setBusy(false)}}
  async function save(){setBusy(true);setNotice('');try{await api.saveAISettings(body());await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
- async function reset(){setBusy(true);try{await api.resetAISettings();await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e));setBusy(false)}}
+ async function reset(){setBusy(true);try{await api.resetAISettings();try{localStorage.removeItem(DRAFT_KEY);sessionStorage.removeItem(SESSION_SECRET_KEY)}catch{/* Ignore storage failures. */}await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e));setBusy(false)}}
  return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="model-settings-title">
   <header className="settings-modal-header"><h2 id="model-settings-title">{t('modelSettings')}</h2><button className="settings-close" type="button" aria-label={t('close')} onClick={onClose}>×</button></header>
   <div className="settings-modal-body">

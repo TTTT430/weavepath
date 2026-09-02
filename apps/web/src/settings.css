@@ -41,7 +41,7 @@
  box-shadow:none;
 }
 .settings-modal .settings-close:hover{color:var(--ui-text,#172126);background:var(--ui-panel-muted,#f4f6f8)}
-.settings-modal-body{min-height:0;padding:18px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain}
+.settings-modal-body{flex:1 1 auto;min-height:0;padding:18px;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .settings-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px 14px}
 .settings-modal .settings-form-grid>label{display:grid;min-width:0;gap:7px;margin:0;color:var(--ui-muted,#56666c);font-size:13px}
 .settings-form-grid .settings-wide{grid-column:1/-1}
