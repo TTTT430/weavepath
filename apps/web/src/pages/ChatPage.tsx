@@ -9,7 +9,7 @@ import{ModelSettingsDialog}from'../components/ModelSettingsDialog';
 import{MarkdownMessage}from'../components/MarkdownMessage';
 import{AgentRunWorkspace}from'../components/AgentRunWorkspace';
 
-type ReplyState='idle'|'thinking'|'error';
+type ReplyState='idle'|'thinking'|'error'|'cancelled';
 interface OwnedSnapshot extends MessageSnapshot {owner:string}
 interface OwnedReply {owner:string;state:ReplyState;error:string}
 interface OwnedMessages {owner:string;items:Message[]}
@@ -38,6 +38,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const[rootTitle,setRootTitle]=useState('');
  const[aiStatus,setAiStatus]=useState<AIStatus|null>(null);
  const[reply,setReply]=useState<OwnedReply>({owner:'',state:'idle',error:''});
+ const[streamingText,setStreamingText]=useState('');
  const[editingId,setEditingId]=useState('');
  const[editDraft,setEditDraft]=useState('');
  const[copiedId,setCopiedId]=useState('');
@@ -46,6 +47,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const sendLocks=useRef<Set<string>>(new Set());
  const snapshotGenerations=useRef<Map<string,number>>(new Map());
  const snapshotRef=useRef(snapshot),activeKey=useRef('');
+ const streamController=useRef<AbortController|null>(null);
+ const streamRequest=useRef<{owner:string;key:string}|null>(null);
+ const cancelledRequests=useRef<Set<string>>(new Set());
+ const failedReply=useRef<{owner:string;content:string}|null>(null);
  const active=useMemo(()=>graph?.nodes.find(node=>node.id===graph.activeInstanceId),[graph]);
  const activeRouteId=graph?.activeRouteInstanceId||graph?.activeInstanceId||'';
  const owner=activeRouteId&&graph?`${graph.workflowId}:${activeRouteId}`:'';
@@ -151,11 +156,14 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   setMemoryOpenOwner('');
   setMemoryLoadingOwner('');
   setReply({owner,state:'idle',error:''});
+  setStreamingText('');
+  failedReply.current=null;
   setEditingId('');
   setEditDraft('');
   setCopiedId('');
   if(graph&&activeRouteId&&owner)void refreshRouteMessages(graph.workflowId,activeRouteId,graph.activeRouteContentRevision||0);
  },[owner,graph?.workflowId,activeRouteId,graph?.activeRouteContentRevision,refreshRouteMessages]);
+ useEffect(()=>()=>{streamController.current?.abort()},[]);
  useEffect(()=>{const box=messagesRef.current;if(box)box.scrollTop=box.scrollHeight},[messages,replyState]);
  useEffect(()=>{onWorkspaceChange?.({workflowId,graph})},[workflowId,graph,onWorkspaceChange]);
  useEffect(()=>{
@@ -247,6 +255,37 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   }finally{unlockRoute(targetOwner)}
  }
 
+ async function retryAnswer(){
+  const failed=failedReply.current,workflow=graph?.workflowId,instance=activeRouteId;
+  if(!failed||failed.owner!==owner||!workflow||!instance)return;
+  const latest=[...messages].reverse().find(item=>item.role==='user'&&!item.inherited&&item.content===failed.content);
+  if(!latest)return;
+  const targetOwner=`${workflow}:${instance}`,expected=nodeRevision;
+  if(!lockRoute(targetOwner))return;
+  setReply({owner:targetOwner,state:'thinking',error:''});setStreamingText('');
+  try{
+   const value=await api.regenerate(workflow,instance,latest.id,failed.content,expected);
+   const generation=nextSnapshotGeneration(targetOwner);applySnapshot(targetOwner,value,generation,expected,true);
+   failedReply.current=null;
+   if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'idle',error:''});
+  }catch(caught){
+   if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'error',error:aiError(caught)});
+  }finally{unlockRoute(targetOwner)}
+ }
+
+ async function stopGenerating(){
+  const current=streamRequest.current;
+  if(!current||current.owner!==owner)return;
+  cancelledRequests.current.add(current.key);
+  streamController.current?.abort();
+  if(typeof api.cancelChat==='function'){
+   try{await api.cancelChat(graph!.workflowId,activeRouteId,current.key)}catch{/* The local abort still stops rendering. */}
+  }
+  streamController.current=null;streamRequest.current=null;setStreamingText('');
+  failedReply.current=null;setReply({owner,state:'cancelled',error:''});
+  await refreshRouteMessages(graph!.workflowId,activeRouteId,0,true);
+ }
+
  async function send(){
   const text=draft.trim(),workflow=graph?.workflowId,instance=activeRouteId;
   if(!text||!workflow||!instance)return;
@@ -256,14 +295,31 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   setDraft('');
   setError('');
   setReply({owner:targetOwner,state:aiStatus?.configured?'thinking':'idle',error:''});
+  setStreamingText('');
+  failedReply.current=null;
   const current=snapshotRef.current;
   const base=current.owner===targetOwner?current:{owner:targetOwner,messages:[],contentRevision:active?.contentRevision||0};
   const optimistic:OwnedSnapshot={...base,messages:[...base.messages,{id:crypto.randomUUID(),role:'user',content:text,inherited:false}]};
   snapshotRef.current=optimistic;
   setSnapshot(optimistic);
+  let requestKey:string|undefined;
   try{
-   if(aiStatus?.configured)await api.chat(workflow,instance,text);
-   else await api.send(workflow,instance,text);
+   if(aiStatus?.configured){
+    const key=crypto.randomUUID();requestKey=key;const controller=new AbortController();
+    streamRequest.current={owner:targetOwner,key};streamController.current=controller;
+    if(typeof api.chatStream==='function'){
+     let terminal:'completed'|'failed'|'cancelled'|null=null;let streamError:ApiError|null=null;
+     await api.chatStream(workflow,instance,text,key,(event,data)=>{
+      if(activeKey.current!==targetOwner)return;
+      if(event==='message.delta')setStreamingText(current=>current+(data.delta||''));
+      if(event==='message.completed')terminal='completed';
+      if(event==='message.cancelled')terminal='cancelled';
+      if(event==='message.failed'){terminal='failed';streamError=new ApiError(data.error||t('aiGenericError'),502,data.code)}
+     },controller.signal);
+     if(terminal==='cancelled'||cancelledRequests.current.has(key)){cancelledRequests.current.delete(key);if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'cancelled',error:''});return}
+     if(terminal==='failed')throw streamError||new ApiError(t('aiGenericError'),502,'aiUnavailable');
+    }else await api.chat(workflow,instance,text);
+   }else await api.send(workflow,instance,text);
    await refreshRouteMessages(workflow,instance,base.contentRevision,true);
    // A previously untitled branch can receive its generated title on the first
    // message. Refresh graph metadata only while this route is still active;
@@ -272,8 +328,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
    if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'idle',error:''});
   }catch(caught){
    await refreshRouteMessages(workflow,instance,base.contentRevision,true);
-   if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'error',error:aiError(caught)});
+   const wasCancelled=!!requestKey&&cancelledRequests.current.delete(requestKey);
+   if(activeKey.current===targetOwner&&!wasCancelled){failedReply.current={owner:targetOwner,content:text};setStreamingText('');setReply({owner:targetOwner,state:'error',error:aiError(caught)});}
   }finally{unlockRoute(targetOwner)}
+  streamController.current=null;streamRequest.current=null;
  }
 
  function openGraph(){
@@ -289,7 +347,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const lastUserId=([...messages].reverse().find(message=>message.role==='user'&&!message.inherited)?.id);
  const renderMessage=(message:Message,actions=false)=><article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<MarkdownMessage content={message.content}/>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions"><button type="button" onClick={()=>beginEdit(message)}>{t('editQuestion')}</button><button type="button" onClick={()=>void copyMessage(message)}>{copiedId===String(message.id)?t('copied'):t('copyMessage')}</button></div>}</>}</div></article>;
  const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><span>{memoryOpen?'▾':'▸'} {t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
- const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking" aria-live="polite"><div><span>{t('thinking')}</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></div></article>}{replyState==='error'&&<article className="message system reply-error" role="alert"><div>{replyError}</div></article>}</div>;
+ const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking" aria-live="polite"><div>{streamingText?<MarkdownMessage content={streamingText}/>:<><span>{t('thinking')}</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></>}<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button></div></article>}{replyState==='error'&&<article className="message system reply-error" role="alert"><div>{replyError}<button type="button" onClick={()=>void retryAnswer()} disabled={busy}>{t('retryAnswer')}</button></div></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled" role="status"><div>{t('cancelled')}</div></article>}</div>;
 
  return <main className="chat-shell">
   <aside className="sidebar">

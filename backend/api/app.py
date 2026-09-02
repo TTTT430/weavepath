@@ -7,11 +7,12 @@ import sqlite3
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Event, Lock
 from typing import BinaryIO, Callable, Literal, TypeVar
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from agent_runtime import (AgentModelPort, AgentRunError, AgentRunRepository, AgentRuntimeService,
@@ -225,6 +226,7 @@ class MessageInput(CamelModel):
 
 class ChatInput(CamelModel):
     content: str = Field(min_length=1, max_length=20_000)
+    idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
 
     @field_validator("content")
     @classmethod
@@ -232,6 +234,13 @@ class ChatInput(CamelModel):
         if not value.strip():
             raise ValueError("content must not be blank")
         return value
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def idempotency_key_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("idempotencyKey must not be blank")
+        return value.strip() if value is not None else None
 
 
 class RegenerateMessageInput(ChatInput):
@@ -435,6 +444,14 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     app.state.model_settings = settings
     app.state.agent_runs = run_repository
     app.state.engineering = engineering
+    # Chat request identity is deliberately process-local.  The graph remains
+    # the source of truth for messages; this registry only prevents duplicate
+    # clicks and lets a streaming request be cancelled without inventing a
+    # second transcript table.
+    chat_state_lock = Lock()
+    chat_active: dict[str, Event] = {}
+    chat_completed: dict[str, tuple[str, dict[str, object]]] = {}
+    app.state.chat_active = chat_active
 
     @app.exception_handler(NotFound)
     async def not_found(_: Request, exc: NotFound):
@@ -550,20 +567,140 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def append(workflow_id: str, instance_id: str, body: MessageInput):
         return graph_store.append_message(workflow_id, instance_id, **body.model_dump())
 
-    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat")
-    def chat(workflow_id: str, instance_id: str, body: ChatInput):
+    def _chat_identity(workflow_id: str, instance_id: str, body: ChatInput) -> tuple[str | None, str]:
+        key = body.idempotency_key.strip() if body.idempotency_key else None
+        return key, f"{workflow_id}:{instance_id}:{key or ''}:{body.content}"
+
+    def _chat_begin(workflow_id: str, instance_id: str, body: ChatInput) -> tuple[str | None, str, Event | None, dict[str, object] | None]:
+        key, signature = _chat_identity(workflow_id, instance_id, body)
+        if key is None:
+            return None, signature, None, None
+        scoped = f"{workflow_id}:{instance_id}:{key}"
+        with chat_state_lock:
+            previous = chat_completed.get(scoped)
+            if previous:
+                if previous[0] != signature:
+                    raise Conflict("idempotencyKey was already used with different content")
+                return key, signature, None, previous[1]
+            if scoped in chat_active:
+                raise Conflict("chat request is already in progress")
+            cancel_event = Event()
+            chat_active[scoped] = cancel_event
+            return key, signature, cancel_event, None
+
+    def _chat_finish(workflow_id: str, instance_id: str, key: str | None,
+                     signature: str, result: dict[str, object] | None) -> None:
+        if key is None:
+            return
+        scoped = f"{workflow_id}:{instance_id}:{key}"
+        with chat_state_lock:
+            chat_active.pop(scoped, None)
+            if result is not None:
+                chat_completed[scoped] = (signature, result)
+                # Keep the registry bounded in the single-user desktop app.
+                while len(chat_completed) > 512:
+                    chat_completed.pop(next(iter(chat_completed)))
+
+    def _chat_cancel(workflow_id: str, instance_id: str, request_id: str) -> bool:
+        with chat_state_lock:
+            event = chat_active.get(f"{workflow_id}:{instance_id}:{request_id}")
+            if event is None:
+                return False
+            event.set()
+            return True
+
+    def _sse(event: str, data: object) -> str:
+        return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def _stream_chat(workflow_id: str, instance_id: str, body: ChatInput) -> StreamingResponse:
         if not llm.status()["configured"]:
             raise LLMUnavailable(str(llm.status().get("reason") or "AI provider is not configured"))
-        user_message = graph_store.append_message(workflow_id, instance_id, role="user", content=body.content)
-        context = route_context(
-            workflow_id, instance_id,
-            graph_store.list_messages(workflow_id, instance_id)["messages"],
-        )
-        assistant_text = llm.complete(context)
-        assistant_message = graph_store.append_message(
-            workflow_id, instance_id, role="assistant", content=assistant_text
-        )
-        return {"userMessage": user_message, "assistantMessage": assistant_message}
+        key, signature, cancel_event, cached = _chat_begin(workflow_id, instance_id, body)
+
+        def events():
+            if cached is not None:
+                yield _sse("message.started", {"requestId": key, "replayed": True})
+                yield _sse("message.completed", cached)
+                return
+            assert cancel_event is not None or key is None
+            event = cancel_event or Event()
+            user_message = None
+            try:
+                user_message = graph_store.append_message(
+                    workflow_id, instance_id, role="user", content=body.content
+                )
+                context = route_context(
+                    workflow_id, instance_id,
+                    graph_store.list_messages(workflow_id, instance_id)["messages"],
+                )
+                yield _sse("message.started", {
+                    "requestId": key, "userMessage": user_message,
+                })
+                chunks = llm.stream(context, event) if hasattr(llm, "stream") else iter([llm.complete(context)])
+                parts: list[str] = []
+                for chunk in chunks:
+                    if event.is_set():
+                        yield _sse("message.cancelled", {"requestId": key})
+                        return
+                    if not isinstance(chunk, str) or not chunk:
+                        continue
+                    parts.append(chunk)
+                    yield _sse("message.delta", {"requestId": key, "delta": chunk})
+                if event.is_set():
+                    yield _sse("message.cancelled", {"requestId": key})
+                    return
+                answer = "".join(parts).strip()
+                if not answer:
+                    raise LLMUnavailable("AI provider returned an empty response", code="aiEmptyResponse", status_code=502)
+                assistant_message = graph_store.append_message(
+                    workflow_id, instance_id, role="assistant", content=answer
+                )
+                result = {"userMessage": user_message, "assistantMessage": assistant_message}
+                _chat_finish(workflow_id, instance_id, key, signature, result)
+                yield _sse("message.completed", result)
+            except LLMUnavailable as exc:
+                _chat_finish(workflow_id, instance_id, key, signature, None)
+                yield _sse("message.failed", {"requestId": key, "code": exc.code, "error": str(exc)})
+            except Exception:
+                _chat_finish(workflow_id, instance_id, key, signature, None)
+                yield _sse("message.failed", {"requestId": key, "code": "aiUnavailable", "error": "AI provider is unavailable"})
+            finally:
+                # A client disconnect can close the generator before the
+                # provider yields another token.  Always release the active
+                # request slot; an already-completed replay remains cached.
+                _chat_finish(workflow_id, instance_id, key, signature, None)
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat")
+    def chat(request: Request, workflow_id: str, instance_id: str, body: ChatInput):
+        if "text/event-stream" in request.headers.get("accept", ""):
+            return _stream_chat(workflow_id, instance_id, body)
+        if not llm.status()["configured"]:
+            raise LLMUnavailable(str(llm.status().get("reason") or "AI provider is not configured"))
+        key, signature, _, cached = _chat_begin(workflow_id, instance_id, body)
+        if cached is not None:
+            return cached
+        try:
+            user_message = graph_store.append_message(workflow_id, instance_id, role="user", content=body.content)
+            context = route_context(workflow_id, instance_id, graph_store.list_messages(workflow_id, instance_id)["messages"])
+            assistant_text = llm.complete(context)
+            assistant_message = graph_store.append_message(workflow_id, instance_id, role="assistant", content=assistant_text)
+            result = {"userMessage": user_message, "assistantMessage": assistant_message}
+            _chat_finish(workflow_id, instance_id, key, signature, result)
+            return result
+        except Exception:
+            _chat_finish(workflow_id, instance_id, key, signature, None)
+            raise
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat/stream")
+    def chat_stream(workflow_id: str, instance_id: str, body: ChatInput):
+        return _stream_chat(workflow_id, instance_id, body)
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat/{request_id}/cancel")
+    def cancel_chat(workflow_id: str, instance_id: str, request_id: str):
+        return {"ok": True, "requestId": request_id, "cancelled": _chat_cancel(workflow_id, instance_id, request_id)}
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/messages/{message_id}/regenerate")
     def regenerate_message(workflow_id: str, instance_id: str, message_id: int,

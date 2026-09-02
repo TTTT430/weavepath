@@ -14,7 +14,7 @@
 
 目标是在不依赖宿主私有能力的情况下，完整验证图、路线记忆、原生 WorkspaceShell 和节点内部 Turn Canvas。独立 `/graph` 窗口降为可选兼容入口，不再定义默认交互。
 
-已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible 同步 AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。同步 AI 请求具有“正在思考”与本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；SSE、停止生成和 metabolize 尚未实现。
+已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。AI 请求支持“正在思考”、SSE 逐 token 草稿、停止生成、失败回答重试、幂等键和本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；正式 HostAdapter 和 metabolize 尚未实现。
 
 依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：双击具体实例只进入该实例的 local-only Turn Canvas；只有显式“继续对话”才 activate；可以从选定本地用户 turn 记录精确 checkpoint 锚点。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
 
@@ -36,15 +36,21 @@ GET  /api/v1/workflows/{workflowId}/topics/{id}/routes
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-plan
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-commit
 GET  /api/v1/ai/status
-POST /api/v1/workflows/{workflowId}/instances/{id}/chat       # synchronous
+POST /api/v1/workflows/{workflowId}/instances/{id}/chat       # JSON by default; SSE when Accept: text/event-stream
+POST /api/v1/workflows/{workflowId}/instances/{id}/chat/stream # SSE stream
+POST /api/v1/workflows/{workflowId}/instances/{id}/chat/{requestId}/cancel # cooperative cancel
 POST /api/v1/workflows/{workflowId}/instances/{id}/messages/{messageId}/regenerate
 POST /api/v1/workflows/{workflowId}/instances/{id}/runs       # verified local preview, synchronous
 GET  /api/v1/workflows/{workflowId}/instances/{id}/runs       # preview list
 GET  /api/v1/runs/{runId}                                     # preview global-ID detail
 GET  /api/v1/runs/{runId}/events                              # preview paged journal
-POST /api/v1/chat/stream                                      # planned SSE
 WS   /api/v1/events                                           # planned
 ```
+
+SSE 使用 `message.started`、`message.delta`、`message.completed`、
+`message.failed` 和 `message.cancelled` 事件。客户端应为每次发送生成
+`idempotencyKey`；相同工作流、节点、键和内容的重放会返回已完成结果，
+不同内容复用同一键会返回冲突。取消或上游失败时不会写入半成品 assistant 消息。
 
 fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地用户 turn 时，checkpoint 快照记录到该 turn 完成处并保留为审计锚点；运行时上下文仍跟随源实例最新路线；源实例 revision 已变化则返回 409。schema v4 为 checkpoint 增加 provider-neutral 的 cursor kind/value；接口、迁移和冲突路径已完成本机测试。
 

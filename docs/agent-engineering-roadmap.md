@@ -16,13 +16,13 @@ The current **Conversation Workflow / Local Graph Chat** implementation is the P
 - workflows, topics, concrete conversation instances, immutable parent routes, checkpoints, local messages, and tombstones;
 - branch, activate, inspect, topic-route selection, and two-step cascade archival;
 - isolation between concrete routes, including multiple instances of the same logical topic;
-- a standalone OpenAI-compatible synchronous chat path and in-app model settings;
+- a standalone OpenAI-compatible chat path (JSON fallback plus SSE streaming, cooperative cancellation, answer retry, and request idempotency) and in-app model settings;
 - a native `WorkspaceShell` with “Chat / Workflow / Lab” switching, a top-level `ConversationInstance` graph, a Synapse-style actionable local-only Turn Canvas, card-level quick branching, and Chinese/English UI chrome; `/graph` remains a compatibility entry point;
 - separation between dynamically inherited parent-route memory, immutable checkpoint audit snapshots, and messages written locally to the selected node;
 - revision-aware editing and regeneration of the latest local user message.
 - an Engineering Lab preview for transcript-free branch comparison, explicit knowledge transfer, versioned artifacts and datasets, and frozen experiment snapshots.
 
-Phase 1 is **not complete**. A schema v7 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, streaming generation, cancellation, retry-without-edit, a stable host adapter layer, and production deployment controls remain future work. Schema v7 persists whether a branch title is system-generated or user-owned; it does not add a general memory summarizer. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
+Phase 1 is **not complete**. A schema v7 forward migration runner now exists, but rollback/downgrade policy, migration release tooling, a stable host adapter layer, and production deployment controls remain future work. Local Chat streaming, cancellation, answer retry, and request idempotency are now implemented; durable Agent Run retry lineage remains a later step. Schema v7 persists whether a branch title is system-generated or user-owned; it does not add a general memory summarizer. The current Codex bridge is a legacy adapter and reference implementation, not the long-term system of record.
 
 A **Verified local preview** named **Route-to-Agent Run v1** now exercises one bounded synchronous run from a frozen concrete-route context, with an execution brief, durable event journal, `safe_calculator` / `1.0.0`, the configured OpenAI-compatible production adapter, a test-only scripted mock, revision/idempotency/interruption safeguards, and a readable web execution timeline. A separate **Engineering Lab v1** slice adds branch comparison, explicit accepted-knowledge records, versioned artifacts/datasets, and immutable experiment snapshots. These narrow previews do not make Phase 1, Phase 2, Phase 5, or Phase 7 complete.
 

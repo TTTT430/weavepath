@@ -3,6 +3,7 @@ const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number){super(message);this.name='ApiError'}
 }
+export type ChatStreamEvent={requestId?:string;userMessage?:Message;assistantMessage?:Message;delta?:string;code?:string;error?:string;replayed?:boolean}
 async function request<T>(path:string,init?:RequestInit):Promise<T>{const response=await fetch(BASE+path,{...init,headers:{Accept:'application/json',...(init?.body?{'Content-Type':'application/json'}:{}),...init?.headers}});const data=await response.json().catch(()=>({}))as ApiErrorPayload;if(!response.ok)throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code,data.runId);return data as T}
 const enc=encodeURIComponent;
 function normalizeTools(value:unknown):AgentToolSpec[]|undefined{return Array.isArray(value)?value.flatMap(item=>{if(!item||typeof item!=='object')return[];const x=item as Record<string,unknown>;return typeof x.name==='string'&&typeof x.version==='string'?[{name:x.name,version:x.version,...(typeof x.description==='string'?{description:x.description}:{})}]:[]}):undefined}
@@ -22,7 +23,16 @@ export const api={
  turns:(w:string,i:string)=>request<TurnCanvasSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/turn-tree`),
  regenerate:(w:string,i:string,messageId:string|number,content:string,expectedRevision:number)=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages/${enc(String(messageId))}/regenerate`,{method:'POST',body:JSON.stringify({content,expectedRevision})}),
  send:(w:string,i:string,content:string)=>request<Message>(`/workflows/${enc(w)}/instances/${enc(i)}/messages`,{method:'POST',body:JSON.stringify({role:'user',content})}),
- chat:(w:string,i:string,content:string)=>request<{userMessage:Message;assistantMessage:Message}>(`/workflows/${enc(w)}/instances/${enc(i)}/chat`,{method:'POST',body:JSON.stringify({content})}),
+ chat:(w:string,i:string,content:string,idempotencyKey?:string)=>request<{userMessage:Message;assistantMessage:Message}>(`/workflows/${enc(w)}/instances/${enc(i)}/chat`,{method:'POST',body:JSON.stringify({content,...(idempotencyKey?{idempotencyKey}:{})})}),
+ chatStream:async(w:string,i:string,content:string,idempotencyKey:string,onEvent:(event:string,data:ChatStreamEvent)=>void,signal?:AbortSignal)=>{
+  const response=await fetch(`${BASE}/workflows/${enc(w)}/instances/${enc(i)}/chat/stream`,{method:'POST',signal,headers:{Accept:'text/event-stream','Content-Type':'application/json'},body:JSON.stringify({content,idempotencyKey})});
+  if(!response.ok){const data=await response.json().catch(()=>({}))as ApiErrorPayload;throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code,data.runId)}
+  if(!response.body)throw new ApiError('Streaming response is unavailable',502,'aiUnavailable');
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer='';
+  const consume=(chunk:string)=>{buffer+=chunk;const frames=buffer.split(/\r?\n\r?\n/);buffer=frames.pop()||'';for(const frame of frames){let event='message',payload='';for(const line of frame.split(/\r?\n/)){if(line.startsWith('event:'))event=line.slice(6).trim();else if(line.startsWith('data:'))payload+=line.slice(5).trim()}if(payload){try{onEvent(event,JSON.parse(payload)as ChatStreamEvent)}catch{/* Ignore malformed provider frames. */}}}};
+  try{while(true){const part=await reader.read();if(part.done)break;consume(decoder.decode(part.value,{stream:true}))}consume(decoder.decode())}finally{reader.releaseLock()}
+ },
+ cancelChat:(w:string,i:string,requestId:string)=>request<{ok:boolean;requestId:string;cancelled:boolean}>(`/workflows/${enc(w)}/instances/${enc(i)}/chat/${enc(requestId)}/cancel`,{method:'POST'}),
  fork:(w:string,i:string,body:{title?:string;topicId?:string;initialMessage?:string;anchorMessageId?:string|number;expectedContentRevision?:number;idempotencyKey?:string})=>request<ForkResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork`,{method:'POST',body:JSON.stringify(body)}),
  forkChat:(w:string,i:string,body:{title?:string;topicId?:string;initialMessage?:string;anchorMessageId?:string|number;expectedContentRevision?:number;idempotencyKey?:string})=>request<ForkChatResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork-chat`,{method:'POST',body:JSON.stringify(body)}),
  renameInstance:(w:string,i:string,title:string,expectedRevision:number)=>request<{node:{id:string;title:string};graphRevision:number;eventRevision:number}>(`/workflows/${enc(w)}/instances/${enc(i)}`,{method:'PATCH',body:JSON.stringify({title,expectedRevision})}),

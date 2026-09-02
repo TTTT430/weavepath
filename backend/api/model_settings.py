@@ -3,6 +3,8 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+from collections.abc import Iterator
+from threading import Event
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -167,6 +169,10 @@ class RuntimeModelSettings:
 
     def complete(self, messages: list[dict[str, Any]]) -> str:
         return self._client().complete(messages)
+
+    def stream(self, messages: list[dict[str, Any]],
+               cancel_event: Event | None = None) -> Iterator[str]:
+        return self._client().stream(messages, cancel_event)
 
     def discover_models(self, draft: ModelConfig | None = None, api_key: str | None = None) -> list[str]:
         if draft is None:

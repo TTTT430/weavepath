@@ -249,6 +249,11 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .thinking-dots i:nth-child(2) { animation-delay: .16s; }
 .thinking-dots i:nth-child(3) { animation-delay: .32s; }
 .reply-error > div { width: 100%; max-width: 100%; }
+.reply-thinking .stop-generating,
+.reply-error button { margin-left: auto; padding: 4px 9px; color: #47666a; font-size: 11px; background: #f5f9fa; border-color: #cbdadd; }
+.reply-thinking .stop-generating:hover,
+.reply-error button:hover { background: #e7f1f0; }
+.reply-cancelled > div { color: #68777d; background: #f5f7f7; }
 
 @keyframes thinking-pulse {
   0%, 70%, 100% { opacity: .28; transform: translateY(0); }

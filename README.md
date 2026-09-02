@@ -20,7 +20,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 
 当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，双击节点进入该对话内部的 Turn Tree。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。选择内部路线并“继续对话”后，普通 Chat 读取和写入同一路线。双击仍不 activate。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 108 项通过，并完成 compileall；前端仍由统一测试、typecheck 和 production build 验证。`/graph` 只保留为兼容入口。
 
-第一版 OpenAI-compatible 同步 AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。SSE、migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
+第一版 OpenAI-compatible AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。聊天请求已支持 SSE 逐 token 输出、停止生成、失败回答独立重试和幂等键；只有完整回答才写入 assistant 消息。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
 
 ### Route-to-Agent Run v1（本机预览已验证）
 
@@ -28,7 +28,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 
 该 preview 当前是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。官方 app factory 已用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；跨进程 run owner/lease 仍属于后续运行时硬化范围。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
 
-2026-09-02 的当前统一本机验证基线包括 108 项后端测试、Python compileall，以及前端统一测试、TypeScript/production build 和双层画布/Route-to-Agent Run/Engineering Lab 浏览器验收。其中 Route-to-Agent Run 路径使用受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，schema v7 为自动分支标题增加持久化来源标记；这些都不代表完整 Evaluation 或 Artifact 阶段已经完成。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。SSE、取消、任意 shell/文件/网络工具、自动 evaluator/scorer、多 Agent，以及正式 Codex/Claude adapter 仍未包含。
+2026-09-02 的当前统一本机验证基线包括 108 项后端测试、Python compileall，以及前端统一测试、TypeScript/production build 和双层画布/Route-to-Agent Run/Engineering Lab 浏览器验收。其中 Route-to-Agent Run 路径使用受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，schema v7 为自动分支标题增加持久化来源标记；这些都不代表完整 Evaluation 或 Artifact 阶段已经完成。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。Local Chat 的 SSE/取消/回答重试已完成；任意 shell/文件/网络工具、自动 evaluator/scorer、多 Agent，以及正式 Codex/Claude adapter 仍未包含。
 
 ### Engineering Lab（本机预览）
 
@@ -60,7 +60,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 
 1. **Conversation Workflow**：图拓扑、topic 多实例、路线选择、检查和级联归档。
 2. **Route Memory**：checkpoint、foundation、路线摘要、上下文预算与显式跨路线转移。
-3. **Local Chat**：已实现本地消息记录和可配置 OpenAI-compatible 同步回复；后续加入 SSE、取消生成、后台 metabolize、judge 和 brief，使产品不依赖外部宿主也能完成完整 AI 对话。
+3. **Local Chat**：已实现本地消息记录、可配置 OpenAI-compatible SSE/JSON 回复、停止生成、回答重试和幂等；后台 metabolize、judge 和 brief 仍按路线图推进，使产品不依赖外部宿主也能完成完整 AI 对话。
 4. **Artifacts & Experiments**：把数据集、代码、实验输出、指标和报告绑定到具体路线实例。
 5. **Handoff & Execution**：生成执行简报并跟踪外部 Agent 任务。
 6. **Search & Knowledge**：搜索结构元数据和用户明确允许索引的内容。
@@ -220,7 +220,7 @@ $env:WEAVEPATH_LLM_TIMEOUT = "60"
 .\scripts\dev.ps1
 ```
 
-若只设置 `OPENAI_API_KEY`，后端会使用 `https://api.openai.com/v1`，但仍必须显式设置 `WEAVEPATH_LLM_MODEL`。旧 `COTHINKER_LLM_*` 变量继续兼容。当前请求是同步返回；编辑最近提问并重新生成已经实现，流式输出、停止生成和“不修改提问、仅重试最后回答”仍未实现。
+若只设置 `OPENAI_API_KEY`，后端会使用 `https://api.openai.com/v1`，但仍必须显式设置 `WEAVEPATH_LLM_MODEL`。旧 `COTHINKER_LLM_*` 变量继续兼容。聊天请求默认通过 SSE 流式返回；编辑最近提问并重新生成，以及失败后不修改提问的独立回答重试均已实现。
 
 仓库中的 `backend/workflow.db` 是早期测试遗留物，不是当前默认数据库。`*.db` 已被 `.gitignore` 忽略；应由维护者确认无保留价值后手工删除，文档更新不代替数据删除确认。
 
