@@ -52,14 +52,16 @@ export interface TurnCanvasProps{
  onViewportChange?:(viewport:Viewport)=>void
  onNodePositionChange?:(id:string,position:CanvasPosition)=>void
  onBranch?:(turn:ConversationTurn)=>void
+ hiddenRouteIds?:string[]
  labels:{locate:string;fit:string;collapse:string;expand:string;responses:string;empty:string;emptyBranch:string;turn:string;branch:string;details:string;statusLabels:Record<string,string>;roleLabels:Record<string,string>}
 }
 
 function emptyMessage(id:string,content:string):Message{return{id,role:'user',content}}
 
-export function canvasTurns(snapshot:TurnCanvasSnapshot,emptyBranchLabel:string):CanvasTurn[]{
- const turns:CanvasTurn[]=snapshot.turns.map(turn=>({...turn}));
- const routes=(snapshot.routeNodes||[]).filter(route=>(route as TurnRouteNodeWithStatus).status!=='pruned');
+export function canvasTurns(snapshot:TurnCanvasSnapshot,emptyBranchLabel:string,hiddenRouteIds:string[]=[]):CanvasTurn[]{
+ const hidden=new Set(hiddenRouteIds);
+ const turns:CanvasTurn[]=snapshot.turns.filter(turn=>!hidden.has(turn.routeInstanceId||'')).map(turn=>({...turn}));
+ const routes=(snapshot.routeNodes||[]).filter(route=>!hidden.has(route.routeInstanceId)&&(route as TurnRouteNodeWithStatus).status!=='pruned');
  if(!routes.length)return turns;
  const represented=new Set(turns.map(turn=>turn.routeInstanceId||snapshot.instanceId));
  const turnByAnchor=new Map(turns.map(turn=>[`${turn.routeInstanceId||snapshot.instanceId}:${turn.anchorMessageId}`,turn.id]));
@@ -73,9 +75,9 @@ export function canvasTurns(snapshot:TurnCanvasSnapshot,emptyBranchLabel:string)
 
 type TurnRouteNodeWithStatus=TurnCanvasSnapshot['routeNodes'] extends Array<infer T>?T&{status?:string}:{status?:string};
 
-export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPositions={},initialViewport,onSelect,onToggleCollapse,onViewportChange,onNodePositionChange,onBranch,labels}:TurnCanvasProps){
+export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPositions={},initialViewport,onSelect,onToggleCollapse,onViewportChange,onNodePositionChange,onBranch,hiddenRouteIds=[],labels}:TurnCanvasProps){
  const[instance,setInstance]=useState<ReactFlowInstance<TurnFlowNode>|null>(null),collapsed=new Set(collapsedTurnIds);
- const normalizedTurns=useMemo(()=>{const items=canvasTurns(snapshot,labels.emptyBranch);return items.map((turn,index)=>({...turn,parentTurnId:turn.parentTurnId===undefined?(items[index-1]?.id||null):turn.parentTurnId}))},[snapshot,labels.emptyBranch]);
+ const normalizedTurns=useMemo(()=>{const items=canvasTurns(snapshot,labels.emptyBranch,hiddenRouteIds);return items.map((turn,index)=>({...turn,parentTurnId:turn.parentTurnId===undefined?(items[index-1]?.id||null):turn.parentTurnId}))},[snapshot,labels.emptyBranch,hiddenRouteIds]);
  const calculated=useMemo<TurnFlowNode[]>(()=>{const map=new Map(normalizedTurns.map(turn=>[turn.id,turn])),depths=new Map<string,number>(),rows=new Map<number,number>();const depth=(turn:CanvasTurn):number=>{if(depths.has(turn.id))return depths.get(turn.id)!;const value=turn.parentTurnId&&map.has(turn.parentTurnId)?depth(map.get(turn.parentTurnId)!)+1:0;depths.set(turn.id,value);return value};return normalizedTurns.map(turn=>{const column=depth(turn),row=rows.get(column)||0;rows.set(column,row+1);return{id:turn.id,type:'turn',position:turnPositions[turn.id]||{x:48+column*365,y:52+row*320},selected:turn.id===selectedTurnId,data:{turn,collapsed:collapsed.has(turn.id),collapseLabel:labels.collapse,expandLabel:labels.expand,responseLabel:labels.responses,turnLabel:labels.turn,branchLabel:labels.branch,detailsLabel:labels.details,emptyBranchLabel:labels.emptyBranch,statusLabels:labels.statusLabels,roleLabels:labels.roleLabels,onSelect,onToggleCollapse,onBranch}}})},[normalizedTurns,selectedTurnId,collapsedTurnIds,turnPositions,labels,onSelect,onToggleCollapse,onBranch]);
  const[nodes,setNodes,onNodesChange]=useNodesState<TurnFlowNode>(calculated);
  useEffect(()=>setNodes(calculated),[calculated,setNodes]);
