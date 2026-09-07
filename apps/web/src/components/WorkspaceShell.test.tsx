@@ -6,12 +6,12 @@ import{WorkspaceShell}from'./WorkspaceShell';
 vi.mock('../pages/ChatPage',async()=>{
  const{useEffect,useState}=await import('react');
  const graph={workflowId:'wf',name:'研究工作流',rootInstanceId:'a',activeInstanceId:'a',graphRevision:1,eventRevision:1,nodes:[{id:'a',parentId:null,topicId:'ta',title:'数据集',status:'active' as const}]};
- return{ChatPage:({onWorkspaceChange}:{onWorkspaceChange?:(value:{workflowId:string;graph:typeof graph})=>void})=>{const[value,setValue]=useState('');useEffect(()=>onWorkspaceChange?.({workflowId:'wf',graph}),[onWorkspaceChange]);return <label>chat-state<input aria-label="chat-state" value={value} onChange={event=>setValue(event.target.value)}/></label>}};
+ return{ChatPage:({onWorkspaceChange,activeConversationSignal}:{onWorkspaceChange?:(value:{workflowId:string;graph:typeof graph})=>void;activeConversationSignal?:{workflowId:string;instanceId:string;revision:number}|null})=>{const[value,setValue]=useState('');useEffect(()=>onWorkspaceChange?.({workflowId:'wf',graph}),[onWorkspaceChange]);return <><label>chat-state<input aria-label="chat-state" value={value} onChange={event=>setValue(event.target.value)}/></label><output aria-label="chat-active-route">{activeConversationSignal?.instanceId||''}</output></>}};
 });
 
 vi.mock('../pages/WorkspaceCanvas',async()=>{
  const{useState}=await import('react');
- return{WorkspaceCanvas:({workflowId,onContinue}:{workflowId:string;onContinue?:()=>void})=>{const[value,setValue]=useState('');return <div><span>canvas-{workflowId}</span><input aria-label="canvas-state" value={value} onChange={event=>setValue(event.target.value)}/><button onClick={onContinue}>continue-test</button></div>}};
+ return{WorkspaceCanvas:({workflowId,onContinue,onConversationActivated}:{workflowId:string;onContinue?:()=>void;onConversationActivated?:(value:{workflowId:string;instanceId:string})=>void})=>{const[value,setValue]=useState('');return <div><span>canvas-{workflowId}</span><input aria-label="canvas-state" value={value} onChange={event=>setValue(event.target.value)}/><button onClick={onContinue}>continue-test</button><button onClick={()=>onConversationActivated?.({workflowId,instanceId:'b'})}>activate-b-test</button></div>}};
 });
 
 beforeEach(()=>{localStorage.clear();localStorage.setItem('cw.locale','zh-CN');localStorage.setItem('cw.workflow','wf')});
@@ -36,5 +36,15 @@ describe('workspace shell',()=>{
   expect(screen.getByRole('button',{name:'工作流'})).toHaveAttribute('aria-pressed','true');
   fireEvent.click(screen.getByRole('button',{name:'continue-test'}));
   expect(screen.getByRole('button',{name:'对话'})).toHaveAttribute('aria-pressed','true');
+ });
+
+ it('passes a successful canvas conversation activation directly to the mounted chat surface',()=>{
+  render(<I18nProvider><WorkspaceShell/></I18nProvider>);
+  expect(screen.getByLabelText('chat-active-route')).toHaveTextContent('');
+  fireEvent.click(screen.getByRole('button',{name:'工作流'}));
+  fireEvent.click(screen.getByRole('button',{name:'activate-b-test'}));
+  expect(screen.getByLabelText('chat-active-route')).toHaveTextContent('b');
+  fireEvent.click(screen.getByRole('button',{name:'对话'}));
+  expect(screen.getByLabelText('chat-active-route')).toHaveTextContent('b');
  });
 });

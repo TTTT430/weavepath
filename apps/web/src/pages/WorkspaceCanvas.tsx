@@ -29,9 +29,10 @@ export interface WorkspaceCanvasProps{
  visible?:boolean
  onContinue?:()=>void
  onClose?:()=>void
+ onConversationActivated?:(context:{workflowId:string;instanceId:string})=>void
 }
 
-export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:WorkspaceCanvasProps){
+export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose,onConversationActivated}:WorkspaceCanvasProps){
  const{t}=useI18n();
  const[graph,setGraph]=useState<Graph|null>(null),[selected,setSelectedState]=useState(''),[routes,setRoutes]=useState<Route[]>([]);
  const[layer,setLayer]=useState<Layer>({kind:'workflow'}),[turnSnapshot,setTurnSnapshot]=useState<TurnCanvasSnapshot|null>(null),[turnLoading,setTurnLoading]=useState(false);
@@ -160,6 +161,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
      const routeRevision=topLevel?.contentRevision??turnSnapshot?.routeContentRevisions?.[id]??current.activeRouteContentRevision;
      return{...current,activeInstanceId:topLevel?.id||ownerOverride||activeTurnOwnerRef.current||current.activeInstanceId,activeRouteInstanceId:id,activeRouteTitle:routeTitle,activeRouteContentRevision:routeRevision};
     });
+    onConversationActivated?.({workflowId:targetWorkflowId,instanceId:id});
     notifyChange({type:'conversation-workflow-changed',workflowId:targetWorkflowId,instanceId:id});
     return'activated' as const;
    }catch(caught){
@@ -174,6 +176,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
        updateTurn(actualOwner,{selectedTurnId:latest?.id||`route:${actualRoute}`,selectedRouteInstanceId:actualRoute});
       }
      }
+     onConversationActivated?.({workflowId:targetWorkflowId,instanceId:actualRoute});
      notifyChange({type:'conversation-workflow-changed',workflowId:targetWorkflowId,instanceId:actualRoute});
     }
     setError(message);

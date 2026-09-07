@@ -6,14 +6,16 @@ import{WorkspaceCanvas}from'../pages/WorkspaceCanvas';
 import{EngineeringWorkbench}from'./EngineeringWorkbench';
 
 type WorkspaceView='chat'|'workflow'|'lab';
+type ConversationActivationSignal={workflowId:string;instanceId:string;revision:number};
 
 function initialView():WorkspaceView{const value=localStorage.getItem('weavepath.workspace.view');return value==='workflow'||value==='lab'?value:'chat'}
 
 export function WorkspaceShell(){
- const{t}=useI18n(),[view,setViewState]=useState<WorkspaceView>(initialView),[workflowId,setWorkflowId]=useState(localStorage.getItem('cw.workflow')||''),[graph,setGraph]=useState<Graph|null>(null);
+ const{t}=useI18n(),[view,setViewState]=useState<WorkspaceView>(initialView),[workflowId,setWorkflowId]=useState(localStorage.getItem('cw.workflow')||''),[graph,setGraph]=useState<Graph|null>(null),[conversationActivation,setConversationActivation]=useState<ConversationActivationSignal|null>(null);
  const setView=useCallback((next:WorkspaceView)=>{setViewState(next);localStorage.setItem('weavepath.workspace.view',next)},[]);
  const workspaceChanged=useCallback((context:{workflowId:string;graph:Graph|null})=>{setWorkflowId(context.workflowId);setGraph(context.graph)},[]);
  const openWorkflow=useCallback((id:string)=>{setWorkflowId(id);setView('workflow')},[setView]);
+ const conversationActivated=useCallback((context:{workflowId:string;instanceId:string})=>setConversationActivation(current=>({...context,revision:(current?.revision||0)+1})),[]);
  useEffect(()=>{if(!workflowId&&view==='workflow')setView('chat')},[workflowId,view,setView]);
  return <main className="workspace-shell">
   <header className="workspace-topbar">
@@ -27,10 +29,10 @@ export function WorkspaceShell(){
   </header>
   <section className="workspace-stage">
    <div className={`workspace-surface chat-surface ${view==='chat'?'is-active':''}`} aria-hidden={view!=='chat'}>
-    <ChatPage onOpenWorkflow={openWorkflow} onWorkspaceChange={workspaceChanged}/>
+    <ChatPage onOpenWorkflow={openWorkflow} onWorkspaceChange={workspaceChanged} activeConversationSignal={conversationActivation}/>
    </div>
    <div className={`workspace-surface workflow-surface ${view==='workflow'?'is-active':''}`} aria-hidden={view!=='workflow'}>
-    <WorkspaceCanvas workflowId={workflowId} visible={view==='workflow'} onContinue={()=>setView('chat')}/>
+    <WorkspaceCanvas workflowId={workflowId} visible={view==='workflow'} onContinue={()=>setView('chat')} onConversationActivated={conversationActivated}/>
    </div>
    <div className={`workspace-surface lab-surface ${view==='lab'?'is-active':''}`} aria-hidden={view!=='lab'}>
     <EngineeringWorkbench workflowId={workflowId} graph={graph} visible={view==='lab'}/>

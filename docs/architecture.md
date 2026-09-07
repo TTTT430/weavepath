@@ -151,7 +151,7 @@ Workflow Graph
          └─ assistant + tool + failure events
 ```
 
-viewport、节点位置和折叠仍只是 UI metadata；conversation/turn selection 则同时是领域中的当前路线选择，会调用 `activate_instance`。激活成功后画布广播失效提示，Chat 重新读取权威 graph 和该路线的本地 snapshot；激活失败时画布回到后端实际 active route 并保留错误提示。“继续对话”只切回已经同步的 Chat。完整决策见 [ADR-0004](adr/0004-native-workspace-double-canvas.md)。
+viewport、节点位置和折叠仍只是 UI metadata；conversation/turn selection 则同时是领域中的当前路线选择，会调用 `activate_instance`。激活成功后，画布通过 `WorkspaceShell` 的直接 selection signal 通知同页 Chat 重新读取权威 graph 和该路线的本地 snapshot；browser event 只保留给 `/graph` 等额外窗口。激活失败时画布回到后端实际 active route 并保留错误提示。“继续对话”只切回已经同步的 Chat。完整决策见 [ADR-0004](adr/0004-native-workspace-double-canvas.md)。
 
 ### 精确 turn checkpoint cursor
 
@@ -269,7 +269,7 @@ WorkspaceShell
                   └─ Continue → Chat
 ```
 
-Chat 与 Workflow surface 保持挂载，切换不通过 `window.open`。顶层和每个实例的 viewport、视觉位置与折叠是独立 UI metadata；它们丢失时只重置布局。conversation/route selection 是共享的当前路线状态，激活成功后通过轻量 browser event 让另一 surface 重新读取 SQLite 真源，事件本身不携带 transcript。
+Chat 与 Workflow surface 保持挂载，切换不通过 `window.open`。顶层和每个实例的 viewport、视觉位置与折叠是独立 UI metadata；它们丢失时只重置布局。conversation/route selection 是共享的当前路线状态，激活成功后通过 `WorkspaceShell` 内的直接 callback/signal 让同页 Chat 重新读取 SQLite 真源；轻量 browser event 仅用于额外兼容窗口，事件本身不携带 transcript。
 
 `/graph?workflow=...` 继续包装同一个 `WorkspaceCanvas`，用于兼容旧入口或未来独立 Desktop surface。该兼容窗口在 selection/钻入导致的 activate、fork 或 prune 等真实状态变化后通知其他页面；不得用 composer 文本或伪 deep link 模拟切换。默认 WorkspaceShell 与双层画布已完成自动化和真实浏览器 **Verified local preview**；旧版“独立弹窗双击后自动关闭”不再是默认产品语义，也不能替代对兼容窗口本身的独立验收。
 

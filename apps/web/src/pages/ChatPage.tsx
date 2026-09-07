@@ -28,9 +28,10 @@ function loadPinnedWorkflowIds(){
 export interface ChatPageProps{
  onOpenWorkflow?:(workflowId:string)=>void
  onWorkspaceChange?:(context:{workflowId:string;graph:Graph|null})=>void
+ activeConversationSignal?:{workflowId:string;instanceId:string;revision:number}|null
 }
 
-export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
+export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSignal}:ChatPageProps={}){
  const{t}=useI18n();
  const[settingsOpen,setSettingsOpen]=useState(false);
  const[workflows,setWorkflows]=useState<WorkflowSummary[]>([]);
@@ -69,6 +70,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const mountedAt=useRef(Date.now());
  const cancelledRequests=useRef<Set<string>>(new Set());
  const failedReply=useRef<{owner:string;content:string}|null>(null);
+ const processedActivationRevision=useRef(0);
  const active=useMemo(()=>graph?.nodes.find(node=>node.id===graph.activeInstanceId),[graph]);
  const activeRouteId=graph?.activeRouteInstanceId||graph?.activeInstanceId||'';
  const owner=activeRouteId&&graph?`${graph.workflowId}:${activeRouteId}`:'';
@@ -245,6 +247,21 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
 
  useEffect(()=>{void loadWorkflows();void refreshAI()},[loadWorkflows,refreshAI]);
  useEffect(()=>{setGraph(null);graphRequest.current++;void loadGraph()},[loadGraph]);
+ useEffect(()=>{
+  if(!activeConversationSignal||activeConversationSignal.revision<=processedActivationRevision.current)return;
+  processedActivationRevision.current=activeConversationSignal.revision;
+  if(activeConversationSignal.workflowId!==workflowIdRef.current){
+   setWorkflowId(activeConversationSignal.workflowId);
+   setGraph(null);
+   setError('');
+   localStorage.setItem('cw.workflow',activeConversationSignal.workflowId);
+   return;
+  }
+  // Canvas and Chat are siblings in the same React tree. This direct signal
+  // makes route activation deterministic; BroadcastChannel remains only for
+  // additional windows/surfaces and is no longer the sole synchronization path.
+  void loadGraph(activeConversationSignal.workflowId);
+ },[activeConversationSignal?.revision,activeConversationSignal?.workflowId,loadGraph]);
  useEffect(()=>{
   memoryRequest.current++;
   setMemoryOpenOwner('');

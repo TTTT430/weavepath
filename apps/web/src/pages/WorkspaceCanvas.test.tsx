@@ -55,7 +55,7 @@ class FakeBroadcastChannel{
  close(){}
 }
 
-function renderCanvas(props:{onContinue?:()=>void}={}){return render(<I18nProvider><WorkspaceCanvas workflowId="wf" {...props}/></I18nProvider>)}
+function renderCanvas(props:{onContinue?:()=>void;onConversationActivated?:(value:{workflowId:string;instanceId:string})=>void}={}){return render(<I18nProvider><WorkspaceCanvas workflowId="wf" {...props}/></I18nProvider>)}
 async function openLeafCanvas(){
  await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
  fireEvent.doubleClick(screen.getByRole('button',{name:'open-leaf-canvas'}));
@@ -92,12 +92,13 @@ describe('native double canvas workspace',()=>{
  });
 
  it('uses the conversation sidebar to select and locate a workflow node, then opens it on double-click',async()=>{
-  renderCanvas();
+  const onConversationActivated=vi.fn();renderCanvas({onConversationActivated});
   const navigation=await screen.findByRole('navigation',{name:'对话'}),leaf=within(navigation).getByRole('button',{name:'大模型实验'}),child=within(navigation).getByRole('button',{name:'情感分析'});
   expect(leaf).toHaveAttribute('aria-current','page');
   fireEvent.click(child);
   await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','child'));
   await waitFor(()=>expect(apiMock.activate).toHaveBeenCalledWith('wf','child'));
+  expect(onConversationActivated).toHaveBeenCalledWith({workflowId:'wf',instanceId:'child'});
   expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-focus-id','child');
   expect(child).toHaveAttribute('aria-current','page');
   expect(apiMock.turns).not.toHaveBeenCalled();
@@ -155,10 +156,11 @@ describe('native double canvas workspace',()=>{
 
  it('activates the selected internal route so Chat follows the second-layer canvas',async()=>{
   apiMock.turns.mockResolvedValue(forkedSnapshot);
-  const post=vi.spyOn(BroadcastChannel.prototype,'postMessage');
-  renderCanvas();await openLeafCanvas();
+  const post=vi.spyOn(BroadcastChannel.prototype,'postMessage'),onConversationActivated=vi.fn();
+  renderCanvas({onConversationActivated});await openLeafCanvas();
   fireEvent.click(await screen.findByRole('button',{name:'测试模块 B'}));
   await waitFor(()=>expect(apiMock.activate).toHaveBeenLastCalledWith('wf','forked'));
+  await waitFor(()=>expect(onConversationActivated).toHaveBeenLastCalledWith({workflowId:'wf',instanceId:'forked'}));
   await waitFor(()=>expect(post).toHaveBeenCalledWith(expect.objectContaining({type:'conversation-workflow-changed',workflowId:'wf',instanceId:'forked'})));
   expect(screen.getByTestId('turn-canvas')).toHaveAttribute('data-selected','turn-88');
   post.mockRestore();
