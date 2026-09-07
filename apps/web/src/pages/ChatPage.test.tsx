@@ -36,6 +36,41 @@ afterEach(()=>{cleanup();vi.clearAllMocks()});
 
 describe('chat delivery mode',()=>{
  it('opens model settings from the compact sidebar button without translating conversation titles',async()=>{apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});renderChat();expect(await screen.findByText('数据集构建')).toBeInTheDocument();expect(screen.queryByRole('button',{name:/继承的路线记忆/})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:/设置/}));expect(await screen.findByRole('heading',{name:'模型设置'})).toBeInTheDocument();expect(screen.getByText('数据集构建')).toBeInTheDocument()});
+ it('refreshes the workflow sidebar after a structural canvas change',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  apiMock.workflows.mockResolvedValueOnce([{id:'wf-1',name:'研究项目',activeInstanceId:'root'}]).mockResolvedValueOnce([{id:'wf-1',name:'已重命名项目',activeInstanceId:'root'}]);
+  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce({...graph,name:'已重命名项目'});
+  renderChat();expect(await screen.findByRole('button',{name:'研究项目'})).toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',senderId:'canvas',sentAt:Date.now()}}));
+  expect(await screen.findByRole('button',{name:'已重命名项目'})).toBeInTheDocument();
+  expect(apiMock.workflows).toHaveBeenCalledTimes(2);expect(apiMock.graph).toHaveBeenCalledTimes(2);
+ });
+ it('does not let an older workflow-list refresh restore a stale canvas name',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  let finishStale!:(value:unknown)=>void,finishLatest!:(value:unknown)=>void;
+  apiMock.workflows
+   .mockResolvedValueOnce([{id:'wf-1',name:'研究项目',activeInstanceId:'root'}])
+   .mockReturnValueOnce(new Promise(resolve=>{finishStale=resolve}))
+   .mockReturnValueOnce(new Promise(resolve=>{finishLatest=resolve}));
+  renderChat();expect(await screen.findByRole('button',{name:'研究项目'})).toBeInTheDocument();
+  const change={type:'conversation-workflow-changed',workflowId:'wf-1',senderId:'canvas',sentAt:Date.now()};
+  window.dispatchEvent(new MessageEvent('message',{data:change}));window.dispatchEvent(new MessageEvent('message',{data:{...change,sentAt:change.sentAt+1}}));
+  finishLatest([{id:'wf-1',name:'最终名称',activeInstanceId:'root'}]);
+  expect(await screen.findByRole('button',{name:'最终名称'})).toBeInTheDocument();
+  finishStale([{id:'wf-1',name:'过期名称',activeInstanceId:'root'}]);
+  await waitFor(()=>expect(screen.queryByRole('button',{name:'过期名称'})).not.toBeInTheDocument());
+  expect(screen.getByRole('button',{name:'最终名称'})).toBeInTheDocument();
+ });
+ it('refreshes a renamed background workflow without replacing the current graph',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  apiMock.workflows
+   .mockResolvedValueOnce([{id:'wf-1',name:'研究项目',activeInstanceId:'root'},{id:'wf-2',name:'旧名称',activeInstanceId:'other'}])
+   .mockResolvedValueOnce([{id:'wf-1',name:'研究项目',activeInstanceId:'root'},{id:'wf-2',name:'后台新名称',activeInstanceId:'other'}]);
+  renderChat();expect(await screen.findByRole('button',{name:'旧名称'})).toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-2',senderId:'canvas',sentAt:Date.now()}}));
+  expect(await screen.findByRole('button',{name:'后台新名称'})).toBeInTheDocument();
+  expect(apiMock.graph).toHaveBeenCalledTimes(1);
+ });
  it('saves through the message endpoint when AI is not configured',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
   apiMock.messages.mockResolvedValueOnce([]).mockResolvedValueOnce([{id:'u1',role:'user',content:'测试消息'}]);
@@ -112,9 +147,11 @@ describe('chat delivery mode',()=>{
   window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'started',requestId:'canvas-request',content:'画布问题',senderId:'canvas',sentAt:canvasStartedAt}}));
   expect(await screen.findByText('正在思考')).toBeInTheDocument();
   expect(await screen.findByText('画布问题')).toBeInTheDocument();
+  expect(apiMock.graph).toHaveBeenCalledTimes(1);
   expect(screen.queryByRole('button',{name:'停止生成'})).not.toBeInTheDocument();
   window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'completed',requestId:'canvas-request',senderId:'canvas',sentAt:canvasStartedAt+1}}));
   expect(await screen.findByText('画布回答')).toBeInTheDocument();
+  await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
   await waitFor(()=>expect(screen.queryByText('正在思考')).not.toBeInTheDocument());
   expect(apiMock.chat).not.toHaveBeenCalled();
   expect(apiMock.send).not.toHaveBeenCalled();
@@ -195,7 +232,7 @@ describe('chat delivery mode',()=>{
  it('ignores a late lifecycle failure from the route that was left',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
   const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};
-  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce(graph).mockResolvedValue(branch);
+  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValue(branch);
   apiMock.messageSnapshot.mockImplementation(async(_w:string,i:string)=>({messages:i==='branch'?[{id:'b1',role:'user',content:'B消息'}]:[],contentRevision:1}));
   renderChat();
   await screen.findByRole('heading',{name:'数据集构建'});

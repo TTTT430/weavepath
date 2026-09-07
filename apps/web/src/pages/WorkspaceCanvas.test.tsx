@@ -49,7 +49,9 @@ const forkedSnapshot={...snapshot,routeContentRevisions:{leaf:9,forked:2},routeM
 
 class FakeBroadcastChannel{
  constructor(_name:string){}
- addEventListener=vi.fn();postMessage=vi.fn();close=vi.fn();
+ addEventListener(..._args:unknown[]){}
+ postMessage(_value:unknown){}
+ close(){}
 }
 
 function renderCanvas(props:{onContinue?:()=>void}={}){return render(<I18nProvider><WorkspaceCanvas workflowId="wf" {...props}/></I18nProvider>)}
@@ -231,6 +233,16 @@ describe('native double canvas workspace',()=>{
   await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
   expect(apiMock.fork).toHaveBeenCalledWith('wf','leaf',{expectedContentRevision:4,idempotencyKey:'fork-idempotency-1'});
   expect(screen.getByRole('alert')).toHaveTextContent('最新画布数据已刷新');
+ });
+
+ it('broadcasts a committed branch created through the advanced dialog',async()=>{
+  const post=vi.spyOn(BroadcastChannel.prototype,'postMessage');
+  renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
+  fireEvent.click(screen.getByRole('button',{name:'分支选项'}));
+  fireEvent.click(screen.getByRole('button',{name:'创建并打开'}));
+  await waitFor(()=>expect(apiMock.fork).toHaveBeenCalledOnce());
+  await waitFor(()=>expect(post).toHaveBeenCalledWith(expect.objectContaining({type:'conversation-workflow-changed',workflowId:'wf',instanceId:'forked'})));
+  post.mockRestore();
  });
 
  it('renames the selected conversation from the inspector with revision protection',async()=>{

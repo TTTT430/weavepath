@@ -189,6 +189,9 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
    const result=exactTurnBranch
     ?await api.forkChat(graph.workflowId,sourceId,{...(input.title?{title:input.title}:{}),...(input.topicId?{topicId:input.topicId}:{}),...(input.initialMessage?{initialMessage:input.initialMessage}:{}),anchorMessageId:branchAnchorId!,expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()})
     :await api.fork(graph.workflowId,node.id,{...(input.title?{title:input.title}:{}),...(input.topicId?{topicId:input.topicId}:{}),...(input.initialMessage?{initialMessage:input.initialMessage}:{}),expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()});
+   // The mutation is committed once the API returns; notify the mounted Chat
+   // surface immediately instead of making it wait for this canvas to reload.
+   notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId,instanceId:result.node.id});
    setBranch(false);setBranchAnchorId(undefined);setBranchSourceId('');
    if(exactTurnBranch&&layer.kind==='turn'){
     await load();const refreshed=await loadTurns(layer.instanceId),childTurn=refreshed?.turns.find(turn=>turn.routeInstanceId===result.node.id);

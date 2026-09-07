@@ -45,7 +45,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const[editDraft,setEditDraft]=useState('');
  const[copiedId,setCopiedId]=useState('');
  const messagesRef=useRef<HTMLDivElement>(null);
- const graphRequest=useRef(0),memoryRequest=useRef(0);
+ const workflowRequest=useRef(0),graphRequest=useRef(0),memoryRequest=useRef(0);
+ const graphRef=useRef<Graph|null>(null),activeRouteIdRef=useRef('');
  const sendLocks=useRef<Set<string>>(new Set());
  const snapshotGenerations=useRef<Map<string,number>>(new Map());
  const snapshotRef=useRef(snapshot),activeKey=useRef('');
@@ -60,6 +61,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const activeRouteId=graph?.activeRouteInstanceId||graph?.activeInstanceId||'';
  const owner=activeRouteId&&graph?`${graph.workflowId}:${activeRouteId}`:'';
  activeKey.current=owner;
+ graphRef.current=graph;
+ activeRouteIdRef.current=activeRouteId;
  snapshotRef.current=snapshot;
  const messages=snapshot.owner===owner?snapshot.messages:[];
  const nodeRevision=snapshot.owner===owner?snapshot.contentRevision:graph?.activeRouteContentRevision??active?.contentRevision??0;
@@ -124,8 +127,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  },[]);
 
  const loadWorkflows=useCallback(async()=>{
+  const request=++workflowRequest.current;
   try{
    const list=await api.workflows();
+   if(request!==workflowRequest.current)return;
    setWorkflows(list);
    if(!list.some(workflow=>workflow.id===workflowId)){
     const next=list[0]?.id||'';
@@ -134,7 +139,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
     setError('');
     if(!next)localStorage.removeItem('cw.workflow');
    }
-  }catch(caught){setError(caught instanceof Error?caught.message:String(caught))}
+  }catch(caught){if(request===workflowRequest.current)setError(caught instanceof Error?caught.message:String(caught))}
  },[workflowId]);
 
  const loadGraph=useCallback(async()=>{
@@ -169,13 +174,28 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   const change=value as WorkflowChangedEvent;
   if(change.senderId===surfaceId.current)return;
   if(change.phase&&change.sentAt&&change.sentAt<mountedAt.current)return;
-  if(change.type!=='conversation-workflow-changed'||(change.workflowId&&change.workflowId!==workflowId))return;
-  // Always refresh graph metadata so the workflow/canvas surface sees title,
-  // revision and active-route changes immediately. Route-specific lifecycle
-  // state is applied only when this chat is showing the affected route.
-  void loadGraph();
+  if(change.type!=='conversation-workflow-changed')return;
+  // Structural events also invalidate the workflow summary list. The graph
+  // carries conversation titles, but the sidebar label comes from
+  // `api.workflows()`, so refreshing only the graph leaves a renamed workflow
+  // visibly stale until the page is reloaded.
+  const isCurrentWorkflow=!change.workflowId||change.workflowId===workflowId;
+  if(!change.phase){
+   void loadWorkflows();
+   // The workflow list is global, so a rename in another open workflow still
+   // belongs in the sidebar. Its graph and messages must not replace the
+   // currently open workflow, however.
+   if(!isCurrentWorkflow)return;
+   void loadGraph();
+   return;
+  }
+  if(!isCurrentWorkflow)return;
+  // A start event is emitted before the model has committed new graph
+  // metadata. Terminal events refresh the graph once for content revisions
+  // and automatic titles; in-flight polling below is messages-only.
+  if(change.phase!=='started')void loadGraph();
   const targetInstance=change.instanceId||'';
-  if(!targetInstance||!graph||!change.phase)return;
+  if(!targetInstance||!graphRef.current)return;
   const targetOwner=`${workflowId}:${targetInstance}`;
   const requestId=change.requestId||'';
   const eventTime=change.sentAt||Date.now();
@@ -183,7 +203,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
    const current=lifecycleRequests.current.get(targetOwner);
    if(current&&eventTime<current.startedAt)return;
    lifecycleRequests.current.set(targetOwner,{requestId,startedAt:eventTime});
-   if(targetInstance!==activeRouteId)return;
+   if(targetInstance!==activeRouteIdRef.current)return;
    setReply({owner:targetOwner,state:'thinking',error:''});
    if(change.content)failedReply.current={owner:targetOwner,content:change.content};
    void refreshRouteMessages(workflowId,targetInstance,0,true);
@@ -192,10 +212,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   const current=lifecycleRequests.current.get(targetOwner);
   const matches=!!current&&current.requestId===requestId&&eventTime>=current.startedAt;
   if(matches)lifecycleRequests.current.delete(targetOwner);
-  if(targetInstance===activeRouteId)void refreshRouteMessages(workflowId,targetInstance,0,true);
+  if(targetInstance===activeRouteIdRef.current)void refreshRouteMessages(workflowId,targetInstance,0,true);
   // A terminal event only owns the state created by its matching start.
   // This prevents request A from clearing request B on the same route.
-  if(!matches||targetInstance!==activeRouteId)return;
+  if(!matches||targetInstance!==activeRouteIdRef.current)return;
   if(change.phase==='completed'){
    failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'idle',error:''});
   }else if(change.phase==='failed'){
@@ -204,7 +224,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   }else if(change.phase==='cancelled'){
    failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'cancelled',error:''});
   }
- },[activeRouteId,graph,loadGraph,refreshRouteMessages,t,workflowId]);
+ },[loadGraph,loadWorkflows,refreshRouteMessages,t,workflowId]);
 
  useEffect(()=>{void loadWorkflows();void refreshAI()},[loadWorkflows,refreshAI]);
  useEffect(()=>{setGraph(null);graphRequest.current++;void loadGraph()},[loadGraph]);
@@ -231,10 +251,9 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   if(!owner||replyState!=='thinking'||!graph||sendLocks.current.has(owner))return;
   const timer=window.setInterval(()=>{
    void refreshRouteMessages(graph.workflowId,activeRouteId,0,true);
-   void loadGraph();
   },650);
   return()=>window.clearInterval(timer);
- },[activeRouteId,graph,loadGraph,owner,refreshRouteMessages,replyState]);
+ },[activeRouteId,graph,owner,refreshRouteMessages,replyState]);
  useEffect(()=>()=>{
   for(const controller of streamControllers.current.values())controller.abort();
   streamControllers.current.clear();
