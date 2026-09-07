@@ -997,6 +997,16 @@ html textarea:focus-visible,
 html select:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
 html .primary { color: #fff; background: var(--ui-accent); border-color: var(--ui-accent); }
 html .primary:hover { color: #fff; background: var(--ui-accent-hover); border-color: var(--ui-accent-hover); }
+html .danger-outline {
+  color: color-mix(in srgb,var(--ui-danger) 84%,var(--ui-text));
+  background: color-mix(in srgb,var(--ui-danger-soft) 48%,transparent);
+  border-color: color-mix(in srgb,var(--ui-danger) 34%,var(--ui-border));
+}
+html .danger-outline:hover {
+  color: var(--ui-danger);
+  background: var(--ui-danger-soft);
+  border-color: color-mix(in srgb,var(--ui-danger) 58%,var(--ui-border));
+}
 
 /* Global proportions: compact navigation, generous working area. */
 html .workspace-shell { grid-template-rows: 44px minmax(0,1fr); background: var(--ui-bg); }
@@ -1292,6 +1302,57 @@ html .inspector-title input { min-width: 0; padding: 8px 9px; color: var(--ui-te
 html .inspector-title form button { min-height: 34px; padding: 5px 8px; }
 html .empty-route-note { padding: 11px 12px; color: var(--ui-muted); background: var(--ui-panel-muted); border: 1px dashed var(--ui-border-strong); border-radius: 8px; }
 html .branch-dialog small { color: var(--ui-subtle); font-size: 11px; }
+
+/* Engineering Lab content must follow the active appearance all the way down.
+   The original lab styles used white nested result surfaces, which produced
+   white-on-white copy after the outer cards switched to dark mode. */
+html .engineering-workbench { color: var(--ui-text); background: var(--ui-bg); }
+html .engineering-header { color: var(--ui-text); background: var(--ui-panel); border-color: var(--ui-border); }
+html .engineering-header span { color: var(--ui-success); }
+html .engineering-header nav { background: var(--ui-panel-muted); border-color: var(--ui-border); }
+html .engineering-header nav button { color: var(--ui-muted); background: transparent; }
+html .engineering-header nav button.current { color: #fff; background: #253248; border-color: #253248; }
+html .engineering-notice { color: var(--ui-success); background: var(--ui-success-soft); border-color: color-mix(in srgb,var(--ui-success) 28%,var(--ui-border)); }
+html .engineering-section,
+html .engineering-section h2,
+html .comparison-card header h3,
+html .comparison-card dd { color: var(--ui-text); }
+html .engineering-section p,
+html .comparison-card > small,
+html .comparison-card header small { color: var(--ui-muted); }
+html .engineering-control,
+html .comparison-summary,
+html .merge-bar,
+html .engineering-section form,
+html .artifact-library,
+html .artifact-preview,
+html .experiment-list,
+html .comparison-card {
+  color: var(--ui-text);
+  background: var(--ui-panel);
+  border-color: var(--ui-border);
+}
+html .comparison-card { border-top-color: var(--ui-accent); }
+html .comparison-card dl div,
+html .comparison-result,
+html .experiment-list article,
+html .dataset-list span {
+  color: var(--ui-text);
+  background: var(--ui-panel-muted);
+  border-color: var(--ui-border);
+}
+html .comparison-card dt { color: var(--ui-subtle); }
+html .comparison-result { border: 1px solid var(--ui-border); }
+html .comparison-result .markdown-message { color: var(--ui-text); }
+html .comparison-result label { color: var(--ui-success); }
+html .engineering-section fieldset { border-color: var(--ui-border); }
+html .engineering-section input,
+html .engineering-section select,
+html .engineering-section textarea,
+html .artifact-list button,
+html .node-checks label,
+html .artifact-choice { color: var(--ui-text); background: var(--ui-input); border-color: var(--ui-border-strong); }
+html .artifact-list button.current { color: var(--ui-accent); background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 36%,var(--ui-border)); }
 
 /* All modal surfaces use the same appearance tokens. */
 html .modal-backdrop { background: rgba(17,24,39,.48); backdrop-filter: blur(3px); }

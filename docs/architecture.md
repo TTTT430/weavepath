@@ -7,14 +7,14 @@
 ### UI Shells
 
 - WorkspaceShell（本机预览已验证）：同一个应用内承载“对话 / 工作流”两个长期 surface，切换时保持聊天草稿、请求状态、消息滚动和画布镜头。
-- Workflow Canvas（本机预览已验证）：第一层显示具体 `ConversationInstance` 路线图，双击实例按需钻入第二层 local-only Turn Canvas；第二层可向该实例继续发送消息或从精确 turn 创建并回答子分支，双击本身不 activate。
-- Web Chat：本地对话 surface；只有用户在工作流中显式选择“继续对话”后才接受 activate 结果。
+- Workflow Canvas（本机预览已验证）：第一层显示具体 `ConversationInstance` 路线图；选择实例即激活该路线，双击实例还会按需钻入已激活实例的第二层 local-only Turn Canvas。第二层选择具体 turn/内部路线同样会同步激活，并可继续发送消息或从精确 turn 创建并回答子分支。
+- Web Chat：本地对话 surface；接受画布已经确认的 `activeRouteInstanceId`，因此从工作流切回对话时显示刚选中的具体路线。
 - Graph Window：保留为 `/graph` 可选兼容入口或未来 Desktop surface，不再是默认工作流入口，也不拥有独立领域状态。
 - Desktop Shell：后续单实例、任务栏入口和协议唤起。
 - Codex Widget：宿主内快速入口与迷你图。
 - Claude Command/Plugin：启动或聚焦 companion app，并提供宿主能力。
 
-UI 只持有临时 selection、viewport、节点视觉位置、折叠、language/theme 等展示状态。它们必须按 workflow/instance 命名空间保存，且不得改变 parent/checkpoint、host binding、tombstone、`graph_revision` 或 `content_revision`。结构真相必须从 Core Service 获取。
+UI 持有 viewport、节点视觉位置、折叠、language/theme 和选择高亮等展示状态；它们必须按 workflow/instance 命名空间保存，且不得改变 parent/checkpoint、host binding、tombstone、`graph_revision` 或 `content_revision`。选择对应的权威当前路线由 Core Service 的 activate 状态决定，UI 高亮不能替代这一真相。
 
 ### Application Services
 
@@ -151,7 +151,7 @@ Workflow Graph
          └─ assistant + tool + failure events
 ```
 
-视图动作与领域动作分开：selection 和钻入只更新 UI metadata；显式“继续对话”才调用 `activate_instance`/HostAdapter navigation。激活成功后才切回 Chat，失败则保留画布和草稿。完整决策见 [ADR-0004](adr/0004-native-workspace-double-canvas.md)。
+viewport、节点位置和折叠仍只是 UI metadata；conversation/turn selection 则同时是领域中的当前路线选择，会调用 `activate_instance`。激活成功后画布广播失效提示，Chat 重新读取权威 graph 和该路线的本地 snapshot；激活失败时画布回到后端实际 active route 并保留错误提示。“继续对话”只切回已经同步的 Chat。完整决策见 [ADR-0004](adr/0004-native-workspace-double-canvas.md)。
 
 ### 精确 turn checkpoint cursor
 
@@ -263,13 +263,15 @@ validate command + revision
 WorkspaceShell
   [对话] [工作流]
         └─ Workflow Graph
-             └─ double click → Turn Canvas
-                  └─ explicit Continue → activate → Chat
+             ├─ select → activate same route → Chat follows
+             └─ double click → activate owner → Turn Canvas
+                  ├─ select turn route → activate same route
+                  └─ Continue → Chat
 ```
 
-Chat 与 Workflow surface 保持挂载，切换不通过 `window.open`，也不需要用 `BroadcastChannel` 表达普通 selection 或 drill-down。顶层和每个实例的 viewport、视觉位置、折叠和 selection 是独立 UI metadata；它们丢失时只重置布局，不得改变图或记忆路线。
+Chat 与 Workflow surface 保持挂载，切换不通过 `window.open`。顶层和每个实例的 viewport、视觉位置与折叠是独立 UI metadata；它们丢失时只重置布局。conversation/route selection 是共享的当前路线状态，激活成功后通过轻量 browser event 让另一 surface 重新读取 SQLite 真源，事件本身不携带 transcript。
 
-`/graph?workflow=...` 继续包装同一个 `WorkspaceCanvas`，用于兼容旧入口或未来独立 Desktop surface。该兼容窗口只在显式 Continue/activate 或 prune 等真实 mutation 后通知其他页面，不得把双击节点解释为 activate。默认 WorkspaceShell 与双层画布已完成自动化和真实浏览器 **Verified local preview**；旧版“独立弹窗双击即切换并自动关闭”不再是默认产品语义，也不能替代对兼容窗口本身的独立验收。
+`/graph?workflow=...` 继续包装同一个 `WorkspaceCanvas`，用于兼容旧入口或未来独立 Desktop surface。该兼容窗口在 selection/钻入导致的 activate、fork 或 prune 等真实状态变化后通知其他页面；不得用 composer 文本或伪 deep link 模拟切换。默认 WorkspaceShell 与双层画布已完成自动化和真实浏览器 **Verified local preview**；旧版“独立弹窗双击后自动关闭”不再是默认产品语义，也不能替代对兼容窗口本身的独立验收。
 
 未来只有在服务端主动推送、多个进程或跨设备同步确有需要时才引入 WebSocket。
 

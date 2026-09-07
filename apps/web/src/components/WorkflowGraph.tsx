@@ -49,7 +49,7 @@ export function ConversationCard({data,selected=false}:{data:ConversationData;se
  return <div className={`flow-node ${data.active?'is-active':''} ${node.status==='pruned'?'is-pruned':''} ${selected?'is-selected':''}`} data-instance-id={node.id} {...events}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
   {data.hasChildren&&<button type="button" className="node-collapse" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${node.title}`} onClick={event=>{event.preventDefault();event.stopPropagation();data.onToggleCollapse(node.id)}}>{data.collapsed?'＋':'−'}</button>}
-  {data.onBranch&&node.status!=='pruned'&&<button type="button" className="node-branch-action" aria-label={`${branchLabel}: ${node.title}`} title={branchLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onSelect(node.id);data.onBranch?.(node.id)}}>＋</button>}
+  {data.onBranch&&node.status!=='pruned'&&<button type="button" className="node-branch-action" aria-label={`${branchLabel}: ${node.title}`} title={branchLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onBranch?.(node.id)}}>＋</button>}
   <header className="flow-node-head"><i aria-hidden="true"/><strong>{node.title}</strong>{data.active&&<b aria-hidden="true"/>}</header>
   <p className={`flow-node-summary ${subtitle?'':'is-empty'}`}>{subtitle||emptySummaryLabel}</p>
   <footer className="flow-node-footer">

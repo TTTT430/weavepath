@@ -131,6 +131,21 @@ describe('chat delivery mode',()=>{
   await waitFor(()=>expect(apiMock.send).toHaveBeenCalledWith('wf-1','turn-route-b','继续内部路线'));
   expect(await screen.findByText('继续内部路线')).toBeInTheDocument();
  });
+ it('follows an exact internal route selected on the canvas while keeping its owner conversation title',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  const internalRouteGraph={...graph,activeRouteInstanceId:'turn-route-b',activeRouteTitle:'LLM数据集',activeRouteContentRevision:4};
+  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce(internalRouteGraph);
+  apiMock.messageSnapshot.mockImplementation(async(_workflow:string,instance:string)=>instance==='turn-route-b'
+   ?{messages:[{id:'b1',role:'user',content:'内部路线消息'}],contentRevision:4}
+   :{messages:[{id:'r1',role:'user',content:'顶层路线消息'}],contentRevision:2});
+  renderChat();
+  expect(await screen.findByText('顶层路线消息')).toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'turn-route-b',senderId:'canvas',sentAt:Date.now()}}));
+  expect(await screen.findByText('内部路线消息')).toBeInTheDocument();
+  expect(screen.queryByText('顶层路线消息')).not.toBeInTheDocument();
+  expect(screen.getByRole('heading',{name:'数据集构建'})).toBeInTheDocument();
+  expect(apiMock.messageSnapshot).toHaveBeenLastCalledWith('wf-1','turn-route-b','local');
+ });
  it('shows thinking in the stream, renders assistant Markdown, then removes thinking',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});let finish!:(x:unknown)=>void;apiMock.chat.mockReturnValue(new Promise(resolve=>{finish=resolve}));apiMock.messages.mockResolvedValueOnce([]).mockResolvedValueOnce([{id:'a1',role:'assistant',content:'**完成**'}]);renderChat();await screen.findByText(/AI 已配置/);fireEvent.change(screen.getByRole('textbox'),{target:{value:'开始'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));expect(await screen.findByText('正在思考')).toBeInTheDocument();finish({});expect(await screen.findByText('完成')).toHaveProperty('tagName','STRONG');await waitFor(()=>expect(screen.queryByText('正在思考')).not.toBeInTheDocument())});
  it('shows a localized inline AI error by error code',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockRejectedValue(new ApiError('raw timeout',503,'aiTimeout'));renderChat();await screen.findByText(/AI 已配置/);fireEvent.change(screen.getByRole('textbox'),{target:{value:'开始'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));const message=await screen.findByText('模型响应超时，请重试。');expect(message.closest('.messages')).not.toBeNull();expect(message.closest('[role="alert"]')).not.toBeNull()});
  it('refreshes the route before retrying a failed answer',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockRejectedValueOnce(new ApiError('raw timeout',503,'aiTimeout'));apiMock.messages.mockResolvedValue([{id:'u1',role:'user',content:'开始'}]);apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'u1',role:'user',content:'开始'}],contentRevision:4});apiMock.regenerate.mockResolvedValue({messages:[{id:'u1',role:'user',content:'开始'},{id:'a1',role:'assistant',content:'恢复回答'}],contentRevision:5});renderChat();await screen.findByText(/AI 已配置/);fireEvent.change(screen.getByRole('textbox'),{target:{value:'开始'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));await screen.findByText('模型响应超时，请重试。');fireEvent.click(screen.getByRole('button',{name:'重试回答'}));await waitFor(()=>expect(apiMock.regenerate).toHaveBeenCalledWith('wf-1','root','u1','开始',4));expect(await screen.findByText('恢复回答')).toBeInTheDocument()});

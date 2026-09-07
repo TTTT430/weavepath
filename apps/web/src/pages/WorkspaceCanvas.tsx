@@ -15,6 +15,7 @@ import{ErrorBanner}from'../components/ErrorBanner';
 
 type Layer={kind:'workflow'}|{kind:'turn';instanceId:string};
 type CanvasReply={state:'idle'|'thinking'|'error';error:string;requestId?:string;startedAt:number};
+type ActivationOutcome='activated'|'superseded'|'failed';
 
 function RouteChoice({route,label,selected,onSelect,onOpen}:{route:Route;label:string;selected:boolean;onSelect:()=>void;onOpen:()=>void}){const events=useClickArbitration(onSelect,onOpen);return <button className={selected?'current':''}{...events}>{label}</button>}
 
@@ -42,6 +43,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
  const[prunedRouteIds,setPrunedRouteIds]=useState<string[]>([]);
  const[canvasState,setCanvasState]=useState<PersistedCanvasState>(()=>loadCanvasState(workflowId));
  const request=useRef(0),turnRequest=useRef(0),routeRequest=useRef(0),selectedRef=useRef('');
+ const activationRequest=useRef(0),activationQueue=useRef<Promise<unknown>>(Promise.resolve()),navigationEpoch=useRef(0);
  const workflowRef=useRef(workflowId),activeTurnOwnerRef=useRef(''),knownTurnRoutesRef=useRef<Set<string>>(new Set()),visibleRef=useRef(visible),aiConfiguredRef=useRef<boolean|null>(null);
  const canvasSendToken=useRef(''),surfaceId=useRef(crypto.randomUUID()),mountedAt=useRef(Date.now());
  const node=useMemo(()=>graph?.nodes.find(item=>item.id===selected),[graph,selected]);
@@ -66,38 +68,38 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
  }),[]);
  const notifyChange=useCallback((event:WorkflowChangedEvent)=>notifyWorkflowChanged({...event,senderId:surfaceId.current,sentAt:Date.now()}),[]);
 
- const load=useCallback(async()=>{
+ const load=useCallback(async(preferActive=false)=>{
   const current=++request.current;
   if(!workflowId){setGraph(null);return null}
   try{
    const value=await api.graph(workflowId);
    if(current!==request.current||workflowRef.current!==workflowId)return null;
    setGraph(value);setError('');
-   const previous=selectedRef.current,persisted=loadCanvasState(workflowId).workflow.selectedId;
-   const next=value.nodes.some(item=>item.id===previous)?previous:value.nodes.some(item=>item.id===persisted)?persisted!:(value.activeInstanceId||value.rootInstanceId);
+   const previous=selectedRef.current,persisted=loadCanvasState(workflowId).workflow.selectedId,active=value.activeInstanceId||value.rootInstanceId;
+   const next=preferActive?active:value.nodes.some(item=>item.id===previous)?previous:value.nodes.some(item=>item.id===persisted)?persisted!:active;
    selectedRef.current=next;setSelectedState(next);updateWorkflow({selectedId:next});
    return value;
   }catch(caught){if(current===request.current&&workflowRef.current===workflowId)setError(caught instanceof Error?caught.message:String(caught));return null}
  },[workflowId,updateWorkflow]);
 
- const loadTurns=useCallback(async(instanceId:string)=>{
+ const loadTurns=useCallback(async(instanceId:string,preserveError=false)=>{
   const current=++turnRequest.current;if(activeTurnOwnerRef.current===instanceId)setTurnLoading(true);
   try{
    const value=await api.turns(workflowId,instanceId);
    if(current!==turnRequest.current||workflowRef.current!==workflowId||activeTurnOwnerRef.current!==instanceId)return null;
-   setTurnSnapshot(value);setError('');
+   setTurnSnapshot(value);if(!preserveError)setError('');
    const persistedState=loadCanvasState(workflowId).turns[instanceId],persisted=persistedState?.selectedTurnId;
    const knownRoutes=new Set(value.routeNodes?.map(route=>route.routeInstanceId)||Object.keys(value.routeTitles||{}));
    const preferredRoute=persistedState?.selectedRouteInstanceId&&knownRoutes.has(persistedState.selectedRouteInstanceId)?persistedState.selectedRouteInstanceId:(value.activeRouteInstanceId||instanceId);
    const activeTurns=value.turns.filter(turn=>(turn.routeInstanceId||instanceId)===preferredRoute);
-   const next=value.turns.some(turn=>turn.id===persisted)?persisted:(activeTurns.at(-1)?.id||`route:${preferredRoute}`);
+   const next=activeTurns.some(turn=>turn.id===persisted)?persisted:(activeTurns.at(-1)?.id||`route:${preferredRoute}`);
    updateTurn(instanceId,{selectedTurnId:next,selectedRouteInstanceId:preferredRoute});
    return value;
   }catch(caught){if(current===turnRequest.current&&workflowRef.current===workflowId&&activeTurnOwnerRef.current===instanceId){setTurnSnapshot(null);setError(caught instanceof ApiError&&caught.status===404?t('backendUpgradeRequired'):caught instanceof Error?caught.message:t('turnLoadFailed'))}return null}
   finally{if(current===turnRequest.current&&workflowRef.current===workflowId&&activeTurnOwnerRef.current===instanceId)setTurnLoading(false)}
  },[workflowId,t,updateTurn]);
 
- useEffect(()=>{request.current++;turnRequest.current++;routeRequest.current++;canvasSendToken.current='';const persisted=loadCanvasState(workflowId),next=persisted.workflow.selectedId||'';selectedRef.current=next;setCanvasState(persisted);setPrunedRouteIds([]);setGraph(null);setSelectedState(next);setRoutes([]);setLayer({kind:'workflow'});setTurnSnapshot(null);setWorkflowFocus(null);setBranchSourceId('');setRenamingId('');setCanvasSendingOwner('');setCanvasReplies({});setError('')},[workflowId]);
+ useEffect(()=>{request.current++;turnRequest.current++;routeRequest.current++;activationRequest.current++;navigationEpoch.current++;canvasSendToken.current='';const persisted=loadCanvasState(workflowId),next=persisted.workflow.selectedId||'';selectedRef.current=next;setCanvasState(persisted);setPrunedRouteIds([]);setGraph(null);setSelectedState(next);setRoutes([]);setLayer({kind:'workflow'});setTurnSnapshot(null);setWorkflowFocus(null);setBranchSourceId('');setRenamingId('');setCanvasSendingOwner('');setCanvasReplies({});setError('')},[workflowId]);
  useEffect(()=>{if(visible)void load()},[visible,load]);
  useEffect(()=>{if(visible)api.aiStatus().then(setAiStatus).catch(()=>setAiStatus(null))},[visible,workflowId]);
  useEffect(()=>{const current=++routeRequest.current;setRoutes([]);if(!node||!graph)return;api.routes(graph.workflowId,node.topicId).then(value=>{if(current===routeRequest.current)setRoutes(value)}).catch(caught=>{if(current===routeRequest.current)setError(caught instanceof Error?caught.message:String(caught))})},[node?.id,node?.topicId,graph?.workflowId]);
@@ -130,37 +132,117 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
  },[finishRouteReply,load,loadTurns,startRouteReply,t,workflowId]);
 
  function selectNode(id:string){selectedRef.current=id;setSelectedState(id);updateWorkflow({selectedId:id})}
- function focusWorkflowNode(id:string){selectNode(id);setWorkflowFocus(current=>({id,revision:(current?.revision||0)+1}))}
- function openCanvas(id:string){turnRequest.current++;selectNode(id);setLayer({kind:'turn',instanceId:id});setTurnSnapshot(null);setTurnLoading(false)}
- function switchConversationCanvas(id:string){if(layer.kind==='turn'&&layer.instanceId===id)return;openCanvas(id)}
+
+ function activateConversation(id:string,ownerOverride?:string){
+  if(!graph)return Promise.resolve<ActivationOutcome>('failed');
+  const targetWorkflowId=graph.workflowId,token=++activationRequest.current;
+  // Invalidate graph reads that began before this user intent. A second
+  // invalidation after success also rejects reads started while activate was
+  // in flight but before the backend changed its active route.
+  request.current++;
+  const task=activationQueue.current.catch(()=>undefined).then(async()=>{
+   // Coalesce selections that were superseded before their request began.
+   if(token!==activationRequest.current||workflowRef.current!==targetWorkflowId)return'superseded' as const;
+   try{
+    const result=await api.activate(targetWorkflowId,id);
+    if(result.activeInstanceId!==id)throw Error(t('failed'));
+    // The backend did change even if a newer selection arrived meanwhile.
+    // Announce that authoritative intermediate state; the serialized newer
+    // activation will announce the final state when it completes.
+    if(token!==activationRequest.current||workflowRef.current!==targetWorkflowId){
+     notifyChange({type:'conversation-workflow-changed',workflowId:targetWorkflowId,instanceId:id});
+     return'superseded' as const;
+    }
+    request.current++;
+    setGraph(current=>{
+     if(!current||current.workflowId!==targetWorkflowId)return current;
+     const topLevel=current.nodes.find(item=>item.id===id),routeTitle=topLevel?.title||turnSnapshot?.routeTitles?.[id]||current.activeRouteTitle;
+     const routeRevision=topLevel?.contentRevision??turnSnapshot?.routeContentRevisions?.[id]??current.activeRouteContentRevision;
+     return{...current,activeInstanceId:topLevel?.id||ownerOverride||activeTurnOwnerRef.current||current.activeInstanceId,activeRouteInstanceId:id,activeRouteTitle:routeTitle,activeRouteContentRevision:routeRevision};
+    });
+    notifyChange({type:'conversation-workflow-changed',workflowId:targetWorkflowId,instanceId:id});
+    return'activated' as const;
+   }catch(caught){
+    if(token!==activationRequest.current||workflowRef.current!==targetWorkflowId)return'superseded' as const;
+    const message=caught instanceof Error?caught.message:String(caught),refreshed=await load(true);
+    if(refreshed){
+     const actualOwner=refreshed.activeInstanceId||refreshed.rootInstanceId,actualRoute=refreshed.activeRouteInstanceId||actualOwner;
+     if(activeTurnOwnerRef.current){
+      if(activeTurnOwnerRef.current!==actualOwner)backToWorkflow();
+      else{
+       const latest=turnSnapshot?.instanceId===actualOwner?turnSnapshot.turns.filter(turn=>(turn.routeInstanceId||actualOwner)===actualRoute).at(-1):undefined;
+       updateTurn(actualOwner,{selectedTurnId:latest?.id||`route:${actualRoute}`,selectedRouteInstanceId:actualRoute});
+      }
+     }
+     notifyChange({type:'conversation-workflow-changed',workflowId:targetWorkflowId,instanceId:actualRoute});
+    }
+    setError(message);
+    return'failed' as const;
+   }
+  });
+  activationQueue.current=task.catch(()=>undefined);
+  return task;
+ }
+
+ function chooseWorkflowNode(id:string){navigationEpoch.current++;selectNode(id);void activateConversation(id)}
+ function focusWorkflowNode(id:string){chooseWorkflowNode(id);setWorkflowFocus(current=>({id,revision:(current?.revision||0)+1}))}
+ function openCanvas(id:string,activate=true){
+  if(activate)navigationEpoch.current++;
+  turnRequest.current++;selectNode(id);
+  // Opening a top-level conversation is itself an exact route selection.
+  // Do not restore an internal route from a previous Turn Canvas visit after
+  // Chat has already been activated to the owner conversation.
+  updateTurn(id,{selectedTurnId:`route:${id}`,selectedRouteInstanceId:id});
+  setLayer({kind:'turn',instanceId:id});setTurnSnapshot(null);setTurnLoading(false);
+  if(activate)void activateConversation(id);
+ }
+ function switchConversationCanvas(id:string){
+  if(layer.kind==='turn'&&layer.instanceId===id){
+   if(selectedRouteId===id&&graph?.activeRouteInstanceId===id)return;
+   navigationEpoch.current++;
+   const latestOwnerTurn=turnSnapshot?.turns.filter(turn=>(turn.routeInstanceId||id)===id).at(-1);
+   updateTurn(id,{selectedTurnId:latestOwnerTurn?.id||`route:${id}`,selectedRouteInstanceId:id});
+   void activateConversation(id,id);
+   return;
+  }
+  openCanvas(id);
+ }
  function backToWorkflow(){setLayer({kind:'workflow'});setTurnLoading(false);turnRequest.current++}
- function toggleWorkflowCollapse(id:string){const current=canvasState.workflow.collapsedNodeIds,expanding=current.includes(id),next=expanding?current.filter(item=>item!==id):[...current,id];if(!expanding&&graph&&selected!==id&&isDescendant(graph,selected,id))selectNode(id);updateWorkflow({collapsedNodeIds:next})}
+ function toggleWorkflowCollapse(id:string){const current=canvasState.workflow.collapsedNodeIds,expanding=current.includes(id),next=expanding?current.filter(item=>item!==id):[...current,id];if(!expanding&&graph&&selected!==id&&isDescendant(graph,selected,id))chooseWorkflowNode(id);updateWorkflow({collapsedNodeIds:next})}
  function toggleTurnCollapse(instanceId:string,id:string){const current=canvasState.turns[instanceId]?.collapsedTurnIds||[],next=current.includes(id)?current.filter(item=>item!==id):[...current,id];updateTurn(instanceId,{collapsedTurnIds:next})}
 
- async function continueConversation(id:string){if(!graph||busy)return;setBusy(true);setError('');try{const result=await api.activate(graph.workflowId,id);if(result.activeInstanceId!==id)throw Error(t('failed'));notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId,instanceId:id});await load();onContinue?.()}catch(caught){setError(caught instanceof Error?caught.message:String(caught))}finally{setBusy(false)}}
+ async function continueConversation(id:string){if(!graph||busy)return;if(graph.activeRouteInstanceId===id){onContinue?.();return}navigationEpoch.current++;setBusy(true);setError('');try{if(await activateConversation(id)==='activated')onContinue?.()}finally{setBusy(false)}}
 
  async function quickWorkflowBranch(sourceId:string){
   if(!graph||busy)return;
   const source=graph.nodes.find(item=>item.id===sourceId);if(!source)return;
-  setBusy(true);setError('');selectNode(sourceId);
+  const startedNavigationEpoch=navigationEpoch.current;
+  setBusy(true);setError('');
   try{
    const result=await api.fork(graph.workflowId,sourceId,{expectedContentRevision:source.contentRevision||0,idempotencyKey:crypto.randomUUID()});
+   notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId});
+   if(startedNavigationEpoch!==navigationEpoch.current){await activationQueue.current.catch(()=>undefined);await load();return}
+   const outcome=await activateConversation(result.node.id,result.node.id);
+   if(outcome==='failed')return;
+   if(outcome==='superseded')await activationQueue.current.catch(()=>undefined);
    const refreshed=await load();
-   if(refreshed?.nodes.some(item=>item.id===result.node.id)){selectNode(result.node.id);setWorkflowFocus({id:result.node.id,revision:result.graphRevision})}
-   notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId,instanceId:result.node.id});
+   if(outcome==='activated'&&refreshed?.nodes.some(item=>item.id===result.node.id)){selectNode(result.node.id);setWorkflowFocus({id:result.node.id,revision:result.graphRevision})}
   }catch(caught){if(caught instanceof ApiError&&caught.status===409){await load();setError(t('forkConflict'))}else setError(caught instanceof Error?caught.message:String(caught))}finally{setBusy(false)}
  }
 
  async function quickTurnBranch(turn:ConversationTurn){
   if(!graph||busy||layer.kind!=='turn')return;
   const ownerId=layer.instanceId,sourceId=turn.routeInstanceId||ownerId,expected=turnSnapshot?.routeContentRevisions?.[sourceId]??turnSnapshot?.contentRevision??0;
-  setBusy(true);setError('');updateTurn(ownerId,{selectedTurnId:turn.id,selectedRouteInstanceId:sourceId});
+  const startedNavigationEpoch=navigationEpoch.current;
+  setBusy(true);setError('');
   try{
    const result=await api.forkChat(graph.workflowId,sourceId,{anchorMessageId:turn.anchorMessageId,expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()});
-   await load();
-   const refreshed=await loadTurns(ownerId),childTurn=refreshed?.turns.find(item=>item.routeInstanceId===result.node.id);
-   updateTurn(ownerId,{selectedTurnId:childTurn?.id||`route:${result.node.id}`,selectedRouteInstanceId:result.node.id});
-   notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId,instanceId:result.node.id});
+   notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId});
+   if(startedNavigationEpoch!==navigationEpoch.current){await activationQueue.current.catch(()=>undefined);if(activeTurnOwnerRef.current===ownerId)await loadTurns(ownerId);return}
+   const outcome=await activateConversation(result.node.id,ownerId);
+   if(outcome==='superseded')await activationQueue.current.catch(()=>undefined);
+   const refreshed=await loadTurns(ownerId,outcome==='failed'),childTurn=refreshed?.turns.find(item=>item.routeInstanceId===result.node.id);
+   if(outcome==='activated')updateTurn(ownerId,{selectedTurnId:childTurn?.id||`route:${result.node.id}`,selectedRouteInstanceId:result.node.id});
   }catch(caught){if(caught instanceof ApiError&&caught.status===409){await loadTurns(ownerId);setError(t('forkConflict'))}else if(caught instanceof ApiError&&caught.status===404)setError(t('backendUpgradeRequired'));else setError(caught instanceof Error?caught.message:String(caught))}finally{setBusy(false)}
  }
 
@@ -182,6 +264,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
 
  async function fork(input:{title:string;topicId?:string;initialMessage?:string}){
   if(!graph||!node)return;setBusy(true);setError('');
+  const startedNavigationEpoch=navigationEpoch.current;
   const exactTurnBranch=branchAnchorId!==undefined;
   const sourceId=exactTurnBranch?(branchSourceId||node.id):node.id;
   const expected=exactTurnBranch?(turnSnapshot?.routeContentRevisions?.[sourceId]??turnSnapshot?.contentRevision??node.contentRevision??0):(node.contentRevision||0);
@@ -189,15 +272,21 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
    const result=exactTurnBranch
     ?await api.forkChat(graph.workflowId,sourceId,{...(input.title?{title:input.title}:{}),...(input.topicId?{topicId:input.topicId}:{}),...(input.initialMessage?{initialMessage:input.initialMessage}:{}),anchorMessageId:branchAnchorId!,expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()})
     :await api.fork(graph.workflowId,node.id,{...(input.title?{title:input.title}:{}),...(input.topicId?{topicId:input.topicId}:{}),...(input.initialMessage?{initialMessage:input.initialMessage}:{}),expectedContentRevision:expected,idempotencyKey:crypto.randomUUID()});
-   // The mutation is committed once the API returns; notify the mounted Chat
-   // surface immediately instead of making it wait for this canvas to reload.
-   notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId,instanceId:result.node.id});
+   notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId});
    setBranch(false);setBranchAnchorId(undefined);setBranchSourceId('');
+   if(startedNavigationEpoch!==navigationEpoch.current){
+    await activationQueue.current.catch(()=>undefined);
+    if(exactTurnBranch&&layer.kind==='turn'&&activeTurnOwnerRef.current===layer.instanceId)await loadTurns(layer.instanceId);else await load();
+    return;
+   }
+   const outcome=await activateConversation(result.node.id,exactTurnBranch&&layer.kind==='turn'?layer.instanceId:result.node.id);
+   if(outcome==='superseded')await activationQueue.current.catch(()=>undefined);
    if(exactTurnBranch&&layer.kind==='turn'){
-    await load();const refreshed=await loadTurns(layer.instanceId),childTurn=refreshed?.turns.find(turn=>turn.routeInstanceId===result.node.id);
-    updateTurn(layer.instanceId,{selectedTurnId:childTurn?.id||`route:${result.node.id}`,selectedRouteInstanceId:result.node.id});
+    const refreshed=await loadTurns(layer.instanceId,outcome==='failed'),childTurn=refreshed?.turns.find(turn=>turn.routeInstanceId===result.node.id);
+    if(outcome==='activated')updateTurn(layer.instanceId,{selectedTurnId:childTurn?.id||`route:${result.node.id}`,selectedRouteInstanceId:result.node.id});
    }else{
-    setWorkflowFocus({id:result.node.id,revision:result.graphRevision});await load();openCanvas(result.node.id);
+    const refreshed=outcome==='failed'?null:await load();
+    if(outcome==='activated'&&refreshed?.nodes.some(item=>item.id===result.node.id)){setWorkflowFocus({id:result.node.id,revision:result.graphRevision});openCanvas(result.node.id,false)}
    }
    const replyResult=result as{replyStatus?:string;replyErrorCode?:string|null};
    if(replyResult.replyStatus==='failed')setError(`${t('branchReplyFailed')}${replyResult.replyErrorCode?` (${replyResult.replyErrorCode})`:''}`);
@@ -276,10 +365,10 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
    </aside>
    <div className="canvas-stack">
     <div className={`canvas-layer ${layer.kind==='workflow'?'is-active':''}`} data-testid="workflow-layer" hidden={layer.kind!=='workflow'} aria-hidden={layer.kind!=='workflow'}>
-     <WorkflowGraph graph={graph} selectedId={selected} collapsedNodeIds={canvasState.workflow.collapsedNodeIds} nodePositions={canvasState.workflow.positions} initialViewport={canvasState.workflow.viewport} focusRequest={workflowFocus} onSelect={selectNode} onOpenCanvas={openCanvas} onBranch={id=>void quickWorkflowBranch(id)} onToggleCollapse={toggleWorkflowCollapse} onViewportChange={viewport=>updateWorkflow({viewport})} onNodePositionChange={(id,position)=>updateWorkflow({positions:{...canvasState.workflow.positions,[id]:position}})} labels={workflowLabels}/>
+     <WorkflowGraph graph={graph} selectedId={selected} collapsedNodeIds={canvasState.workflow.collapsedNodeIds} nodePositions={canvasState.workflow.positions} initialViewport={canvasState.workflow.viewport} focusRequest={workflowFocus} onSelect={chooseWorkflowNode} onOpenCanvas={openCanvas} onBranch={id=>void quickWorkflowBranch(id)} onToggleCollapse={toggleWorkflowCollapse} onViewportChange={viewport=>updateWorkflow({viewport})} onNodePositionChange={(id,position)=>updateWorkflow({positions:{...canvasState.workflow.positions,[id]:position}})} labels={workflowLabels}/>
     </div>
     <div className={`canvas-layer ${layer.kind==='turn'?'is-active':''}`} data-testid="turn-layer" hidden={layer.kind!=='turn'} aria-hidden={layer.kind!=='turn'}>
-     {turnLoading&&!turnSnapshot?<div className="canvas-loading">{t('loadingTurns')}</div>:turnSnapshot&&layer.kind==='turn'?<TurnCanvas snapshot={turnSnapshot} hiddenRouteIds={prunedRouteIds} selectedTurnId={turnState?.selectedTurnId||''} collapsedTurnIds={turnState?.collapsedTurnIds} turnPositions={turnState?.positions} initialViewport={turnViewport(turnState?.viewport)} onSelect={(id,routeInstanceId)=>updateTurn(layer.instanceId,{selectedTurnId:id,selectedRouteInstanceId:routeInstanceId})} onToggleCollapse={id=>toggleTurnCollapse(layer.instanceId,id)} onViewportChange={viewport=>updateTurn(layer.instanceId,{viewport})} onNodePositionChange={(id,position)=>updateTurn(layer.instanceId,{positions:{...(turnState?.positions||{}),[id]:position}})} onBranch={turn=>void quickTurnBranch(turn)} labels={turnLabels}/>:null}
+     {turnLoading&&!turnSnapshot?<div className="canvas-loading">{t('loadingTurns')}</div>:turnSnapshot&&layer.kind==='turn'?<TurnCanvas snapshot={turnSnapshot} hiddenRouteIds={prunedRouteIds} selectedTurnId={turnState?.selectedTurnId||''} collapsedTurnIds={turnState?.collapsedTurnIds} turnPositions={turnState?.positions} initialViewport={turnViewport(turnState?.viewport)} onSelect={(id,routeInstanceId)=>{const targetRouteId=routeInstanceId||layer.instanceId;navigationEpoch.current++;updateTurn(layer.instanceId,{selectedTurnId:id,selectedRouteInstanceId:targetRouteId});void activateConversation(targetRouteId,layer.instanceId)}} onToggleCollapse={id=>toggleTurnCollapse(layer.instanceId,id)} onViewportChange={viewport=>updateTurn(layer.instanceId,{viewport})} onNodePositionChange={(id,position)=>updateTurn(layer.instanceId,{positions:{...(turnState?.positions||{}),[id]:position}})} onBranch={turn=>void quickTurnBranch(turn)} labels={turnLabels}/>:null}
      {layer.kind==='turn'&&<form className="canvas-chat-composer" onSubmit={event=>{event.preventDefault();void sendFromCanvas()}}><div><textarea aria-label={t('canvasMessage')} value={canvasDrafts[layer.instanceId]||''} placeholder={t('canvasMessagePlaceholder')} onChange={event=>setCanvasDrafts(current=>({...current,[layer.instanceId]:event.target.value}))} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();void sendFromCanvas()}}}/>{activeCanvasReply?.state==='thinking'&&<span role="status">{t('thinking')}…</span>}{activeCanvasReply?.state==='error'&&<span className="canvas-reply-error" role="alert">{activeCanvasReply.error}</span>}{!aiStatus?.configured&&<small>{t('recordOnly')}</small>}</div><button className="primary" disabled={canvasSendingOwner!==''||!(canvasDrafts[layer.instanceId]||'').trim()}>{t('send')}</button></form>}
     </div>
    </div>
@@ -293,7 +382,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
 
  function EditableTitle({instanceId,title}:{instanceId:string;title:string}){const editing=renamingId===instanceId;return <div className="inspector-title">{editing?<form onSubmit={event=>{event.preventDefault();void renameInstance(instanceId)}}><input autoFocus aria-label={t('renameConversation')} value={renameDraft} maxLength={240} onChange={event=>setRenameDraft(event.target.value)}/><button type="button" onClick={()=>{setRenamingId('');setRenameDraft('')}}>{t('cancel')}</button><button className="primary" disabled={busy||!renameDraft.trim()}>{t('save')}</button></form>:<><h3>{title}</h3><button type="button" onClick={()=>{setRenamingId(instanceId);setRenameDraft(title)}}>{t('rename')}</button></>}</div>}
 
- function WorkflowInspector(){return <><h2>{t('details')}</h2>{node&&<><EditableTitle instanceId={node.id} title={node.title}/><p>{node.summary||'—'}</p><small>{t('route')}</small><p>{routeLabel(graph!,node.id)}</p><h3>{t('routes')}</h3><div className="route-list">{routes.length?routes.map(route=><RouteChoice key={route.id} route={route} label={routeText(route)} selected={route.id===selected} onSelect={()=>selectNode(route.id)} onOpen={()=>openCanvas(route.id)}/>):<p>{t('noRoutes')}</p>}</div><div className="inspector-actions"><button className="primary" disabled={busy||node.status==='pruned'} onClick={()=>void continueConversation(node.id)}>{t('continueConversation')}</button><button disabled={busy||node.status==='pruned'} onClick={()=>openCanvas(node.id)}>{t('turnCanvas')}</button><button disabled={busy||node.status==='pruned'} onClick={()=>{setBranchSourceId('');setBranchAnchorId(undefined);setBranch(true)}}>{t('branchOptions')}</button><button onClick={()=>toggleWorkflowCollapse(node.id)}>{canvasState.workflow.collapsedNodeIds.includes(node.id)?t('expandBranch'):t('collapseBranch')}</button><button className="danger-outline" disabled={busy||node.status==='pruned'} onClick={()=>void preparePrune()}>{t('archive')}</button></div></>}</>}
+ function WorkflowInspector(){return <><h2>{t('details')}</h2>{node&&<><EditableTitle instanceId={node.id} title={node.title}/><p>{node.summary||'—'}</p><small>{t('route')}</small><p>{routeLabel(graph!,node.id)}</p><h3>{t('routes')}</h3><div className="route-list">{routes.length?routes.map(route=><RouteChoice key={route.id} route={route} label={routeText(route)} selected={route.id===selected} onSelect={()=>chooseWorkflowNode(route.id)} onOpen={()=>openCanvas(route.id)}/>):<p>{t('noRoutes')}</p>}</div><div className="inspector-actions"><button className="primary" disabled={busy||node.status==='pruned'} onClick={()=>void continueConversation(node.id)}>{t('continueConversation')}</button><button disabled={busy||node.status==='pruned'} onClick={()=>openCanvas(node.id)}>{t('turnCanvas')}</button><button disabled={busy||node.status==='pruned'} onClick={()=>{setBranchSourceId('');setBranchAnchorId(undefined);setBranch(true)}}>{t('branchOptions')}</button><button onClick={()=>toggleWorkflowCollapse(node.id)}>{canvasState.workflow.collapsedNodeIds.includes(node.id)?t('expandBranch'):t('collapseBranch')}</button><button className="danger-outline" disabled={busy||node.status==='pruned'} onClick={()=>void preparePrune()}>{t('archive')}</button></div></>}</>}
 
  function TurnInspector(){const instanceId=layer.kind==='turn'?layer.instanceId:'',routeId=selectedRouteId||instanceId,routeTitle=turnSnapshot?.routeTitles?.[routeId]||node?.title||routeId,memoryRoute=turnSnapshot?.routeMemoryRoutes?.[routeId]||turnSnapshot?.memoryRoute||[],inheritedCount=turnSnapshot?.routeInheritedMessageCounts?.[routeId]??turnSnapshot?.inheritedMessageCount??0,precedingCount=selectedTurn&&turnSnapshot?turnSnapshot.turns.filter(turn=>(turn.routeInstanceId||instanceId)===routeId&&turn.sequence<selectedTurn.sequence).reduce((total,turn)=>total+1+turn.responses.length,0):0;return <><h2>{t('turnCanvas')}</h2><EditableTitle instanceId={routeId} title={routeTitle}/>{turnSnapshot&&<><small>{t('route')}</small><div className="route-chips">{memoryRoute.map(item=><span key={item.instanceId}>{item.title}</span>)}</div><section className="checkpoint-summary"><strong>{t('checkpointSummary')}</strong><p>{t('inheritedCount')}: {inheritedCount}</p>{precedingCount>0&&<p>{t('precedingMessages')}: {precedingCount}</p>}<small>{precedingCount>0?t('sameRouteHint'):t('canvasLocalOnly')}</small></section></>}{selectedTurn&&<TurnDetails turn={selectedTurn}/>} {!selectedTurn&&routeId!==instanceId&&<p className="empty-route-note">{t('emptyBranchHint')}</p>}<div className="inspector-actions"><button className="primary" disabled={busy||node?.status==='pruned'} onClick={()=>void continueConversation(routeId)}>{t('continueConversation')}</button>{selectedTurn&&<button disabled={busy||node?.status==='pruned'} onClick={()=>{setBranchSourceId(selectedTurn.routeInstanceId||instanceId);setBranchAnchorId(selectedTurn.anchorMessageId);setBranch(true)}}>{t('branchOptions')}</button>}{routeId!==instanceId&&<button className="danger-outline" disabled={busy} onClick={()=>void preparePrune(routeId)}>{t('archive')}</button>}<button onClick={backToWorkflow}>{t('backToWorkflow')}</button></div></>}
 

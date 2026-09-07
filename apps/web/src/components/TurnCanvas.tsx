@@ -27,10 +27,10 @@ function excerpt(value:string,limit=420){const clean=value.trim();return clean.l
 function TurnCard({data,selected=false}:{data:TurnData;selected?:boolean}){
  const{turn}=data;
  const placeholder=!!turn.isRoutePlaceholder,routeId=turn.routeInstanceId||'';
- return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''} ${placeholder?'is-route-placeholder':''}`} onClick={()=>data.onSelect(turn.id,routeId)} onDoubleClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId)}} title={data.detailsLabel}>
+ return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''} ${placeholder?'is-route-placeholder':''}`} onClick={event=>{event.stopPropagation();if(event.detail<2)data.onSelect(turn.id,routeId)}} title={data.detailsLabel}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
   <button type="button" className="turn-collapse" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}>{data.collapsed?'＋':'−'}</button>
-  {!placeholder&&data.onBranch&&<button type="button" className="turn-branch" aria-label={`${data.branchLabel}: ${turn.sequence}`} title={data.branchLabel} onClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId);data.onBranch?.(turn)}}>＋</button>}
+  {!placeholder&&data.onBranch&&<button type="button" className="turn-branch" aria-label={`${data.branchLabel}: ${turn.sequence}`} title={data.branchLabel} onClick={event=>{event.stopPropagation();data.onBranch?.(turn)}}>＋</button>}
   <header><strong>{placeholder?(turn.routeTitle||data.turnLabel):`${data.turnLabel} ${turn.sequence}`}</strong>{!placeholder&&turn.routeTitle&&<small className="turn-route-title">{turn.routeTitle}</small>}<span className={`turn-status ${turn.status}`}>{data.statusLabels[turn.status]||turn.status}</span></header>
   <p className="turn-user">{excerpt(turn.userMessage.content)}</p>
   {!data.collapsed&&<div className="turn-responses"><small>{data.responseLabel}: {turn.responses.length}</small>{turn.responses.map(message=><p key={message.id} className={`turn-response ${message.role}`}><small>{data.roleLabels[message.role]||message.role}</small>{excerpt(message.content)}</p>)}</div>}

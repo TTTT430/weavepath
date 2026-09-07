@@ -13,7 +13,7 @@
 ## 已实现
 
 - 每个节点对应一个独立 conversation instance，不同 outcome 通过 fork 建立兄弟路线。
-- 双击顶层节点进入其 Turn Canvas；只有显式“继续对话”才切换具体路线，任何动作都不向 composer 写入导航指令。
+- 选择顶层节点或内部 turn route 会通过受控 activate 同步 Chat 的具体路线；双击顶层节点还会进入其 Turn Canvas，“继续对话”只返回 Chat。任何动作都不向 composer 写入导航指令。
 - 节点标题、revision-safe 重命名、路线、级联归档与 tombstone。
 - 卡片 `＋` 可直接创建无标题、无首条内容的分支；系统先生成 `新分支 N`，第一条本地用户消息可生成摘要标题，用户重命名后不再自动覆盖。
 - 编辑当前节点最后一次本地用户提问并重新生成；已有子节点 checkpoint 锚点和审计快照保持不变，但子节点有效上下文仍沿 parent 路线动态读取最新消息。

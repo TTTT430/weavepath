@@ -16,7 +16,7 @@
 
 已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。AI 请求支持“正在思考”、SSE 逐 token 草稿、停止生成、失败回答重试、幂等键和本地化内联错误状态，后端稳定区分超时、服务不可用和空响应；编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；正式 HostAdapter 和 metabolize 尚未实现。
 
-依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：双击具体实例只进入该实例的 local-only Turn Canvas；只有显式“继续对话”才 activate；可以从选定本地用户 turn 记录精确 checkpoint 锚点。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
+依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：选择具体实例会同步激活 Chat 的当前路线，双击还会进入该实例的 local-only Turn Canvas；第二层选择具体 turn/内部路线时同样同步 `activeRouteInstanceId`，“继续对话”只返回 Chat。可以从选定本地用户 turn 记录精确 checkpoint 锚点。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
 
 日常启动与验证分别使用根目录的 `scripts/dev.ps1` 和 `scripts/check.ps1`；前者固定 API 端口 8000，Web 默认端口 5173。
 
@@ -64,7 +64,7 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 - 从 Co-Thinker 复用 SSE 与中断保护（planned）；
 - 两层画布使用统一的 Synapse 式卡片、连线、卡片边缘快捷分支和右侧检查器，并提供一致的浅色/深色 token；这是对 dsh-synapse 画布体验的借鉴，不改变 WeavePath 的两层路线模型；
 - 默认使用 `WorkspaceShell` 内的 Chat/Workflow 两个持久 surface；第一层 Workflow Graph 和第二层 Turn Canvas 复用一个按需加载的画布区域，不在每个节点中嵌套多个 React Flow；
-- 顶层和每个实例的 viewport、视觉位置、折叠与 selection 是独立 UI metadata，不改变 graph/content revision；
+- 顶层和每个实例的 viewport、视觉位置与折叠是独立 UI metadata；选择高亮按 surface 持久化，但必须与 activate 的权威当前路线收敛。两者都不改变 graph/content revision；
 - `/graph` 与 `window.open` 仅保留为可选兼容入口；它可继续使用 `BroadcastChannel + postMessage` 同步真实 mutation，WebSocket/event stream 为后续能力。
 
 落地顺序与后续：
@@ -89,11 +89,11 @@ A
 验收项：
 
 1. 工作流按钮在当前 WorkspaceShell 内切换到 Workflow surface，不发送聊天消息，不丢失草稿、消息滚动或正在进行的请求。**Verified local preview。**
-2. D 的 route chooser 同时显示 `A-B-C-D` 与 `A-E-D`；单击只选择具体实例，双击只进入该实例的 Turn Canvas，不 activate。**Verified local preview。**
+2. D 的 route chooser 同时显示 `A-B-C-D` 与 `A-E-D`；单击选择并激活具体实例，双击在激活后进入该实例的 Turn Canvas。普通 Chat 必须跟随相同路线。**Verified local preview。**
 3. B 中写入 `B_ONLY` 后，D2 的 context、inspect 和摘要均不得出现它。**消息路线隔离已验证；摘要系统尚未实现。**
 4. E 中写入 `E_ONLY` 后，D1 不得出现它。**消息路线隔离已验证。**
 5. fork 后父节点继续聊天，已创建子节点会动态看到父路线最新消息；创建时 checkpoint 快照仍保留用于审计。**后端测试已验证。**
-6. 双击 D2 不发送 activate；只有在 D2 inspector 或 Turn Canvas 中单击“继续对话”才发送一次 activate，成功后切回 D2 聊天且输入框原内容不变，失败则保留画布。**Verified local preview。**
+6. 单击或双击 D2 只发送一次 activate；成功后画布与 Chat 都指向 D2，输入框原内容不变。“继续对话”只切回 Chat，不重复激活。失败时重新读取后端实际 active route 并保留错误。**Verified local preview。**
 7. prune B 的计划只包含 B、C、D1，并按 leaf-first 顺序归档；E、D2 保持 active。
 8. revision 冲突返回 409，不覆盖新结构。
 9. 服务重启后图、消息、checkpoint 和 tombstone 完整恢复。**持久化基础已实现，完整重启 E2E 仍待单独记录。**
@@ -102,11 +102,11 @@ A
 12. E2E 测试不依赖 Codex/Claude；Agent Runtime 使用测试专用 `ScriptedMockAgentAdapter` 复现 model turns，正式 HostAdapter mock 仍是后续工作。
 13. 进入 B 的 Turn Canvas 时，只显示 B 本地用户 turns 及其本地 assistant/tool message；A 的 checkpoint 内容只显示为路线与继承摘要，不能成为 B 的卡片。failure/operation 扩展仍是后续工作。**Verified local preview。**
 14. 从 B 的第 2 个本地用户 turn 创建 C 时，C 保留该精确 checkpoint 锚点和创建时快照；运行时上下文会继续跟随 B，因此 B3 及之后新增/修改的消息会进入 C；stale `expectedContentRevision` 仍返回 409。**Verified local preview。**
-15. 顶层与 B/D1/D2 各自的 viewport、节点位置、折叠和 selection 独立恢复，写入这些 UI metadata 不增加 graph/content revision。**Verified local preview。**
+15. 顶层与 B/D1/D2 各自的 viewport、节点位置和折叠独立恢复；重新进入 owner 时 route selection 与新激活的 owner 对齐。写入这些 UI metadata 或改变 active route 都不增加 graph/content revision。**Verified local preview。**
 16. 无 `can_read_local_turns` 的宿主不伪造 Turn Canvas；无精确 cursor fork 能力时禁用该动作或经确认降级到实例头；无 navigation 时不宣称已切换。**Planned adapter contract。**
-17. 在 B 的 Turn Canvas 发送问题后，刷新普通 Chat 与 Turn Canvas 必须看到同一条本地记录；发送动作不隐式 activate B。**Verified local preview。**
+17. 进入或选择 B 的 Turn Canvas 时 B 已被激活；在画布发送问题后，刷新普通 Chat 与 Turn Canvas 必须看到同一条本地记录，发送动作本身不重复 activate。**Verified local preview。**
 18. 从 B 的任意 turn 卡片创建子分支时，首个问题写入新子实例并在模型可用时立即回答；幂等重放不得重复创建实例或回答，兄弟路线内容不得进入模型上下文。**Verified local preview。**
-19. 第 18 项创建的实例必须归属于 B 的内部 Turn Tree，第一层 Workflow Graph 仍只显示 B；选择内部路线并继续对话后，Chat 标题仍为 B，但消息 API 使用该内部路线 ID。schema v6 会把旧版误入第一层的 exact-turn 子节点原地迁移，不删除记录。**Verified local preview。**
+19. 第 18 项创建的实例必须归属于 B 的内部 Turn Tree，第一层 Workflow Graph 仍只显示 B；选择内部路线后 Chat 立即跟随，标题仍为 B，但消息 API 使用该内部路线 ID。schema v6 会把旧版误入第一层的 exact-turn 子节点原地迁移，不删除记录。**Verified local preview。**
 
 20. 顶层实例卡和 turn 卡的 `＋` 可以不经必填表单直接创建对应 scope 的子分支。没有标题和首条内容时先生成 `新分支 N`；空 turn 路线必须立即显示，不能跑到第一层。**自动化已验证。**
 

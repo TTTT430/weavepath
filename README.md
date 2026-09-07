@@ -18,7 +18,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 - `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
 - 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
 
-当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，双击节点进入该对话内部的 Turn Tree。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。选择内部路线并“继续对话”后，普通 Chat 读取和写入同一路线。双击仍不 activate。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 113 项通过，并完成 compileall；前端仍由统一测试、typecheck 和 production build 验证。`/graph` 只保留为兼容入口。
+当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，双击节点进入该对话内部的 Turn Tree。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 113 项通过，并完成 compileall；前端仍由统一测试、typecheck 和 production build 验证。`/graph` 只保留为兼容入口。
 
 第一版 OpenAI-compatible AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。聊天请求已支持 SSE 逐 token 输出、停止生成、失败回答独立重试和幂等键；只有完整回答才写入 assistant 消息。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
 
@@ -105,7 +105,7 @@ graph-core 不调用 Codex/Claude、LLM、Widget 或文件系统宿主 API。外
 - 图结构变更使用 `graph_revision`；消息和摘要更新使用实例级 `content_revision`。
 - Turn Canvas 只投影具体实例的本地 turns；画布命令仍写入该具体实例的同一消息表，祖先路线消息作为动态继承记忆，checkpoint 快照和锚点仅用于审计摘要。
 - 未填写标题的分支先获得稳定的 `新分支 N` 名称；如果它仍是系统生成标题，第一条本地用户消息会生成最多 48 字的摘要标题并增加 `graph_revision`。显式重命名会把标题标记为用户所有，之后绝不被自动命名覆盖。
-- selection 与双击钻入只改变 UI metadata；只有显式“继续对话”才 activate。
+- 画布 selection、路线选择和双击钻入都会先激活对应具体路线；Chat 与画布共享同一 `activeRouteInstanceId`，“继续对话”只切回 Chat，不再承担第二次激活。
 - “从工作流移除”表示 leaf-first 归档并保留 tombstone，不是永久删除账户数据。
 
 ## 首个纵向切片
@@ -115,8 +115,8 @@ graph-core 不调用 Codex/Claude、LLM、Widget 或文件系统宿主 API。外
 - FastAPI + React + schema v7 全局 SQLite；
 - StandaloneAdapter 拥有本地 transcript；
 - 原生 `WorkspaceShell` 在同一页面切换 Chat 和 Workflow surface，并保持草稿、滚动与画布状态；
-- 顶层 Workflow Graph 管理具体实例路线，双击按需进入节点内部 local-only Turn Canvas；两层卡片均提供快捷 `＋` 分支入口，第二层还可继续对话或从具体 turn 创建并回答新分支；
-- 只有显式“继续对话”才 activate；可以从具体 turn 精确分支；
+- 顶层 Workflow Graph 管理具体实例路线，选择节点即同步 Chat 的当前路线，双击按需进入并激活节点内部 local-only Turn Canvas；两层卡片均提供快捷 `＋` 分支入口，第二层还可继续对话或从具体 turn 创建并回答新分支；
+- 选择具体节点或 turn 路线即 activate；“继续对话”只切回已同步的 Chat；可以从具体 turn 精确分支；
 - 创建、fork、activate、inspect、topic route choice、prune plan/commit；
 - `/graph` 与 popup 仅为兼容入口，`BroadcastChannel + postMessage` 只发送按 route/requestId 隔离的刷新提示；真实 mutation 和消息 snapshot 仍以本地 SQLite 为准，WebSocket 与跨设备同步尚未实现；
 - 使用 checkpoint 锚点和动态父路线验证 `A-B-C-D1` 与 `A-E-D2` 的记忆隔离。
