@@ -931,20 +931,26 @@ html[data-appearance="light"] {
   --ui-panel-muted: #f7f9fb;
   --ui-panel-raised: #ffffff;
   --ui-text: #172033;
-  --ui-muted: #657184;
-  --ui-subtle: #8a95a5;
+  --ui-muted: #596579;
+  --ui-subtle: #667085;
   --ui-border: #dce3eb;
   --ui-border-strong: #c9d2de;
   --ui-input: #ffffff;
-  --ui-accent: #3478f6;
-  --ui-accent-hover: #2467df;
-  --ui-accent-soft: #eaf2ff;
+  --ui-accent: #245fc2;
+  --ui-accent-hover: #1d52aa;
+  --ui-accent-soft: #e8f0ff;
+  --ui-on-accent: #ffffff;
+  --ui-link: #1f5dbf;
   --ui-success: #287a56;
   --ui-success-soft: #e7f5ed;
   --ui-warning: #8b651e;
   --ui-warning-soft: #fff4d8;
   --ui-danger: #b64b42;
   --ui-danger-soft: #fff0ee;
+  --ui-on-danger: #ffffff;
+  --ui-code-bg: #172033;
+  --ui-code-text: #f3f6fb;
+  --ui-table-stripe: #fafbfd;
   --canvas-bg: #f5f7fa;
   --canvas-grid-dot: #dce3eb;
   --canvas-line: #aebbc9;
@@ -962,20 +968,26 @@ html[data-appearance="dark"] {
   --ui-panel-muted: #202630;
   --ui-panel-raised: #242b36;
   --ui-text: #edf1f7;
-  --ui-muted: #a5afbd;
-  --ui-subtle: #788496;
+  --ui-muted: #aab4c3;
+  --ui-subtle: #93a0b2;
   --ui-border: #2d3541;
   --ui-border-strong: #3a4554;
   --ui-input: #202630;
-  --ui-accent: #6396ef;
-  --ui-accent-hover: #7eabf5;
+  --ui-accent: #8fb9ff;
+  --ui-accent-hover: #a8c9ff;
   --ui-accent-soft: #223652;
+  --ui-on-accent: #101722;
+  --ui-link: #9ec4ff;
   --ui-success: #82d6aa;
   --ui-success-soft: #1b382d;
   --ui-warning: #e0b665;
   --ui-warning-soft: #392f1d;
   --ui-danger: #ee8e85;
   --ui-danger-soft: #3b2325;
+  --ui-on-danger: #241315;
+  --ui-code-bg: #10141b;
+  --ui-code-text: #eef3fa;
+  --ui-table-stripe: #1d232d;
   --canvas-bg: #151a22;
   --canvas-grid-dot: #2a323e;
   --canvas-line: #596879;
@@ -990,13 +1002,18 @@ html[data-appearance="dark"] {
 html body,
 html #root { color: var(--ui-text); background: var(--ui-bg); }
 html button { color: var(--ui-text); background: var(--ui-panel-raised); border-color: var(--ui-border-strong); box-shadow: none; }
-html button:hover { background: var(--ui-panel-muted); border-color: var(--ui-border-strong); }
+html button:not(:disabled):hover { background: var(--ui-panel-muted); border-color: var(--ui-border-strong); }
+html button:disabled { cursor: not-allowed; opacity: .48; }
 html button:focus-visible,
 html input:focus-visible,
 html textarea:focus-visible,
 html select:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
-html .primary { color: #fff; background: var(--ui-accent); border-color: var(--ui-accent); }
-html .primary:hover { color: #fff; background: var(--ui-accent-hover); border-color: var(--ui-accent-hover); }
+html .primary { color: var(--ui-on-accent); background: var(--ui-accent); border-color: var(--ui-accent); }
+html .primary:not(:disabled):hover { color: var(--ui-on-accent); background: var(--ui-accent-hover); border-color: var(--ui-accent-hover); }
+html .primary:disabled:hover { color: var(--ui-on-accent); background: var(--ui-accent); border-color: var(--ui-accent); }
+html .danger { color: var(--ui-on-danger); background: var(--ui-danger); border-color: var(--ui-danger); }
+html .danger:not(:disabled):hover { color: var(--ui-on-danger); background: color-mix(in srgb,var(--ui-danger) 84%,#000); border-color: color-mix(in srgb,var(--ui-danger) 84%,#000); }
+html .danger:disabled:hover { color: var(--ui-on-danger); background: var(--ui-danger); border-color: var(--ui-danger); }
 html .danger-outline {
   color: color-mix(in srgb,var(--ui-danger) 84%,var(--ui-text));
   background: color-mix(in srgb,var(--ui-danger-soft) 48%,transparent);
@@ -1059,11 +1076,23 @@ html .reply-thinking > div { color: var(--ui-muted); }
 html .thinking-dots i { background: var(--ui-accent); }
 html .reply-error > div,
 html .canvas-reply-error { color: var(--ui-danger); }
+html .reply-thinking .stop-generating,
+html .reply-error button {
+  color: var(--ui-muted);
+  background: var(--ui-panel-muted);
+  border-color: var(--ui-border);
+}
+html .reply-thinking .stop-generating:not(:disabled):hover,
+html .reply-error button:not(:disabled):hover { color: var(--ui-text); background: var(--ui-panel-raised); border-color: var(--ui-border-strong); }
+html .reply-cancelled > div { color: var(--ui-muted); background: var(--ui-panel-muted); }
+html .auto-name-hint,
+html .empty { color: var(--ui-subtle); }
 html .inherited-memory { background: var(--ui-panel-muted); border-color: var(--ui-border); box-shadow: none; }
 html .inherited-memory > button { color: var(--ui-accent); }
 html .inherited-memory > button:hover { background: var(--ui-accent-soft); }
 html .inherited-memory-body { color: var(--ui-muted); }
 html .message-actions button { color: var(--ui-muted); background: var(--ui-panel-muted); border-color: var(--ui-border); }
+html .message-edit label { color: var(--ui-muted); }
 html .message-edit textarea { color: var(--ui-text); background: var(--ui-input); border-color: var(--ui-border-strong); }
 html .composer {
   width: min(var(--chat-content-width),calc(100% - 48px));
@@ -1090,6 +1119,7 @@ html .graph-header {
 html .canvas-header { grid-template-columns: minmax(0,1fr) auto; }
 html .canvas-header > p,
 html .canvas-header > .language { display: none; }
+html .canvas-conversation-picker { display: none; }
 html .canvas-breadcrumb button { min-height: 28px; color: var(--ui-muted); background: transparent; }
 html .canvas-breadcrumb button:hover,
 html .canvas-breadcrumb button.current { color: var(--ui-text); background: var(--ui-panel-muted); }
@@ -1244,7 +1274,7 @@ html .node-branch-action { top: 116px; color: var(--ui-accent); }
 html .node-collapse:hover,
 html .turn-collapse:hover,
 html .node-branch-action:hover,
-html .turn-branch:hover { color: #fff; background: var(--ui-accent); border-color: var(--ui-accent); }
+html .turn-branch:hover { color: var(--ui-on-accent); background: var(--ui-accent); border-color: var(--ui-accent); }
 
 html .turn-node,
 html[data-appearance="light"] .turn-node {
@@ -1306,7 +1336,7 @@ html .branch-dialog small { color: var(--ui-subtle); font-size: 11px; }
 /* Engineering Lab content must follow the active appearance all the way down.
    The original lab styles used white nested result surfaces, which produced
    white-on-white copy after the outer cards switched to dark mode. */
-html .engineering-workbench { color: var(--ui-text); background: var(--ui-bg); }
+html .engineering-workbench { display: flex; color: var(--ui-text); background: var(--ui-bg); flex-direction: column; }
 html .engineering-header { color: var(--ui-text); background: var(--ui-panel); border-color: var(--ui-border); }
 html .engineering-header span { color: var(--ui-success); }
 html .engineering-header nav { background: var(--ui-panel-muted); border-color: var(--ui-border); }
@@ -1317,6 +1347,7 @@ html .engineering-section,
 html .engineering-section h2,
 html .comparison-card header h3,
 html .comparison-card dd { color: var(--ui-text); }
+html .engineering-section { flex: 1 1 auto; }
 html .engineering-section p,
 html .comparison-card > small,
 html .comparison-card header small { color: var(--ui-muted); }
@@ -1346,6 +1377,12 @@ html .comparison-result { border: 1px solid var(--ui-border); }
 html .comparison-result .markdown-message { color: var(--ui-text); }
 html .comparison-result label { color: var(--ui-success); }
 html .engineering-section fieldset { border-color: var(--ui-border); }
+html .engineering-section form label,
+html .artifact-list span,
+html .artifact-list small,
+html .experiment-list article span,
+html .experiment-list article small,
+html .engineering-empty { color: var(--ui-muted); }
 html .engineering-section input,
 html .engineering-section select,
 html .engineering-section textarea,
@@ -1353,6 +1390,57 @@ html .artifact-list button,
 html .node-checks label,
 html .artifact-choice { color: var(--ui-text); background: var(--ui-input); border-color: var(--ui-border-strong); }
 html .artifact-list button.current { color: var(--ui-accent); background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 36%,var(--ui-border)); }
+html .artifact-preview pre { color: var(--ui-code-text); background: var(--ui-code-bg); border: 1px solid var(--ui-border); }
+
+/* Agent run dialogs contain several nested cards. Keep every layer on the
+   same appearance palette so a theme switch cannot leave white islands or
+   low-contrast inherited text behind. */
+html .agent-run-count,
+html .agent-brief small,
+html .run-provenance dt,
+html .run-metrics small,
+html .run-events.timeline time,
+html .run-events.timeline summary { color: var(--ui-subtle); }
+html .agent-error { color: var(--ui-danger); }
+html .agent-run-launch { color: var(--ui-accent); background: var(--ui-panel-raised); border-color: var(--ui-border-strong); }
+html .agent-run-launch:not(:disabled):hover { color: var(--ui-accent-hover); background: var(--ui-accent-soft); border-color: var(--ui-accent); }
+html .agent-confirm,
+html .agent-wait {
+  color: var(--ui-muted);
+  background: var(--ui-panel-muted);
+  border-color: var(--ui-border);
+}
+html .run-provenance > div,
+html .run-detail,
+html .run-events li,
+html .run-metrics > div {
+  color: var(--ui-text);
+  background: var(--ui-panel-muted);
+  border-color: var(--ui-border);
+}
+html .run-list > button { color: var(--ui-text); background: var(--ui-panel); border-color: var(--ui-border); }
+html .run-list > button.current { color: var(--ui-accent); background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 46%,var(--ui-border)); }
+html .run-status { color: var(--ui-muted); background: var(--ui-panel-muted); }
+html .run-status.running { color: var(--ui-accent); background: var(--ui-accent-soft); }
+html .run-status.completed { color: var(--ui-success); background: var(--ui-success-soft); }
+html .run-status.failed { color: var(--ui-danger); background: var(--ui-danger-soft); }
+html .run-status.interrupted { color: var(--ui-warning); background: var(--ui-warning-soft); }
+html .accepted-knowledge { color: var(--ui-text); background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 28%,var(--ui-border)); }
+html .accepted-knowledge p { color: var(--ui-muted); }
+html .run-events.timeline::before { background: var(--ui-border-strong); }
+html .run-events.timeline li { background: transparent; border: 0; }
+html .run-events.timeline li > i { color: var(--ui-muted); background: var(--ui-panel-raised); border-color: var(--ui-border-strong); }
+html .run-events.timeline li.completed > i { color: var(--ui-success); background: var(--ui-success-soft); border-color: color-mix(in srgb,var(--ui-success) 42%,var(--ui-border)); }
+html .run-events.timeline li.failed > i { color: var(--ui-danger); background: var(--ui-danger-soft); border-color: color-mix(in srgb,var(--ui-danger) 42%,var(--ui-border)); }
+
+/* Long generated names and unbroken model output must stay inside cards. */
+html .flow-node-head strong,
+html .turn-node > header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html .flow-node-summary,
+html .turn-user,
+html .turn-response,
+html .turn-detail-message { overflow-wrap: anywhere; word-break: break-word; }
+html .route-chips span + span::before { color: var(--ui-subtle); }
 
 /* Compact action language --------------------------------------------------
    Text remains on primary decisions. Repeated micro-actions use one SVG
@@ -1386,11 +1474,9 @@ html .modal-actions button {
    keyboard focus without changing the row width. */
 html .workflow-sidebar-item {
   position: relative;
-  display: grid;
+  display: block;
   min-width: 0;
   min-height: 36px;
-  grid-template-columns: minmax(0,1fr) auto;
-  align-items: center;
   overflow: hidden;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -1423,10 +1509,15 @@ html .workflow-sidebar-item:hover .workflow-sidebar-select,
 html .workflow-sidebar-item:focus-within .workflow-sidebar-select { color: var(--ui-text); }
 html .workflow-sidebar-item.current .workflow-sidebar-select { color: var(--ui-accent); }
 html .workflow-sidebar-actions {
+  position: absolute;
+  z-index: 2;
+  top: 3px;
+  right: 3px;
   display: flex;
   align-items: center;
   gap: 1px;
-  padding-right: 3px;
+  padding-left: 12px;
+  background: linear-gradient(to right,transparent,var(--ui-panel) 10px);
   opacity: 0;
   pointer-events: none;
   transform: translateX(4px);
@@ -1438,6 +1529,7 @@ html .workflow-sidebar-item:focus-within .workflow-sidebar-actions {
   pointer-events: auto;
   transform: translateX(0);
 }
+html .workflow-sidebar-item.current .workflow-sidebar-actions { background: linear-gradient(to right,transparent,var(--ui-accent-soft) 10px); }
 html .sidebar nav button.workflow-sidebar-icon {
   width: 28px;
   height: 28px;
@@ -1480,9 +1572,9 @@ html .message-actions { gap: 3px; }
 html .message.actionable:hover .message-actions,
 html .message.actionable:focus-within .message-actions { max-height: 32px; margin-top: 5px; }
 html .message-actions button.message-action-button {
-  width: 28px;
-  height: 28px;
-  min-height: 28px;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
   padding: 0;
   color: var(--ui-subtle);
   background: transparent;
@@ -1545,6 +1637,7 @@ html .engineering-section form > button {
   border-radius: 8px;
 }
 html .engineering-header nav button { min-width: 82px; min-height: 32px; padding: 5px 12px; }
+html .engineering-section form > button { width: fit-content; min-width: 126px; justify-self: start; }
 html .engineering-section input[type="checkbox"] {
   flex: 0 0 15px;
   width: 15px;
@@ -1651,6 +1744,19 @@ html .engineering-section fieldset label {
   border-radius: 6px;
   cursor: pointer;
 }
+html .engineering-control {
+  grid-template-columns: minmax(0,1fr) auto;
+  grid-template-areas:
+    "title action"
+    "hint action"
+    "choices action";
+  align-items: center;
+  gap: 6px 14px;
+}
+html .engineering-control > h2 { grid-area: title; }
+html .engineering-control > p { grid-area: hint; }
+html .engineering-control > .node-checks { grid-area: choices; }
+html .engineering-control > button { grid-area: action; }
 
 /* All modal surfaces use the same appearance tokens. */
 html .modal-backdrop { background: rgba(17,24,39,.48); backdrop-filter: blur(3px); }
@@ -1659,33 +1765,98 @@ html .modal label { color: var(--ui-muted); }
 html .modal input,
 html .modal textarea,
 html .modal select { color: var(--ui-text); background: var(--ui-input); border-color: var(--ui-border-strong); }
+html .modal input[type="checkbox"] { width: 15px; height: 15px; min-width: 15px; padding: 0; accent-color: var(--ui-accent); }
+html .modal .risk { display: flex; align-items: flex-start; gap: 8px; padding: 10px; color: var(--ui-danger); background: var(--ui-danger-soft); border: 1px solid color-mix(in srgb,var(--ui-danger) 32%,var(--ui-border)); border-radius: 8px; }
+html .modal .risk input { flex: 0 0 15px; margin-top: 2px; }
+html .branch-dialog .modal-actions,
+html .prune-dialog .modal-actions { position: sticky; bottom: -20px; z-index: 2; margin: 12px -20px -20px; padding: 12px 20px 20px; background: linear-gradient(to bottom,transparent 0,var(--ui-panel) 12px); }
+html .prune-dialog > ul { max-height: min(38vh,320px); overflow: auto; padding-right: 5px; }
+html .editable-title { cursor: text; user-select: none; }
+html .editable-title:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 4px; border-radius: 3px; }
 
 @media (max-width: 1499px) {
   html .chat-shell { grid-template-columns: 224px minmax(0,1fr); }
   html .canvas-body { grid-template-columns: 210px minmax(0,1fr) 340px; }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1180px) {
   html .chat-shell { grid-template-columns: 196px minmax(0,1fr); }
-  html .canvas-body { grid-template-columns: 184px minmax(0,1fr) 310px; }
-  html .canvas-conversation-sidebar { padding-inline: 7px; }
+  html .canvas-header { grid-template-columns: minmax(0,1fr) auto auto; }
+  html .canvas-body { grid-template-columns: minmax(0,1fr) 320px; }
+  html .canvas-conversation-sidebar { display: none; }
+  html .canvas-conversation-picker { display: block; min-width: 0; margin: 0; }
+  html .canvas-conversation-picker > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  html .canvas-conversation-picker select { width: min(210px,28vw); min-width: 0; padding: 6px 26px 6px 8px; color: var(--ui-text); background: var(--ui-input); border: 1px solid var(--ui-border-strong); border-radius: 7px; text-overflow: ellipsis; }
+  html .artifact-workspace,
+  html .experiment-workspace { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  html .artifact-preview,
+  html .experiment-list { grid-column: 1 / -1; }
 }
 
 @media (max-width: 900px) {
   html .canvas-body { grid-template-columns: minmax(0,1fr) 300px; }
-  html .canvas-conversation-sidebar { display: none; }
+  html .engineering-control {
+    grid-template-columns: minmax(0,1fr);
+    grid-template-areas: "title" "hint" "choices" "action";
+  }
+  html .engineering-control > button { justify-self: start; }
+  html .merge-bar { position: static; grid-template-columns: minmax(0,1fr); }
 }
 
 @media (max-width: 760px) {
   :root { --chat-content-width: 100%; }
-  html .chat-shell { grid-template-columns: 1fr; }
-  html .sidebar { display: none; }
+  html .workspace-topbar { grid-template-columns: minmax(0,1fr); }
+  html .workspace-view-tabs { grid-column: 1; justify-self: center; }
+  html .chat-shell { grid-template-columns: minmax(0,1fr); grid-template-rows: 48px minmax(0,1fr); }
+  html .sidebar {
+    display: grid;
+    min-width: 0;
+    min-height: 48px;
+    grid-template-columns: 36px minmax(80px,1fr) auto;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--ui-border);
+  }
+  html .sidebar .brand,
+  html .sidebar h2 { display: none; }
+  html .sidebar .new-workflow { width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 7px; }
+  html .sidebar .new-workflow span,
+  html .sidebar .settings-button span,
+  html .sidebar-controls .language > span { display: none; }
+  html .sidebar nav { display: flex; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+  html .sidebar nav .workflow-sidebar-item { min-width: 96px; flex: 0 1 150px; }
+  html .sidebar-controls { display: flex; align-items: center; gap: 5px; }
+  html .sidebar-controls .settings-button { width: 34px; height: 34px; min-height: 34px; justify-content: center; padding: 0; }
+  html .sidebar-controls .language select { width: 72px; min-height: 34px; padding: 5px 22px 5px 6px; }
   html .messages { padding: 16px 12px 10px; }
   html .message.user > div { max-width: 92%; }
   html .composer { width: calc(100% - 24px); }
-  html .canvas-header { grid-template-columns: minmax(0,1fr) auto; }
+  html .canvas-header { grid-template-columns: minmax(0,1fr) auto auto; }
+  html .canvas-conversation-picker select { width: min(140px,38vw); }
   html .canvas-body { grid-template-columns: 1fr; }
   html .canvas-conversation-sidebar { display: none; }
   html .canvas-inspector { width: min(360px,94vw); max-height: 48%; background: var(--ui-panel); box-shadow: 0 -12px 30px rgba(0,0,0,.22); }
   html .canvas-chat-composer { bottom: calc(48% + 10px); width: calc(100% - 20px); }
+  html .engineering-header { grid-template-columns: minmax(0,1fr) auto; gap: 6px; padding-inline: 10px; }
+  html .engineering-header > div { display: none; }
+  html .engineering-header nav { min-width: 0; max-width: 100%; overflow-x: auto; }
+  html .engineering-header nav button { min-width: 0; padding-inline: 8px; }
+  html .engineering-header > button { min-width: 48px; padding-inline: 8px; }
+  html .artifact-workspace,
+  html .experiment-workspace { grid-template-columns: minmax(0,1fr); }
+  html .artifact-preview,
+  html .experiment-list { grid-column: auto; }
+}
+
+@media (hover: none) and (max-width: 760px) {
+  html .workflow-sidebar-item.current .workflow-sidebar-actions {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+  }
+  html .workflow-sidebar-item.current .workflow-sidebar-select { padding-right: 62px; }
+  html .message.actionable .message-actions { max-height: 32px; margin-top: 5px; opacity: 1; }
 }

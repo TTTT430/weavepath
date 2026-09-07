@@ -582,7 +582,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  return <main className="chat-shell">
   <aside className="sidebar">
    <div className="brand">◫ <strong>{t('app')}</strong></div>
-   <button className="new-workflow" onClick={()=>setCreating(true)}><AppIcon name="plus"/><span>{t('newWorkflow')}</span></button>
+   <button className="new-workflow" aria-label={t('newWorkflow')} title={t('newWorkflow')} onClick={()=>setCreating(true)}><AppIcon name="plus"/><span>{t('newWorkflow')}</span></button>
    <h2>{t('conversations')}</h2>
    <nav>{orderedWorkflows.map(workflow=>{
     const pinned=pinnedWorkflowIds.includes(workflow.id),renaming=renamingWorkflowId===workflow.id;
@@ -590,7 +590,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
      {renaming?<form className="workflow-sidebar-rename" onSubmit={event=>{event.preventDefault();void renameSidebarWorkflow(workflow)}}><input autoFocus aria-label={`${t('renameWorkflow')}: ${workflow.name}`} value={workflowNameDraft} maxLength={240} onChange={event=>setWorkflowNameDraft(event.target.value)} onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();cancelWorkflowRename()}}}/><button type="submit" className="workflow-sidebar-icon" aria-label={t('save')} title={t('save')} disabled={workflowBusy||!workflowNameDraft.trim()}><AppIcon name="check"/></button><button type="button" className="workflow-sidebar-icon" aria-label={t('cancel')} title={t('cancel')} onClick={cancelWorkflowRename}><AppIcon name="close"/></button></form>:<><button className="workflow-sidebar-select" aria-current={workflow.id===workflowId?'page':undefined} onClick={()=>setWorkflowId(workflow.id)}>{workflow.name}</button><span className="workflow-sidebar-actions"><button type="button" className="workflow-sidebar-icon" aria-label={`${pinned?t('unpinWorkflow'):t('pinWorkflow')}: ${workflow.name}`} title={pinned?t('unpinWorkflow'):t('pinWorkflow')} aria-pressed={pinned} onClick={()=>togglePinnedWorkflow(workflow.id)}><AppIcon name="pin"/></button><button type="button" className="workflow-sidebar-icon" aria-label={`${t('renameWorkflow')}: ${workflow.name}`} title={t('renameWorkflow')} onClick={()=>beginWorkflowRename(workflow)}><AppIcon name="edit"/></button></span></>}
     </div>;
    })}</nav>
-   <div className="sidebar-controls"><button className="settings-button" onClick={()=>setSettingsOpen(true)}><AppIcon name="settings"/><span>{t('settings')}</span></button><LanguageSelect/></div>
+   <div className="sidebar-controls"><button className="settings-button" aria-label={t('settings')} title={t('settings')} onClick={()=>setSettingsOpen(true)}><AppIcon name="settings"/><span>{t('settings')}</span></button><LanguageSelect/></div>
   </aside>
   <section className="chat">
    <header>

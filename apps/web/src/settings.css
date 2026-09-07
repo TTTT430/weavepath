@@ -71,13 +71,13 @@
 .settings-modal .modal-actions{display:flex;min-width:0;align-items:center;gap:8px;margin:0}
 .settings-modal .modal-actions span{flex:1}
 .settings-modal-footer button{min-height:36px;padding:7px 12px;border-radius:7px;box-shadow:none}
-.settings-modal-footer .primary{color:#fff;background:var(--ui-accent,#3478f6);border-color:var(--ui-accent,#3478f6)}
-.settings-modal-footer .primary:hover{color:#fff;background:var(--ui-accent-hover,#2563d4);border-color:var(--ui-accent-hover,#2563d4)}
+.settings-modal-footer .primary{color:var(--ui-on-accent,#fff);background:var(--ui-accent,#3478f6);border-color:var(--ui-accent,#3478f6)}
+.settings-modal-footer .primary:not(:disabled):hover{color:var(--ui-on-accent,#fff);background:var(--ui-accent-hover,#2563d4);border-color:var(--ui-accent-hover,#2563d4)}
 .settings-modal-footer button:disabled{opacity:.48}
 .settings-modal-footer .danger-outline{color:var(--ui-danger,#b42318);background:transparent;border-color:color-mix(in srgb,var(--ui-danger,#b42318) 38%,var(--ui-border,#d8e0e8))}
 .reset-confirm{display:flex;min-width:0;align-items:center;gap:8px;margin:0;padding:0;background:transparent}
 .reset-confirm span{min-width:0;flex:1;color:var(--ui-danger,#8d2d20);font-size:13px}
-.reset-confirm .danger{color:#fff;background:var(--ui-danger,#b42318);border-color:var(--ui-danger,#b42318)}
+.reset-confirm .danger{color:var(--ui-on-danger,#fff);background:var(--ui-danger,#b42318);border-color:var(--ui-danger,#b42318)}
 
 @media(max-width:560px){
  .settings-backdrop{padding:6px}

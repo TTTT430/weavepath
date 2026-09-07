@@ -150,7 +150,7 @@ describe('native double canvas workspace',()=>{
  it('shows only local turns plus route/checkpoint metadata, never inherited transcript text',async()=>{
   renderCanvas();await openLeafCanvas();
   expect(screen.getAllByText('当前节点问题')).toHaveLength(2);expect(screen.getByText('当前节点回答')).toBeInTheDocument();
-  expect(screen.getByText('继承消息数: 6')).toBeInTheDocument();expect(screen.getAllByText('数据集')).toHaveLength(2);expect(screen.getAllByText('情感分析')).toHaveLength(2);
+  expect(screen.getByText('继承消息数: 6')).toBeInTheDocument();const routeChips=document.querySelector('.route-chips');expect(routeChips).not.toBeNull();expect(within(routeChips as HTMLElement).getByText('数据集')).toBeInTheDocument();expect(within(routeChips as HTMLElement).getByText('情感分析')).toBeInTheDocument();
   expect(screen.queryByText('不应显示的父节点正文')).not.toBeInTheDocument();expect(apiMock.messages).not.toHaveBeenCalled();
  });
 
@@ -364,7 +364,7 @@ describe('native double canvas workspace',()=>{
 
  it('renames the selected conversation from the inspector with revision protection',async()=>{
   renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
-  fireEvent.click(screen.getByRole('button',{name:'重命名'}));fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'大模型分析'}});fireEvent.click(screen.getByRole('button',{name:'保存'}));
+  const title=screen.getByRole('button',{name:'对话名称: 大模型实验'});expect(screen.queryByRole('button',{name:'重命名'})).not.toBeInTheDocument();fireEvent.doubleClick(title);fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'大模型分析'}});fireEvent.click(screen.getByRole('button',{name:'保存'}));
   await waitFor(()=>expect(apiMock.renameInstance).toHaveBeenCalledWith('wf','leaf','大模型分析',3));
  });
 });
