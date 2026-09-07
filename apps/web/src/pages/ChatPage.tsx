@@ -8,11 +8,13 @@ import{ErrorBanner}from'../components/ErrorBanner';
 import{ModelSettingsDialog}from'../components/ModelSettingsDialog';
 import{MarkdownMessage}from'../components/MarkdownMessage';
 import{AgentRunWorkspace}from'../components/AgentRunWorkspace';
+import{notifyWorkflowChanged,type WorkflowChangedEvent}from'../lib/workflowEvents';
 
 type ReplyState='idle'|'thinking'|'error'|'cancelled';
 interface OwnedSnapshot extends MessageSnapshot {owner:string}
 interface OwnedReply {owner:string;state:ReplyState;error:string}
 interface OwnedMessages {owner:string;items:Message[]}
+interface LifecycleRequest {requestId:string;startedAt:number}
 
 export interface ChatPageProps{
  onOpenWorkflow?:(workflowId:string)=>void
@@ -47,8 +49,11 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const sendLocks=useRef<Set<string>>(new Set());
  const snapshotGenerations=useRef<Map<string,number>>(new Map());
  const snapshotRef=useRef(snapshot),activeKey=useRef('');
- const streamController=useRef<AbortController|null>(null);
- const streamRequest=useRef<{owner:string;key:string}|null>(null);
+ const streamControllers=useRef<Map<string,AbortController>>(new Map());
+ const streamRequests=useRef<Map<string,string>>(new Map());
+ const lifecycleRequests=useRef<Map<string,LifecycleRequest>>(new Map());
+ const surfaceId=useRef(crypto.randomUUID());
+ const mountedAt=useRef(Date.now());
  const cancelledRequests=useRef<Set<string>>(new Set());
  const failedReply=useRef<{owner:string;content:string}|null>(null);
  const active=useMemo(()=>graph?.nodes.find(node=>node.id===graph.activeInstanceId),[graph]);
@@ -65,6 +70,11 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const replyState=reply.owner===owner?reply.state:'idle';
  const replyError=reply.owner===owner?reply.error:'';
  const busy=workflowBusy||pendingOwners.has(owner);
+ const canStop=replyState==='thinking'&&streamRequests.current.has(owner)&&typeof api.cancelChat==='function';
+
+ const notifyPeerSurfaces=useCallback((event:Omit<WorkflowChangedEvent,'senderId'|'sentAt'>)=>{
+  notifyWorkflowChanged({...event,senderId:surfaceId.current,sentAt:Date.now()});
+ },[]);
 
  const nextSnapshotGeneration=useCallback((targetOwner:string)=>{
   const next=(snapshotGenerations.current.get(targetOwner)||0)+1;
@@ -99,7 +109,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   allowEqualWhilePending=false,
  )=>{
   const targetOwner=`${workflow}:${instance}`,generation=nextSnapshotGeneration(targetOwner);
-  try{
+ try{
    const value=await api.messageSnapshot(workflow,instance,'local');
    return applySnapshot(targetOwner,value,generation,minimumRevision,allowEqualWhilePending);
   }catch(caught){
@@ -149,13 +159,61 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   }
  },[workflowId]);
 
+ const handleWorkflowEvent=useCallback((event:MessageEvent|{data?:unknown})=>{
+  // `window.postMessage` can loop back to the sender in embedded/test
+  // surfaces. Ignore that echo; BroadcastChannel events (used by the real
+  // two-surface workspace) do not carry a `source` field.
+  if('source' in event&&event.source===window)return;
+  const value=event.data;
+  if(!value||typeof value!=='object')return;
+  const change=value as WorkflowChangedEvent;
+  if(change.senderId===surfaceId.current)return;
+  if(change.phase&&change.sentAt&&change.sentAt<mountedAt.current)return;
+  if(change.type!=='conversation-workflow-changed'||(change.workflowId&&change.workflowId!==workflowId))return;
+  // Always refresh graph metadata so the workflow/canvas surface sees title,
+  // revision and active-route changes immediately. Route-specific lifecycle
+  // state is applied only when this chat is showing the affected route.
+  void loadGraph();
+  const targetInstance=change.instanceId||'';
+  if(!targetInstance||!graph||!change.phase)return;
+  const targetOwner=`${workflowId}:${targetInstance}`;
+  const requestId=change.requestId||'';
+  const eventTime=change.sentAt||Date.now();
+  if(change.phase==='started'){
+   const current=lifecycleRequests.current.get(targetOwner);
+   if(current&&eventTime<current.startedAt)return;
+   lifecycleRequests.current.set(targetOwner,{requestId,startedAt:eventTime});
+   if(targetInstance!==activeRouteId)return;
+   setReply({owner:targetOwner,state:'thinking',error:''});
+   if(change.content)failedReply.current={owner:targetOwner,content:change.content};
+   void refreshRouteMessages(workflowId,targetInstance,0,true);
+   return;
+  }
+  const current=lifecycleRequests.current.get(targetOwner);
+  const matches=!!current&&current.requestId===requestId&&eventTime>=current.startedAt;
+  if(matches)lifecycleRequests.current.delete(targetOwner);
+  if(targetInstance===activeRouteId)void refreshRouteMessages(workflowId,targetInstance,0,true);
+  // A terminal event only owns the state created by its matching start.
+  // This prevents request A from clearing request B on the same route.
+  if(!matches||targetInstance!==activeRouteId)return;
+  if(change.phase==='completed'){
+   failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'idle',error:''});
+  }else if(change.phase==='failed'){
+   if(change.content)failedReply.current={owner:targetOwner,content:change.content};
+   setReply({owner:targetOwner,state:'error',error:change.error||t('aiGenericError')});
+  }else if(change.phase==='cancelled'){
+   failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'cancelled',error:''});
+  }
+ },[activeRouteId,graph,loadGraph,refreshRouteMessages,t,workflowId]);
+
  useEffect(()=>{void loadWorkflows();void refreshAI()},[loadWorkflows,refreshAI]);
  useEffect(()=>{setGraph(null);graphRequest.current++;void loadGraph()},[loadGraph]);
  useEffect(()=>{
   memoryRequest.current++;
   setMemoryOpenOwner('');
   setMemoryLoadingOwner('');
-  setReply({owner,state:'idle',error:''});
+  const requestPending=!!owner&&(sendLocks.current.has(owner)||lifecycleRequests.current.has(owner));
+  setReply({owner,state:requestPending?'thinking':'idle',error:''});
   setStreamingText('');
   failedReply.current=null;
   setEditingId('');
@@ -163,17 +221,33 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   setCopiedId('');
   if(graph&&activeRouteId&&owner)void refreshRouteMessages(graph.workflowId,activeRouteId,graph.activeRouteContentRevision||0);
  },[owner,graph?.workflowId,activeRouteId,graph?.activeRouteContentRevision,refreshRouteMessages]);
- useEffect(()=>()=>{streamController.current?.abort()},[]);
+ // A canvas request is durable before the model finishes.  Polling while a
+ // request is in flight makes that user turn (and its pending status) appear
+ // in the chat surface without waiting for the assistant response.
+ useEffect(()=>{
+  // Local sends already own the request lifecycle and refresh on completion.
+  // Poll only when another surface (for example Turn Canvas) started the
+  // request; otherwise the poll can race the local optimistic snapshot.
+  if(!owner||replyState!=='thinking'||!graph||sendLocks.current.has(owner))return;
+  const timer=window.setInterval(()=>{
+   void refreshRouteMessages(graph.workflowId,activeRouteId,0,true);
+   void loadGraph();
+  },650);
+  return()=>window.clearInterval(timer);
+ },[activeRouteId,graph,loadGraph,owner,refreshRouteMessages,replyState]);
+ useEffect(()=>()=>{
+  for(const controller of streamControllers.current.values())controller.abort();
+  streamControllers.current.clear();
+  streamRequests.current.clear();
+ },[]);
  useEffect(()=>{const box=messagesRef.current;if(box)box.scrollTop=box.scrollHeight},[messages,replyState]);
  useEffect(()=>{onWorkspaceChange?.({workflowId,graph})},[workflowId,graph,onWorkspaceChange]);
  useEffect(()=>{
-  const refresh=()=>void loadGraph();
   const channel=new BroadcastChannel('conversation-workflow');
-  channel.addEventListener('message',refresh);
-  const receive=(event:MessageEvent)=>{if(event.data?.type==='conversation-workflow-changed')refresh()};
-  window.addEventListener('message',receive);
-  return()=>{channel.close();window.removeEventListener('message',receive)};
- },[loadGraph]);
+  channel.addEventListener('message',handleWorkflowEvent);
+  window.addEventListener('message',handleWorkflowEvent);
+  return()=>{channel.close();window.removeEventListener('message',handleWorkflowEvent)};
+ },[handleWorkflowEvent]);
 
  function lockRoute(targetOwner:string){
   if(sendLocks.current.has(targetOwner))return false;
@@ -251,7 +325,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   }catch(caught){
    await refreshRouteMessages(workflow,instance,expected,true);
    if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'error',error:aiError(caught)});
-  }finally{unlockRoute(targetOwner)}
+ }finally{unlockRoute(targetOwner)}
  }
 
  async function retryAnswer(){
@@ -265,10 +339,11 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
    // message after the optimistic snapshot was rendered. Using the stale
    // revision makes the retry look like a no-op (the API correctly returns
    // 409), so always derive the anchor from the current route projection.
-   await refreshRouteMessages(workflow,instance,0,true);
+   const refreshedCurrent=await refreshRouteMessages(workflow,instance,0,true);
+   if(!refreshedCurrent)throw new ApiError(t('aiGenericError'),409,'conflict');
    const refreshed=snapshotRef.current;
    const latest=[...refreshed.messages].reverse().find(item=>item.role==='user'&&!item.inherited&&item.content===failed.content);
-   if(!latest)throw new ApiError(t('aiGenericError'),409,'contentConflict');
+   if(!latest)throw new ApiError(t('aiGenericError'),409,'conflict');
    const expected=refreshed.contentRevision;
    const value=await api.regenerate(workflow,instance,latest.id,failed.content,expected);
    const generation=nextSnapshotGeneration(targetOwner);applySnapshot(targetOwner,value,generation,expected,true);
@@ -280,16 +355,38 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  }
 
  async function stopGenerating(){
-  const current=streamRequest.current;
-  if(!current||current.owner!==owner)return;
-  cancelledRequests.current.add(current.key);
-  streamController.current?.abort();
-  if(typeof api.cancelChat==='function'){
-   try{await api.cancelChat(graph!.workflowId,activeRouteId,current.key)}catch{/* The local abort still stops rendering. */}
+  const requestId=streamRequests.current.get(owner),controller=streamControllers.current.get(owner);
+  const workflow=graph?.workflowId,instance=activeRouteId,targetOwner=owner;
+  if(!requestId||!controller||!workflow||!instance||typeof api.cancelChat!=='function')return;
+  try{
+   const result=await api.cancelChat(workflow,instance,requestId);
+   // The request may have completed while cancellation was in flight. Never
+   // abort or announce cancellation for a different/newer owner request.
+   if(streamRequests.current.get(targetOwner)!==requestId){
+    await refreshRouteMessages(workflow,instance,0,true);
+    return;
+   }
+   if(!result.cancelled){
+    // Server did not confirm cancellation. Keep waiting and only reconcile
+    // durable messages; claiming "cancelled" here would be a false terminal.
+    await refreshRouteMessages(workflow,instance,0,true);
+    return;
+   }
+   cancelledRequests.current.add(requestId);
+   controller.abort();
+   if(activeKey.current===targetOwner){
+    setStreamingText('');
+    failedReply.current=null;
+    setReply({owner:targetOwner,state:'cancelled',error:''});
+   }
+   notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'cancelled',requestId});
+   await refreshRouteMessages(workflow,instance,0,true);
+  }catch{
+   // A failed cancellation request leaves the underlying generation running.
+   // Refresh what is durable, but do not abort locally or publish a false
+   // cancelled state.
+   await refreshRouteMessages(workflow,instance,0,true);
   }
-  streamController.current=null;streamRequest.current=null;setStreamingText('');
-  failedReply.current=null;setReply({owner,state:'cancelled',error:''});
-  await refreshRouteMessages(graph!.workflowId,activeRouteId,0,true);
  }
 
  async function send(){
@@ -297,6 +394,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   if(!text||!workflow||!instance)return;
   const targetOwner=`${workflow}:${instance}`;
   if(!lockRoute(targetOwner))return;
+  const requestId=crypto.randomUUID();
   nextSnapshotGeneration(targetOwner);
   setDraft('');
   setError('');
@@ -308,36 +406,72 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   const optimistic:OwnedSnapshot={...base,messages:[...base.messages,{id:crypto.randomUUID(),role:'user',content:text,inherited:false}]};
   snapshotRef.current=optimistic;
   setSnapshot(optimistic);
-  let requestKey:string|undefined;
+  // Let the other mounted surface enter its pending state immediately.  The
+  // subsequent polling/revision refresh replaces the optimistic message with
+  // the durable record once the backend has appended it.
+  notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'started',requestId,content:text});
+  let delivered: {userMessage?:Message;assistantMessage?:Message}|undefined;
   try{
    if(aiStatus?.configured){
-    const key=crypto.randomUUID();requestKey=key;const controller=new AbortController();
-    streamRequest.current={owner:targetOwner,key};streamController.current=controller;
     if(typeof api.chatStream==='function'){
+     const controller=new AbortController();
+     streamRequests.current.set(targetOwner,requestId);
+     streamControllers.current.set(targetOwner,controller);
      let terminal:'completed'|'failed'|'cancelled'|null=null;let streamError:ApiError|null=null;
-     await api.chatStream(workflow,instance,text,key,(event,data)=>{
-      if(activeKey.current!==targetOwner)return;
-      if(event==='message.delta')setStreamingText(current=>current+(data.delta||''));
+     await api.chatStream(workflow,instance,text,requestId,(event,data)=>{
+      if(event==='message.delta'){
+       if(activeKey.current===targetOwner)setStreamingText(current=>current+(data.delta||''));
+       return;
+      }
       if(event==='message.completed')terminal='completed';
       if(event==='message.cancelled')terminal='cancelled';
       if(event==='message.failed'){terminal='failed';streamError=new ApiError(data.error||t('aiGenericError'),502,data.code)}
      },controller.signal);
-     if(terminal==='cancelled'||cancelledRequests.current.has(key)){cancelledRequests.current.delete(key);if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'cancelled',error:''});return}
+     const locallyCancelled=cancelledRequests.current.has(requestId);
+     if(terminal==='cancelled'||locallyCancelled){
+      cancelledRequests.current.delete(requestId);
+      await refreshRouteMessages(workflow,instance,base.contentRevision,true);
+      if(activeKey.current===targetOwner){failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'cancelled',error:''})}
+      if(!locallyCancelled)notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'cancelled',requestId});
+      return;
+     }
      if(terminal==='failed')throw streamError||new ApiError(t('aiGenericError'),502,'aiUnavailable');
-    }else await api.chat(workflow,instance,text);
-   }else await api.send(workflow,instance,text);
+     if(terminal!=='completed')throw new ApiError(t('aiGenericError'),502,'aiEmptyResponse');
+    }else delivered=await api.chat(workflow,instance,text,requestId);
+   }else delivered={userMessage:await api.send(workflow,instance,text)};
    await refreshRouteMessages(workflow,instance,base.contentRevision,true);
+   // If the write succeeded but a concurrent read raced the commit, retain
+   // the optimistic user message until the next revision refresh supplies the
+   // durable row. This closes the tiny gap between send acknowledgement and
+   // message projection on the other surface.
+   const projected=snapshotRef.current;
+   const assistantMessage=delivered?.assistantMessage;
+   if(activeKey.current===targetOwner&&(!projected.messages.some(item=>item.role==='user'&&item.content===text)||assistantMessage&&!projected.messages.some(item=>item.role==='assistant'&&item.id===assistantMessage.id))){
+    const fallbackMessages=[...projected.messages];
+    if(!fallbackMessages.some(item=>item.role==='user'&&item.content===text))fallbackMessages.push(delivered?.userMessage||{id:crypto.randomUUID(),role:'user',content:text,inherited:false});
+    if(assistantMessage&&!fallbackMessages.some(item=>item.id===assistantMessage.id))fallbackMessages.push(assistantMessage);
+    const fallback:OwnedSnapshot={...projected,owner:targetOwner,messages:fallbackMessages};
+    snapshotRef.current=fallback;setSnapshot(fallback);
+   }
    // A previously untitled branch can receive its generated title on the first
    // message. Refresh graph metadata only while this route is still active;
    // loadGraph's request generation continues to reject stale graph responses.
    if(activeKey.current===targetOwner)await loadGraph();
+   notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'completed',requestId});
    if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'idle',error:''});
   }catch(caught){
    await refreshRouteMessages(workflow,instance,base.contentRevision,true);
-   const wasCancelled=!!requestKey&&cancelledRequests.current.delete(requestKey);
-   if(activeKey.current===targetOwner&&!wasCancelled){failedReply.current={owner:targetOwner,content:text};setStreamingText('');setReply({owner:targetOwner,state:'error',error:aiError(caught)});}
-  }finally{unlockRoute(targetOwner)}
-  streamController.current=null;streamRequest.current=null;
+   const wasCancelled=cancelledRequests.current.delete(requestId);
+   const message=aiError(caught);
+   if(activeKey.current===targetOwner&&!wasCancelled){failedReply.current={owner:targetOwner,content:text};setStreamingText('');setReply({owner:targetOwner,state:'error',error:message});}
+   if(!wasCancelled)notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'failed',requestId,content:text,error:message});
+  }finally{
+   if(streamRequests.current.get(targetOwner)===requestId){
+    streamRequests.current.delete(targetOwner);
+    streamControllers.current.delete(targetOwner);
+   }
+   unlockRoute(targetOwner);
+  }
  }
 
  function openGraph(){
@@ -353,7 +487,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const lastUserId=([...messages].reverse().find(message=>message.role==='user'&&!message.inherited)?.id);
  const renderMessage=(message:Message,actions=false)=><article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<MarkdownMessage content={message.content}/>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions"><button type="button" onClick={()=>beginEdit(message)}>{t('editQuestion')}</button><button type="button" onClick={()=>void copyMessage(message)}>{copiedId===String(message.id)?t('copied'):t('copyMessage')}</button></div>}</>}</div></article>;
  const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><span>{memoryOpen?'▾':'▸'} {t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
- const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking" aria-live="polite"><div>{streamingText?<MarkdownMessage content={streamingText}/>:<><span>{t('thinking')}</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></>}<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button></div></article>}{replyState==='error'&&<article className="message system reply-error" role="alert"><div>{replyError}<button type="button" onClick={()=>void retryAnswer()} disabled={busy}>{t('retryAnswer')}</button></div></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled" role="status"><div>{t('cancelled')}</div></article>}</div>;
+ const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking" aria-live="polite"><div>{streamingText?<MarkdownMessage content={streamingText}/>:<><span>{t('thinking')}</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></>}{canStop&&<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button>}</div></article>}{replyState==='error'&&<article className="message system reply-error" role="alert"><div>{replyError}<button type="button" onClick={()=>void retryAnswer()} disabled={busy}>{t('retryAnswer')}</button></div></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled" role="status"><div>{t('cancelled')}</div></article>}</div>;
 
  return <main className="chat-shell">
   <aside className="sidebar">

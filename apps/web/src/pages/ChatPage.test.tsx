@@ -6,6 +6,7 @@ import{ApiError}from'../lib/api';
 
 const apiMock=vi.hoisted(()=>({
  workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),send:vi.fn(),chat:vi.fn(),
+ chatStream:undefined as ReturnType<typeof vi.fn>|undefined,cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
  createWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
 }));
 
@@ -23,6 +24,7 @@ function renderChat(){return render(<I18nProvider><ChatPage/></I18nProvider>)}
 
 beforeEach(()=>{
  localStorage.clear();localStorage.setItem('cw.locale','zh-CN');localStorage.setItem('cw.workflow','wf-1');
+ apiMock.chatStream=undefined;apiMock.cancelChat=undefined;
  apiMock.workflows.mockResolvedValue([{id:'wf-1',name:'研究项目',activeInstanceId:'root'}]);
  apiMock.graph.mockResolvedValue(graph);apiMock.messages.mockResolvedValue([]);apiMock.send.mockResolvedValue({id:'u1',role:'user',content:'测试消息'});
  apiMock.messageSnapshot.mockImplementation(async(w:string,i:string,scope:string)=>({messages:await apiMock.messages(w,i,scope),contentRevision:1}));apiMock.regenerate.mockResolvedValue({messages:[],contentRevision:2});apiMock.agentRuns.mockResolvedValue([]);apiMock.agentRun.mockResolvedValue({});apiMock.agentRunEvents.mockResolvedValue({runId:'',events:[],nextAfterSequence:null});
@@ -52,7 +54,7 @@ describe('chat delivery mode',()=>{
   renderChat();
   expect(await screen.findByText('AI 已配置 · test-model')).toBeInTheDocument();
   fireEvent.change(screen.getByRole('textbox'),{target:{value:'测试消息'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
-  await waitFor(()=>expect(apiMock.chat).toHaveBeenCalledWith('wf-1','root','测试消息'));
+  await waitFor(()=>expect(apiMock.chat).toHaveBeenCalledWith('wf-1','root','测试消息',expect.any(String)));
   expect(apiMock.send).not.toHaveBeenCalled();expect(await screen.findByText('助手回复')).toBeInTheDocument();
  });
  it('refreshes graph metadata after the first message reveals an automatically generated branch title',async()=>{
@@ -98,10 +100,119 @@ describe('chat delivery mode',()=>{
  it('shows a localized inline AI error by error code',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockRejectedValue(new ApiError('raw timeout',503,'aiTimeout'));renderChat();await screen.findByText(/AI 已配置/);fireEvent.change(screen.getByRole('textbox'),{target:{value:'开始'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));const message=await screen.findByText('模型响应超时，请重试。');expect(message.closest('.messages')).not.toBeNull();expect(message.closest('[role="alert"]')).not.toBeNull()});
  it('refreshes the route before retrying a failed answer',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockRejectedValueOnce(new ApiError('raw timeout',503,'aiTimeout'));apiMock.messages.mockResolvedValue([{id:'u1',role:'user',content:'开始'}]);apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'u1',role:'user',content:'开始'}],contentRevision:4});apiMock.regenerate.mockResolvedValue({messages:[{id:'u1',role:'user',content:'开始'},{id:'a1',role:'assistant',content:'恢复回答'}],contentRevision:5});renderChat();await screen.findByText(/AI 已配置/);fireEvent.change(screen.getByRole('textbox'),{target:{value:'开始'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));await screen.findByText('模型响应超时，请重试。');fireEvent.click(screen.getByRole('button',{name:'重试回答'}));await waitFor(()=>expect(apiMock.regenerate).toHaveBeenCalledWith('wf-1','root','u1','开始',4));expect(await screen.findByText('恢复回答')).toBeInTheDocument()});
  it('loads local messages normally and reveals inherited effective memory only on demand',async()=>{apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});const child={...graph,activeInstanceId:'child',nodes:[...graph.nodes,{id:'child',parentId:'parent',topicId:'child-topic',title:'子节点',status:'active' as const}]};apiMock.graph.mockResolvedValue(child);apiMock.messages.mockImplementation((_w:string,_i:string,scope:string)=>Promise.resolve(scope==='effective'?[{id:'p1',role:'user',content:'父节点记忆',inherited:true},{id:'l1',role:'user',content:'当前节点消息',inherited:false}]:[{id:'l1',role:'user',content:'当前节点消息',inherited:false}]));renderChat();expect(await screen.findByText('当前节点消息')).toBeInTheDocument();expect(screen.queryByText('父节点记忆')).not.toBeInTheDocument();expect(apiMock.messages).toHaveBeenCalledWith('wf-1','child','local');fireEvent.click(screen.getByRole('button',{name:/继承的路线记忆/}));expect(await screen.findByText('父节点记忆')).toBeInTheDocument();expect(apiMock.messages).toHaveBeenCalledWith('wf-1','child','effective');expect(screen.getAllByText('当前节点消息')).toHaveLength(1)});
+ it('mirrors a same-route canvas lifecycle without sending the request a second time',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  apiMock.messageSnapshot
+   .mockResolvedValueOnce({messages:[],contentRevision:0})
+   .mockResolvedValueOnce({messages:[{id:'u1',role:'user',content:'画布问题'}],contentRevision:1})
+   .mockResolvedValueOnce({messages:[{id:'u1',role:'user',content:'画布问题'},{id:'a1',role:'assistant',content:'画布回答'}],contentRevision:2});
+  renderChat();
+  await screen.findByRole('heading',{name:'数据集构建'});
+  const canvasStartedAt=Date.now()+10;
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'started',requestId:'canvas-request',content:'画布问题',senderId:'canvas',sentAt:canvasStartedAt}}));
+  expect(await screen.findByText('正在思考')).toBeInTheDocument();
+  expect(await screen.findByText('画布问题')).toBeInTheDocument();
+  expect(screen.queryByRole('button',{name:'停止生成'})).not.toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'completed',requestId:'canvas-request',senderId:'canvas',sentAt:canvasStartedAt+1}}));
+  expect(await screen.findByText('画布回答')).toBeInTheDocument();
+  await waitFor(()=>expect(screen.queryByText('正在思考')).not.toBeInTheDocument());
+  expect(apiMock.chat).not.toHaveBeenCalled();
+  expect(apiMock.send).not.toHaveBeenCalled();
+ });
+ it('keeps a newer same-route lifecycle pending when an older request finishes late',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  renderChat();await screen.findByRole('heading',{name:'数据集构建'});
+  const startedAt=Date.now();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'started',requestId:'old',senderId:'canvas',sentAt:startedAt}}));
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'started',requestId:'new',senderId:'canvas',sentAt:startedAt+1}}));
+  expect(await screen.findByText('正在思考')).toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'failed',requestId:'old',error:'过期错误',senderId:'canvas',sentAt:startedAt+2}}));
+  await waitFor(()=>expect(screen.queryByText('过期错误')).not.toBeInTheDocument());
+  expect(screen.getByText('正在思考')).toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'completed',requestId:'new',senderId:'canvas',sentAt:startedAt+3}}));
+  await waitFor(()=>expect(screen.queryByText('正在思考')).not.toBeInTheDocument());
+ });
+ it('uses one stable request id for JSON delivery and its lifecycle events',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  const post=vi.spyOn(BroadcastChannel.prototype,'postMessage');
+  renderChat();await screen.findByText(/AI 已配置/);
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'稳定请求'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  await waitFor(()=>expect(apiMock.chat).toHaveBeenCalled());
+  await waitFor(()=>expect(post.mock.calls.filter(([value])=>(value as {phase?:string}).phase==='completed')).toHaveLength(1));
+  const requestId=apiMock.chat.mock.calls[0][3];
+  const events=post.mock.calls.map(([value])=>value as {phase?:string;requestId?:string});
+  expect(events.find(value=>value.phase==='started')?.requestId).toBe(requestId);
+  expect(events.find(value=>value.phase==='completed')?.requestId).toBe(requestId);
+  post.mockRestore();
+ });
+ it('treats an SSE EOF without a terminal event as a failure',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  apiMock.chatStream=vi.fn().mockResolvedValue(undefined);
+  renderChat();await screen.findByText(/AI 已配置/);
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'无终态'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  expect(await screen.findByText('模型返回了空响应。')).toBeInTheDocument();
+ });
+ it('records an SSE terminal even after the user switches routes',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};
+  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValue(branch);
+  let complete!:()=>void;
+  apiMock.chatStream=vi.fn((_w:string,_i:string,_c:string,_key:string,onEvent:(event:string,data:Record<string,unknown>)=>void)=>new Promise<void>(resolve=>{complete=()=>{onEvent('message.completed',{});resolve()}}));
+  const post=vi.spyOn(BroadcastChannel.prototype,'postMessage');
+  renderChat();await screen.findByRole('heading',{name:'数据集构建'});
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'A流'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  await waitFor(()=>expect(apiMock.chatStream).toHaveBeenCalled());
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));
+  expect(await screen.findByRole('heading',{name:'模块B'})).toBeInTheDocument();
+  complete();
+  await waitFor(()=>expect(post.mock.calls.some(([value])=>(value as {phase?:string}).phase==='completed')).toBe(true));
+  expect(post.mock.calls.some(([value])=>(value as {phase?:string}).phase==='failed')).toBe(false);
+  post.mockRestore();
+ });
+ it('does not abort or claim cancellation when the server rejects stop',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  let complete!:()=>void,streamSignal:AbortSignal|undefined;
+  apiMock.chatStream=vi.fn((_w:string,_i:string,_c:string,_key:string,onEvent:(event:string,data:Record<string,unknown>)=>void,signal?:AbortSignal)=>new Promise<void>(resolve=>{streamSignal=signal;complete=()=>{onEvent('message.completed',{});resolve()}}));
+  apiMock.cancelChat=vi.fn().mockResolvedValue({ok:true,requestId:'unused',cancelled:false});
+  renderChat();await screen.findByText(/AI 已配置/);
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'不要假取消'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  const stop=await screen.findByRole('button',{name:'停止生成'});fireEvent.click(stop);
+  await waitFor(()=>expect(apiMock.cancelChat).toHaveBeenCalled());
+  expect(streamSignal?.aborted).toBe(false);expect(screen.queryByText('已停止生成。')).not.toBeInTheDocument();expect(screen.getByText('正在思考')).toBeInTheDocument();
+  complete();await waitFor(()=>expect(screen.queryByText('正在思考')).not.toBeInTheDocument());
+ });
+ it('does not regenerate when the pre-retry refresh rejects a stale snapshot',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockRejectedValueOnce(new ApiError('raw timeout',503,'aiTimeout'));
+  apiMock.messageSnapshot
+   .mockResolvedValueOnce({messages:[],contentRevision:5})
+   .mockResolvedValueOnce({messages:[{id:'u1',role:'user',content:'开始'}],contentRevision:5})
+   .mockResolvedValueOnce({messages:[{id:'u1',role:'user',content:'开始'}],contentRevision:4});
+  renderChat();await screen.findByText(/AI 已配置/);
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'开始'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  await screen.findByText('模型响应超时，请重试。');fireEvent.click(screen.getByRole('button',{name:'重试回答'}));
+  expect(await screen.findByText('编辑期间对话已发生变化，请重新打开编辑后再试。')).toBeInTheDocument();expect(apiMock.regenerate).not.toHaveBeenCalled();
+ });
+ it('ignores a late lifecycle failure from the route that was left',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};
+  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce(graph).mockResolvedValue(branch);
+  apiMock.messageSnapshot.mockImplementation(async(_w:string,i:string)=>({messages:i==='branch'?[{id:'b1',role:'user',content:'B消息'}]:[],contentRevision:1}));
+  renderChat();
+  await screen.findByRole('heading',{name:'数据集构建'});
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'started',content:'A请求',senderId:'canvas',sentAt:Date.now()}}));
+  expect(await screen.findByText('正在思考')).toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1'}}));
+  expect(await screen.findByRole('heading',{name:'模块B'})).toBeInTheDocument();
+  expect(await screen.findByText('B消息')).toBeInTheDocument();
+  window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf-1',instanceId:'root',phase:'failed',content:'A请求',error:'A旧错误',senderId:'canvas',sentAt:Date.now()}}));
+  await waitFor(()=>expect(screen.queryByText('A旧错误')).not.toBeInTheDocument());
+  expect(screen.queryByText('正在思考')).not.toBeInTheDocument();
+  expect(screen.getByText('B消息')).toBeInTheDocument();
+ });
  it('ignores a late message response from the previously active node',async()=>{apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};let rootDone!:(x:unknown)=>void,branchDone!:(x:unknown)=>void;const rootPromise=new Promise(resolve=>{rootDone=resolve}),branchPromise=new Promise(resolve=>{branchDone=resolve});apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValue(branch);apiMock.messages.mockImplementation((_w:string,i:string)=>i==='root'?rootPromise:branchPromise);renderChat();await screen.findByText('数据集构建');window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));expect(await screen.findByText('模块B')).toBeInTheDocument();branchDone([{id:'b',role:'user',content:'B消息'}]);expect(await screen.findByText('B消息')).toBeInTheDocument();rootDone([{id:'a',role:'user',content:'A旧消息'}]);await waitFor(()=>expect(screen.queryByText('A旧消息')).not.toBeInTheDocument())});
  it('hides the previous node snapshot before the next node finishes loading',async()=>{apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};let branchDone!:(x:unknown)=>void;apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValue(branch);apiMock.messageSnapshot.mockResolvedValueOnce({messages:[{id:'a',role:'user',content:'A 已加载消息'}],contentRevision:3}).mockReturnValueOnce(new Promise(resolve=>{branchDone=resolve}));renderChat();expect(await screen.findByText('A 已加载消息')).toBeInTheDocument();window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));expect(await screen.findByText('模块B')).toBeInTheDocument();expect(screen.queryByText('A 已加载消息')).not.toBeInTheDocument();branchDone({messages:[{id:'b',role:'user',content:'B 延迟消息'}],contentRevision:1});expect(await screen.findByText('B 延迟消息')).toBeInTheDocument()});
- it('uses a synchronous send lock to prevent duplicate submissions',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockReturnValue(new Promise(()=>{}));renderChat();await screen.findByText(/AI 已配置/);const box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'只发送一次'}});const form=box.closest('form')!;fireEvent.submit(form);fireEvent.submit(form);expect(apiMock.chat).toHaveBeenCalledTimes(1);expect(apiMock.chat).toHaveBeenCalledWith('wf-1','root','只发送一次')});
- it('keeps independent in-flight locks across an A to B to A switch sequence',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce(branch).mockResolvedValue(graph);apiMock.chat.mockReturnValue(new Promise(()=>{}));renderChat();await screen.findByText('数据集构建');let box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'A请求'}});fireEvent.submit(box.closest('form')!);window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));await screen.findByText('模块B');box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'B请求'}});fireEvent.submit(box.closest('form')!);window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));await screen.findByText('数据集构建');box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'A重复请求'}});fireEvent.submit(box.closest('form')!);expect(apiMock.chat).toHaveBeenCalledTimes(2);expect(apiMock.chat).toHaveBeenNthCalledWith(1,'wf-1','root','A请求');expect(apiMock.chat).toHaveBeenNthCalledWith(2,'wf-1','branch','B请求')});
+ it('uses a synchronous send lock to prevent duplicate submissions',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockReturnValue(new Promise(()=>{}));renderChat();await screen.findByText(/AI 已配置/);const box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'只发送一次'}});const form=box.closest('form')!;fireEvent.submit(form);fireEvent.submit(form);expect(apiMock.chat).toHaveBeenCalledTimes(1);expect(apiMock.chat).toHaveBeenCalledWith('wf-1','root','只发送一次',expect.any(String))});
+ it('keeps independent in-flight locks across an A to B to A switch sequence',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce(branch).mockResolvedValue(graph);apiMock.chat.mockReturnValue(new Promise(()=>{}));renderChat();await screen.findByText('数据集构建');let box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'A请求'}});fireEvent.submit(box.closest('form')!);window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));await screen.findByText('模块B');box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'B请求'}});fireEvent.submit(box.closest('form')!);window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));await screen.findByText('数据集构建');box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'A重复请求'}});fireEvent.submit(box.closest('form')!);expect(apiMock.chat).toHaveBeenCalledTimes(2);expect(apiMock.chat).toHaveBeenNthCalledWith(1,'wf-1','root','A请求',expect.any(String));expect(apiMock.chat).toHaveBeenNthCalledWith(2,'wf-1','branch','B请求',expect.any(String))});
  it('offers edit and copy only on the last local user message and regenerates once',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.messages.mockResolvedValue([{id:'u0',role:'user',content:'旧问题'},{id:'a0',role:'assistant',content:'旧回答'},{id:'u1',role:'user',content:'最近问题'}]);apiMock.messageSnapshot.mockImplementation(async()=>({messages:await apiMock.messages(),contentRevision:7}));let finish!:(x:unknown)=>void;apiMock.regenerate.mockReturnValue(new Promise(resolve=>{finish=resolve}));const writeText=vi.fn().mockResolvedValue(undefined);Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText}});renderChat();expect(await screen.findByText('最近问题')).toBeInTheDocument();expect(screen.getAllByRole('button',{name:'编辑'})).toHaveLength(1);fireEvent.click(screen.getByRole('button',{name:'复制'}));await waitFor(()=>expect(writeText).toHaveBeenCalledWith('最近问题'));fireEvent.click(screen.getByRole('button',{name:'编辑'}));const editor=screen.getByRole('textbox',{name:'编辑你的提问'});fireEvent.change(editor,{target:{value:'修改后的问题'}});const save=screen.getByRole('button',{name:'保存并重新生成'});fireEvent.click(save);fireEvent.click(save);expect(apiMock.regenerate).toHaveBeenCalledTimes(1);expect(apiMock.regenerate).toHaveBeenCalledWith('wf-1','root','u1','修改后的问题',7);expect(await screen.findByText('正在思考')).toBeInTheDocument();finish({messages:[{id:'u1',role:'user',content:'修改后的问题'},{id:'a1',role:'assistant',content:'**新回答**'}],contentRevision:9});expect(await screen.findByText('新回答')).toHaveProperty('tagName','STRONG');expect(screen.queryByText('正在思考')).not.toBeInTheDocument()});
  it('ignores a regenerate result after switching to another node',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValue(branch);apiMock.messageSnapshot.mockImplementation(async(_w:string,i:string)=>({messages:i==='root'?[{id:'u1',role:'user',content:'A问题'}]:[{id:'b1',role:'user',content:'B消息'}],contentRevision:1}));let finish!:(x:unknown)=>void;apiMock.regenerate.mockReturnValue(new Promise(resolve=>{finish=resolve}));renderChat();expect(await screen.findByText('A问题')).toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'编辑'}));fireEvent.change(screen.getByRole('textbox',{name:'编辑你的提问'}),{target:{value:'A修改'}});fireEvent.click(screen.getByRole('button',{name:'保存并重新生成'}));window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));expect(await screen.findByText('B消息')).toBeInTheDocument();finish({messages:[{id:'u1',role:'user',content:'A修改'}],contentRevision:2});await waitFor(()=>expect(screen.queryByText('A修改')).not.toBeInTheDocument());expect(screen.getByText('B消息')).toBeInTheDocument()});
  it('supports a numeric SQLite message id and keeps original content when regenerate fails',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.messageSnapshot.mockResolvedValue({messages:[{id:42,role:'user',content:'数字 ID 原问题'}],contentRevision:5});apiMock.regenerate.mockRejectedValue(new ApiError('conflict',409,'conflict'));renderChat();expect(await screen.findByText('数字 ID 原问题')).toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'编辑'}));fireEvent.change(screen.getByRole('textbox',{name:'编辑你的提问'}),{target:{value:'不应本地写入'}});fireEvent.click(screen.getByRole('button',{name:'保存并重新生成'}));await waitFor(()=>expect(apiMock.regenerate).toHaveBeenCalledWith('wf-1','root',42,'不应本地写入',5));expect(screen.getByText('数字 ID 原问题')).toBeInTheDocument();expect(screen.queryByText('不应本地写入')).not.toBeInTheDocument();expect(screen.getByRole('alert')).toHaveTextContent('编辑期间对话已发生变化，请重新打开编辑后再试。')});

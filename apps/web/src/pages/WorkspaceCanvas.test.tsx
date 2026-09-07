@@ -71,7 +71,7 @@ beforeEach(()=>{
  apiMock.prunePlan.mockResolvedValue(null);apiMock.pruneCommit.mockResolvedValue({prunedInstanceIds:[]});
 });
 
-afterEach(()=>{cleanup();vi.clearAllMocks();vi.unstubAllGlobals()});
+afterEach(()=>{cleanup();delete(apiMock as typeof apiMock&{chatStream?:unknown}).chatStream;vi.clearAllMocks();vi.unstubAllGlobals()});
 
 describe('native double canvas workspace',()=>{
  it('uses the conversation sidebar to select and locate a workflow node, then opens it on double-click',async()=>{
@@ -139,8 +139,62 @@ describe('native double canvas workspace',()=>{
   apiMock.turns.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(updated);
   renderCanvas();await openLeafCanvas();
   fireEvent.change(screen.getByLabelText('画布对话输入'),{target:{value:'直接从画布提问'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
-  await waitFor(()=>expect(apiMock.chat).toHaveBeenCalledWith('wf','leaf','直接从画布提问'));
+  await waitFor(()=>expect(apiMock.chat).toHaveBeenCalledWith('wf','leaf','直接从画布提问','fork-idempotency-1'));
   expect(await screen.findByText('直接从画布提问')).toBeInTheDocument();expect(apiMock.turns).toHaveBeenCalledTimes(2);
+ });
+
+ it('treats an SSE EOF without a terminal event as a protocol failure',async()=>{
+  const chatStream=vi.fn().mockResolvedValue(undefined);
+  (apiMock as typeof apiMock&{chatStream:typeof chatStream}).chatStream=chatStream;
+  renderCanvas();await openLeafCanvas();
+  fireEvent.change(screen.getByLabelText('画布对话输入'),{target:{value:'不完整流'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  expect(await screen.findByRole('alert')).toHaveTextContent('无法从画布发送消息');
+  expect(chatStream).toHaveBeenCalledWith('wf','leaf','不完整流','fork-idempotency-1',expect.any(Function));
+  expect(apiMock.chat).not.toHaveBeenCalled();
+ });
+
+ it('syncs an external chat lifecycle without polling graph metadata while the answer is pending',async()=>{
+  renderCanvas();await openLeafCanvas();
+  expect(apiMock.graph).toHaveBeenCalledTimes(1);expect(apiMock.turns).toHaveBeenCalledTimes(1);
+  fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'started',senderId:'chat-surface',sentAt:Date.now()}}));
+  expect(await screen.findByRole('status')).toHaveTextContent('正在思考');
+  await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledTimes(2));
+  expect(apiMock.graph).toHaveBeenCalledTimes(1);
+  fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'completed',senderId:'chat-surface',sentAt:Date.now()}}));
+  await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
+  await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledTimes(3));
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+ });
+
+ it('does not let an old terminal lifecycle clear a newer request on the same route',async()=>{
+  renderCanvas();await openLeafCanvas();const sentAt=Date.now()+10;
+  fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'started',requestId:'request-old',senderId:'chat-surface',sentAt}}));
+  fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'started',requestId:'request-new',senderId:'chat-surface',sentAt:sentAt+1}}));
+  expect(await screen.findByRole('status')).toHaveTextContent('正在思考');
+  fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'completed',requestId:'request-old',senderId:'chat-surface',sentAt:sentAt+2}}));
+  await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('status')).toHaveTextContent('正在思考');
+  fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'completed',requestId:'request-new',senderId:'chat-surface',sentAt:sentAt+3}}));
+  await waitFor(()=>expect(screen.queryByRole('status')).not.toBeInTheDocument());
+ });
+
+ it('keeps an in-flight reply scoped to its route and cannot overwrite a newly opened turn canvas',async()=>{
+  let finish!:(value:unknown)=>void;
+  const pending=new Promise(resolve=>{finish=resolve});
+  const rootSnapshot={...snapshot,instanceId:'root',ownerInstanceId:'root',activeRouteInstanceId:'root',memoryRoute:[{instanceId:'root',title:'数据集'}],routeContentRevisions:{root:2},routeMemoryRoutes:{root:[{instanceId:'root',title:'数据集'}]},routeInheritedMessageCounts:{root:0},routeTitles:{root:'数据集'},inheritedMessageCount:0,turns:[]};
+  apiMock.chat.mockReturnValueOnce(pending);
+  apiMock.turns.mockImplementation(async(_workflowId:string,instanceId:string)=>instanceId==='root'?rootSnapshot:snapshot);
+  renderCanvas();await openLeafCanvas();
+  fireEvent.change(screen.getByLabelText('画布对话输入'),{target:{value:'留在大模型实验'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  expect(await screen.findByRole('status')).toHaveTextContent('正在思考');
+  fireEvent.click(within(screen.getByRole('navigation',{name:'对话'})).getByRole('button',{name:'数据集'}));
+  await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledWith('wf','root'));
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(screen.getByTestId('turn-canvas')).toHaveAttribute('data-selected','route:root');
+  finish({});
+  await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
+  expect(apiMock.turns.mock.calls.map(call=>call[1])).toEqual(['leaf','root']);
+  expect(screen.getByTestId('turn-canvas')).toHaveAttribute('data-selected','route:root');
  });
 
  it('creates an empty branch directly from the card with the exact anchor and an automatic name',async()=>{
