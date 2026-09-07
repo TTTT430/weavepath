@@ -5,7 +5,7 @@ import{ApiError}from'../lib/api';
 import{WorkspaceCanvas}from'./WorkspaceCanvas';
 
 const apiMock=vi.hoisted(()=>({
- graph:vi.fn(),turns:vi.fn(),messages:vi.fn(),routes:vi.fn(),activate:vi.fn(),fork:vi.fn(),forkChat:vi.fn(),renameInstance:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),aiStatus:vi.fn(),chat:vi.fn(),send:vi.fn(),
+ graph:vi.fn(),turns:vi.fn(),messages:vi.fn(),routes:vi.fn(),activate:vi.fn(),fork:vi.fn(),forkChat:vi.fn(),renameInstance:vi.fn(),renameWorkflow:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),aiStatus:vi.fn(),chat:vi.fn(),send:vi.fn(),
 }));
 
 vi.mock('../lib/api',()=>({
@@ -71,12 +71,26 @@ beforeEach(()=>{
  apiMock.activate.mockImplementation(async(_workflowId:string,instanceId:string)=>({activeInstanceId:instanceId}));apiMock.fork.mockResolvedValue({node:{id:'forked'},graphRevision:4});
  apiMock.forkChat.mockResolvedValue({node:{id:'forked'},graphRevision:4,replyStatus:'completed',assistantMessage:{id:809,role:'assistant',content:'模块 B 回答'}});apiMock.aiStatus.mockResolvedValue({configured:true,provider:'fake',model:'test'});apiMock.chat.mockResolvedValue({});apiMock.send.mockResolvedValue({});
  apiMock.renameInstance.mockResolvedValue({node:{id:'leaf',title:'大模型分析'},graphRevision:4,eventRevision:12});
+ apiMock.renameWorkflow.mockResolvedValue({workflowId:'wf',name:'新研究名称',graphRevision:4,eventRevision:12});
  apiMock.prunePlan.mockResolvedValue(null);apiMock.pruneCommit.mockResolvedValue({prunedInstanceIds:[]});
 });
 
 afterEach(()=>{cleanup();delete(apiMock as typeof apiMock&{chatStream?:unknown}).chatStream;vi.clearAllMocks();vi.unstubAllGlobals()});
 
 describe('native double canvas workspace',()=>{
+ it('renames the workflow title on double-click without a visible rename button',async()=>{
+  renderCanvas();const breadcrumb=await screen.findByRole('navigation',{name:'工作流画布'}),title=within(breadcrumb).getByRole('button',{name:'研究工作流'});
+  expect(title).toHaveAttribute('title','重命名工作流');expect(within(breadcrumb).queryByRole('button',{name:'重命名'})).not.toBeInTheDocument();
+  fireEvent.doubleClick(title);fireEvent.change(within(breadcrumb).getByLabelText('工作流名称（可选）'),{target:{value:'新研究名称'}});fireEvent.click(within(breadcrumb).getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(apiMock.renameWorkflow).toHaveBeenCalledWith('wf','新研究名称',3));
+ });
+
+ it('offers F2 and Escape as keyboard alternatives for workflow title rename',async()=>{
+  renderCanvas();const breadcrumb=await screen.findByRole('navigation',{name:'工作流画布'}),title=within(breadcrumb).getByRole('button',{name:'研究工作流'});
+  fireEvent.keyDown(title,{key:'F2'});const input=within(breadcrumb).getByLabelText('工作流名称（可选）');expect(input).toHaveValue('研究工作流');
+  fireEvent.keyDown(input,{key:'Escape'});expect(within(breadcrumb).getByRole('button',{name:'研究工作流'})).toBeInTheDocument();expect(apiMock.renameWorkflow).not.toHaveBeenCalled();
+ });
+
  it('uses the conversation sidebar to select and locate a workflow node, then opens it on double-click',async()=>{
   renderCanvas();
   const navigation=await screen.findByRole('navigation',{name:'对话'}),leaf=within(navigation).getByRole('button',{name:'大模型实验'}),child=within(navigation).getByRole('button',{name:'情感分析'});

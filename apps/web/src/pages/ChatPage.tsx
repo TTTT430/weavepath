@@ -8,6 +8,7 @@ import{ErrorBanner}from'../components/ErrorBanner';
 import{ModelSettingsDialog}from'../components/ModelSettingsDialog';
 import{MarkdownMessage}from'../components/MarkdownMessage';
 import{AgentRunWorkspace}from'../components/AgentRunWorkspace';
+import{AppIcon}from'../components/AppIcon';
 import{notifyWorkflowChanged,type WorkflowChangedEvent}from'../lib/workflowEvents';
 
 type ReplyState='idle'|'thinking'|'error'|'cancelled';
@@ -15,6 +16,14 @@ interface OwnedSnapshot extends MessageSnapshot {owner:string}
 interface OwnedReply {owner:string;state:ReplyState;error:string}
 interface OwnedMessages {owner:string;items:Message[]}
 interface LifecycleRequest {requestId:string;startedAt:number}
+const PINNED_WORKFLOWS_KEY='weavepath.pinned-workflows.v1';
+
+function loadPinnedWorkflowIds(){
+ try{
+  const value=JSON.parse(localStorage.getItem(PINNED_WORKFLOWS_KEY)||'[]');
+  return Array.isArray(value)?value.filter((id):id is string=>typeof id==='string'):[];
+ }catch{return[]}
+}
 
 export interface ChatPageProps{
  onOpenWorkflow?:(workflowId:string)=>void
@@ -38,6 +47,9 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const[creating,setCreating]=useState(false);
  const[newName,setNewName]=useState('');
  const[rootTitle,setRootTitle]=useState('');
+ const[pinnedWorkflowIds,setPinnedWorkflowIds]=useState<string[]>(loadPinnedWorkflowIds);
+ const[renamingWorkflowId,setRenamingWorkflowId]=useState('');
+ const[workflowNameDraft,setWorkflowNameDraft]=useState('');
  const[aiStatus,setAiStatus]=useState<AIStatus|null>(null);
  const[reply,setReply]=useState<OwnedReply>({owner:'',state:'idle',error:''});
  const[streamingText,setStreamingText]=useState('');
@@ -46,7 +58,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const[copiedId,setCopiedId]=useState('');
  const messagesRef=useRef<HTMLDivElement>(null);
  const workflowRequest=useRef(0),graphRequest=useRef(0),memoryRequest=useRef(0);
- const graphRef=useRef<Graph|null>(null),activeRouteIdRef=useRef('');
+ const graphRef=useRef<Graph|null>(null),activeRouteIdRef=useRef(''),workflowIdRef=useRef(workflowId);
  const sendLocks=useRef<Set<string>>(new Set());
  const snapshotGenerations=useRef<Map<string,number>>(new Map());
  const snapshotRef=useRef(snapshot),activeKey=useRef('');
@@ -63,6 +75,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  activeKey.current=owner;
  graphRef.current=graph;
  activeRouteIdRef.current=activeRouteId;
+ workflowIdRef.current=workflowId;
  snapshotRef.current=snapshot;
  const messages=snapshot.owner===owner?snapshot.messages:[];
  const nodeRevision=snapshot.owner===owner?snapshot.contentRevision:graph?.activeRouteContentRevision??active?.contentRevision??0;
@@ -74,6 +87,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  const replyError=reply.owner===owner?reply.error:'';
  const busy=workflowBusy||pendingOwners.has(owner);
  const canStop=replyState==='thinking'&&streamRequests.current.has(owner)&&typeof api.cancelChat==='function';
+ const orderedWorkflows=useMemo(()=>{
+  const pinned=new Set(pinnedWorkflowIds);
+  return workflows.map((workflow,index)=>({workflow,index})).sort((left,right)=>Number(pinned.has(right.workflow.id))-Number(pinned.has(left.workflow.id))||left.index-right.index).map(item=>item.workflow);
+ },[pinnedWorkflowIds,workflows]);
 
  const notifyPeerSurfaces=useCallback((event:Omit<WorkflowChangedEvent,'senderId'|'sentAt'>)=>{
   notifyWorkflowChanged({...event,senderId:surfaceId.current,sentAt:Date.now()});
@@ -142,17 +159,17 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
   }catch(caught){if(request===workflowRequest.current)setError(caught instanceof Error?caught.message:String(caught))}
  },[workflowId]);
 
- const loadGraph=useCallback(async()=>{
+ const loadGraph=useCallback(async(targetWorkflowId=workflowId)=>{
   const request=++graphRequest.current;
-  if(!workflowId){setGraph(null);return}
+  if(!targetWorkflowId){if(!workflowIdRef.current)setGraph(null);return}
   try{
-   const value=await api.graph(workflowId);
-   if(request!==graphRequest.current)return;
+   const value=await api.graph(targetWorkflowId);
+   if(request!==graphRequest.current||targetWorkflowId!==workflowIdRef.current)return;
    setGraph(value);
    setError('');
-   localStorage.setItem('cw.workflow',workflowId);
+   localStorage.setItem('cw.workflow',targetWorkflowId);
   }catch(caught){
-   if(request!==graphRequest.current)return;
+   if(request!==graphRequest.current||targetWorkflowId!==workflowIdRef.current)return;
    if(caught instanceof ApiError&&caught.status===404){
     localStorage.removeItem('cw.workflow');
     setWorkflowId('');
@@ -307,6 +324,40 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
    await loadWorkflows();
   }catch(caught){setError(caught instanceof Error?caught.message:String(caught))}
   finally{setWorkflowBusy(false)}
+ }
+
+ function togglePinnedWorkflow(id:string){
+  setPinnedWorkflowIds(current=>{
+   const next=current.includes(id)?current.filter(item=>item!==id):[...current,id];
+   localStorage.setItem(PINNED_WORKFLOWS_KEY,JSON.stringify(next));
+   return next;
+  });
+ }
+
+ function beginWorkflowRename(workflow:WorkflowSummary){
+  if(workflowBusy)return;
+  setRenamingWorkflowId(workflow.id);setWorkflowNameDraft(workflow.name);
+ }
+
+ function cancelWorkflowRename(){setRenamingWorkflowId('');setWorkflowNameDraft('')}
+
+ async function renameSidebarWorkflow(workflow:WorkflowSummary){
+  const name=workflowNameDraft.trim();
+  if(!name||workflowBusy)return;
+  setWorkflowBusy(true);setError('');
+  try{
+   const currentGraph=workflow.id===graph?.workflowId?graph:await api.graph(workflow.id);
+   const result=await api.renameWorkflow(workflow.id,name,currentGraph.graphRevision);
+   setWorkflows(current=>current.map(item=>item.id===workflow.id?{...item,name}:item));
+   setGraph(current=>current?.workflowId===workflow.id?{...current,name,graphRevision:result.graphRevision,eventRevision:result.eventRevision}:current);
+   cancelWorkflowRename();
+   notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow.id});
+   await loadWorkflows();
+   if(workflow.id===workflowIdRef.current)await loadGraph(workflow.id);
+  }catch(caught){
+   if(caught instanceof ApiError&&caught.status===409){await loadWorkflows();if(workflow.id===workflowIdRef.current)await loadGraph(workflow.id);setError(t('renameConflict'))}
+   else setError(caught instanceof Error?caught.message:String(caught));
+  }finally{setWorkflowBusy(false)}
  }
 
  function aiError(caught:unknown){
@@ -504,23 +555,31 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange}:ChatPageProps={}){
  }
 
  const lastUserId=([...messages].reverse().find(message=>message.role==='user'&&!message.inherited)?.id);
- const renderMessage=(message:Message,actions=false)=><article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<MarkdownMessage content={message.content}/>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions"><button type="button" onClick={()=>beginEdit(message)}>{t('editQuestion')}</button><button type="button" onClick={()=>void copyMessage(message)}>{copiedId===String(message.id)?t('copied'):t('copyMessage')}</button></div>}</>}</div></article>;
- const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><span>{memoryOpen?'▾':'▸'} {t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
+ const renderMessage=(message:Message,actions=false)=>{
+  const copied=copiedId===String(message.id);
+  return <article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<MarkdownMessage content={message.content}/>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions" aria-label={t('messageActions')}><button type="button" className="message-action-button" aria-label={t('editQuestion')} title={t('editQuestion')} onClick={()=>beginEdit(message)}><AppIcon name="edit" className="message-action-icon"/></button><button type="button" className={`message-action-button${copied?' is-copied':''}`} aria-label={copied?t('copied'):t('copyMessage')} title={copied?t('copied'):t('copyMessage')} onClick={()=>void copyMessage(message)}><AppIcon name={copied?'check':'copy'} className="message-action-icon"/></button></div>}</>}</div></article>;
+ };
+ const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><AppIcon name={memoryOpen?'chevronDown':'chevronRight'}/><span>{t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
  const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking" aria-live="polite"><div>{streamingText?<MarkdownMessage content={streamingText}/>:<><span>{t('thinking')}</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></>}{canStop&&<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button>}</div></article>}{replyState==='error'&&<article className="message system reply-error" role="alert"><div>{replyError}<button type="button" onClick={()=>void retryAnswer()} disabled={busy}>{t('retryAnswer')}</button></div></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled" role="status"><div>{t('cancelled')}</div></article>}</div>;
 
  return <main className="chat-shell">
   <aside className="sidebar">
    <div className="brand">◫ <strong>{t('app')}</strong></div>
-   <button className="new-workflow" onClick={()=>setCreating(true)}>＋ {t('newWorkflow')}</button>
+   <button className="new-workflow" onClick={()=>setCreating(true)}><AppIcon name="plus"/><span>{t('newWorkflow')}</span></button>
    <h2>{t('conversations')}</h2>
-   <nav>{workflows.map(workflow=><button className={workflow.id===workflowId?'current':''} key={workflow.id} onClick={()=>setWorkflowId(workflow.id)}>{workflow.name}</button>)}</nav>
-   <div className="sidebar-controls"><button className="settings-button" onClick={()=>setSettingsOpen(true)}>⚙ {t('settings')}</button><LanguageSelect/></div>
+   <nav>{orderedWorkflows.map(workflow=>{
+    const pinned=pinnedWorkflowIds.includes(workflow.id),renaming=renamingWorkflowId===workflow.id;
+    return <div className={`workflow-sidebar-item${workflow.id===workflowId?' current':''}${pinned?' is-pinned':''}`} key={workflow.id}>
+     {renaming?<form className="workflow-sidebar-rename" onSubmit={event=>{event.preventDefault();void renameSidebarWorkflow(workflow)}}><input autoFocus aria-label={`${t('renameWorkflow')}: ${workflow.name}`} value={workflowNameDraft} maxLength={240} onChange={event=>setWorkflowNameDraft(event.target.value)} onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();cancelWorkflowRename()}}}/><button type="submit" className="workflow-sidebar-icon" aria-label={t('save')} title={t('save')} disabled={workflowBusy||!workflowNameDraft.trim()}><AppIcon name="check"/></button><button type="button" className="workflow-sidebar-icon" aria-label={t('cancel')} title={t('cancel')} onClick={cancelWorkflowRename}><AppIcon name="close"/></button></form>:<><button className="workflow-sidebar-select" aria-current={workflow.id===workflowId?'page':undefined} onClick={()=>setWorkflowId(workflow.id)}>{workflow.name}</button><span className="workflow-sidebar-actions"><button type="button" className="workflow-sidebar-icon" aria-label={`${pinned?t('unpinWorkflow'):t('pinWorkflow')}: ${workflow.name}`} title={pinned?t('unpinWorkflow'):t('pinWorkflow')} aria-pressed={pinned} onClick={()=>togglePinnedWorkflow(workflow.id)}><AppIcon name="pin"/></button><button type="button" className="workflow-sidebar-icon" aria-label={`${t('renameWorkflow')}: ${workflow.name}`} title={t('renameWorkflow')} onClick={()=>beginWorkflowRename(workflow)}><AppIcon name="edit"/></button></span></>}
+    </div>;
+   })}</nav>
+   <div className="sidebar-controls"><button className="settings-button" onClick={()=>setSettingsOpen(true)}><AppIcon name="settings"/><span>{t('settings')}</span></button><LanguageSelect/></div>
   </aside>
   <section className="chat">
    <header>
     <div><h1>{active?.title||graph?.name||t('app')}</h1><p>{t('route')}: {graph&&active?routeLabel(graph,active.id):'—'}</p><span className={`ai-status ${aiStatus?.configured?'connected':'local'}`}>{aiStatus?.configured?`${t('aiConnected')} · ${aiStatus.model}`:t('recordOnly')}</span></div>
     <AgentRunWorkspace graph={graph} active={activeRoute} contentRevision={nodeRevision} aiStatus={aiStatus} onRunCompleted={async target=>{await refreshRouteMessages(target.workflowId,target.instanceId,target.inputContentRevision)}}/>
-    <button className="workflow-launch" disabled={!graph} onClick={openGraph}>⌘ {t('workflow')}</button>
+    <button className="workflow-launch" disabled={!graph} onClick={openGraph}><AppIcon name="workflow"/><span>{t('workflow')}</span></button>
    </header>
    <ErrorBanner message={error} onRetry={()=>{setError('');void loadGraph()}}/>
    {stream}

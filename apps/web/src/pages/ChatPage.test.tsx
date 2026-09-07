@@ -1,4 +1,4 @@
-import{cleanup,fireEvent,render,screen,waitFor}from'@testing-library/react';
+import{cleanup,fireEvent,render,screen,waitFor,within}from'@testing-library/react';
 import{afterEach,beforeEach,describe,expect,it,vi}from'vitest';
 import{I18nProvider}from'../lib/i18n';
 import{ChatPage}from'./ChatPage';
@@ -7,7 +7,7 @@ import{ApiError}from'../lib/api';
 const apiMock=vi.hoisted(()=>({
  workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),send:vi.fn(),chat:vi.fn(),
  chatStream:undefined as ReturnType<typeof vi.fn>|undefined,cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
- createWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
+ createWorkflow:vi.fn(),renameWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
 }));
 
 vi.mock('../lib/api',()=>({
@@ -30,12 +30,55 @@ beforeEach(()=>{
  apiMock.messageSnapshot.mockImplementation(async(w:string,i:string,scope:string)=>({messages:await apiMock.messages(w,i,scope),contentRevision:1}));apiMock.regenerate.mockResolvedValue({messages:[],contentRevision:2});apiMock.agentRuns.mockResolvedValue([]);apiMock.agentRun.mockResolvedValue({});apiMock.agentRunEvents.mockResolvedValue({runId:'',events:[],nextAfterSequence:null});
  apiMock.aiSettings.mockResolvedValue({configured:false,provider:'openai-compatible',baseUrl:null,model:null,timeoutSeconds:60,systemPrompt:'',hasApiKey:false,source:'none',persistence:'memory'});
  apiMock.chat.mockResolvedValue({userMessage:{id:'u1',role:'user',content:'测试消息'},assistantMessage:{id:'a1',role:'assistant',content:'助手回复'}});
+ apiMock.renameWorkflow.mockResolvedValue({workflowId:'wf-1',name:'新项目名称',graphRevision:1,eventRevision:1});
 });
 
 afterEach(()=>{cleanup();vi.clearAllMocks()});
 
 describe('chat delivery mode',()=>{
  it('opens model settings from the compact sidebar button without translating conversation titles',async()=>{apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});renderChat();expect(await screen.findByText('数据集构建')).toBeInTheDocument();expect(screen.queryByRole('button',{name:/继承的路线记忆/})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:/设置/}));expect(await screen.findByRole('heading',{name:'模型设置'})).toBeInTheDocument();expect(screen.getByText('数据集构建')).toBeInTheDocument()});
+ it('pins workflows locally and keeps pinned conversations first without changing their names',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  apiMock.workflows.mockResolvedValue([{id:'wf-1',name:'研究项目',activeInstanceId:'root'},{id:'wf-2',name:'第二项目',activeInstanceId:'other'}]);
+  renderChat();const nav=(await screen.findByRole('button',{name:'研究项目'})).closest('nav')!;
+  fireEvent.click(within(nav).getByRole('button',{name:'置顶: 第二项目'}));
+  await waitFor(()=>expect(within(nav).getAllByRole('button').filter(button=>button.textContent==='研究项目'||button.textContent==='第二项目').map(button=>button.textContent)).toEqual(['第二项目','研究项目']));
+  expect(localStorage.getItem('weavepath.pinned-workflows.v1')).toBe('["wf-2"]');
+  const pin=within(nav).getByRole('button',{name:'取消置顶: 第二项目'});expect(pin).toHaveAttribute('aria-pressed','true');
+ });
+ it('renames a workflow from the sidebar with graph revision protection and refreshes the current graph',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  apiMock.workflows.mockResolvedValueOnce([{id:'wf-1',name:'研究项目',activeInstanceId:'root'}]).mockResolvedValueOnce([{id:'wf-1',name:'新项目名称',activeInstanceId:'root'}]);
+  apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce({...graph,name:'新项目名称',graphRevision:1,eventRevision:1});
+  renderChat();await screen.findByRole('button',{name:'研究项目'});
+  fireEvent.click(screen.getByRole('button',{name:'重命名工作流: 研究项目'}));
+  fireEvent.change(screen.getByLabelText('重命名工作流: 研究项目'),{target:{value:'新项目名称'}});
+  fireEvent.click(screen.getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(apiMock.renameWorkflow).toHaveBeenCalledWith('wf-1','新项目名称',0));
+  expect(await screen.findByRole('button',{name:'新项目名称'})).toBeInTheDocument();
+  await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
+ });
+ it('does not replace the selected graph when a sidebar rename finishes after switching workflows',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  const graphTwo={...graph,workflowId:'wf-2',name:'第二项目',activeInstanceId:'other',nodes:[{id:'other',parentId:null,topicId:'topic-other',title:'第二项目节点',status:'active' as const}]};
+  let renamed=false,finishRename!:(value:unknown)=>void;
+  apiMock.workflows.mockImplementation(async()=>[
+   {id:'wf-1',name:renamed?'新项目名称':'研究项目',activeInstanceId:'root'},
+   {id:'wf-2',name:'第二项目',activeInstanceId:'other'},
+  ]);
+  apiMock.graph.mockImplementation(async(id:string)=>id==='wf-2'?graphTwo:graph);
+  apiMock.renameWorkflow.mockReturnValue(new Promise(resolve=>{finishRename=resolve}));
+  renderChat();await screen.findByRole('button',{name:'研究项目'});
+  fireEvent.click(screen.getByRole('button',{name:'重命名工作流: 研究项目'}));
+  fireEvent.change(screen.getByLabelText('重命名工作流: 研究项目'),{target:{value:'新项目名称'}});
+  fireEvent.click(screen.getByRole('button',{name:'保存'}));
+  fireEvent.click(screen.getByRole('button',{name:'第二项目'}));
+  expect(await screen.findByText('第二项目节点')).toBeInTheDocument();
+  renamed=true;finishRename({workflowId:'wf-1',name:'新项目名称',graphRevision:1,eventRevision:1});
+  expect(await screen.findByRole('button',{name:'新项目名称'})).toBeInTheDocument();
+  await waitFor(()=>expect(screen.getByText('第二项目节点')).toBeInTheDocument());
+  expect(apiMock.graph.mock.calls.map(([id])=>id)).toEqual(['wf-1','wf-2']);
+ });
  it('refreshes the workflow sidebar after a structural canvas change',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
   apiMock.workflows.mockResolvedValueOnce([{id:'wf-1',name:'研究项目',activeInstanceId:'root'}]).mockResolvedValueOnce([{id:'wf-1',name:'已重命名项目',activeInstanceId:'root'}]);
@@ -265,6 +308,20 @@ describe('chat delivery mode',()=>{
  it('hides the previous node snapshot before the next node finishes loading',async()=>{apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};let branchDone!:(x:unknown)=>void;apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValue(branch);apiMock.messageSnapshot.mockResolvedValueOnce({messages:[{id:'a',role:'user',content:'A 已加载消息'}],contentRevision:3}).mockReturnValueOnce(new Promise(resolve=>{branchDone=resolve}));renderChat();expect(await screen.findByText('A 已加载消息')).toBeInTheDocument();window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));expect(await screen.findByText('模块B')).toBeInTheDocument();expect(screen.queryByText('A 已加载消息')).not.toBeInTheDocument();branchDone({messages:[{id:'b',role:'user',content:'B 延迟消息'}],contentRevision:1});expect(await screen.findByText('B 延迟消息')).toBeInTheDocument()});
  it('uses a synchronous send lock to prevent duplicate submissions',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.chat.mockReturnValue(new Promise(()=>{}));renderChat();await screen.findByText(/AI 已配置/);const box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'只发送一次'}});const form=box.closest('form')!;fireEvent.submit(form);fireEvent.submit(form);expect(apiMock.chat).toHaveBeenCalledTimes(1);expect(apiMock.chat).toHaveBeenCalledWith('wf-1','root','只发送一次',expect.any(String))});
  it('keeps independent in-flight locks across an A to B to A switch sequence',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValueOnce(branch).mockResolvedValue(graph);apiMock.chat.mockReturnValue(new Promise(()=>{}));renderChat();await screen.findByText('数据集构建');let box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'A请求'}});fireEvent.submit(box.closest('form')!);window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));await screen.findByText('模块B');box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'B请求'}});fireEvent.submit(box.closest('form')!);window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));await screen.findByText('数据集构建');box=screen.getByRole('textbox');fireEvent.change(box,{target:{value:'A重复请求'}});fireEvent.submit(box.closest('form')!);expect(apiMock.chat).toHaveBeenCalledTimes(2);expect(apiMock.chat).toHaveBeenNthCalledWith(1,'wf-1','root','A请求',expect.any(String));expect(apiMock.chat).toHaveBeenNthCalledWith(2,'wf-1','branch','B请求',expect.any(String))});
+ it('renders last-message edit and copy actions as accessible icon-only buttons',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'u1',role:'user',content:'最近问题'}],contentRevision:1});
+  const writeText=vi.fn().mockResolvedValue(undefined);Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText}});
+  renderChat();expect(await screen.findByText('最近问题')).toBeInTheDocument();
+  const actions=screen.getByLabelText('消息操作');
+  const edit=screen.getByRole('button',{name:'编辑'}),copy=screen.getByRole('button',{name:'复制'});
+  expect(actions).toContainElement(edit);expect(actions).toContainElement(copy);
+  expect(edit).toHaveAttribute('title','编辑');expect(copy).toHaveAttribute('title','复制');
+  expect(edit).toHaveTextContent('');expect(copy).toHaveTextContent('');
+  expect(edit.querySelector('svg')).toHaveAttribute('aria-hidden','true');expect(copy.querySelector('svg')).toHaveAttribute('aria-hidden','true');
+  fireEvent.click(copy);await waitFor(()=>expect(copy).toHaveAttribute('aria-label','已复制'));
+  expect(copy).toHaveAttribute('title','已复制');expect(writeText).toHaveBeenCalledWith('最近问题');
+ });
  it('offers edit and copy only on the last local user message and regenerates once',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.messages.mockResolvedValue([{id:'u0',role:'user',content:'旧问题'},{id:'a0',role:'assistant',content:'旧回答'},{id:'u1',role:'user',content:'最近问题'}]);apiMock.messageSnapshot.mockImplementation(async()=>({messages:await apiMock.messages(),contentRevision:7}));let finish!:(x:unknown)=>void;apiMock.regenerate.mockReturnValue(new Promise(resolve=>{finish=resolve}));const writeText=vi.fn().mockResolvedValue(undefined);Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText}});renderChat();expect(await screen.findByText('最近问题')).toBeInTheDocument();expect(screen.getAllByRole('button',{name:'编辑'})).toHaveLength(1);fireEvent.click(screen.getByRole('button',{name:'复制'}));await waitFor(()=>expect(writeText).toHaveBeenCalledWith('最近问题'));fireEvent.click(screen.getByRole('button',{name:'编辑'}));const editor=screen.getByRole('textbox',{name:'编辑你的提问'});fireEvent.change(editor,{target:{value:'修改后的问题'}});const save=screen.getByRole('button',{name:'保存并重新生成'});fireEvent.click(save);fireEvent.click(save);expect(apiMock.regenerate).toHaveBeenCalledTimes(1);expect(apiMock.regenerate).toHaveBeenCalledWith('wf-1','root','u1','修改后的问题',7);expect(await screen.findByText('正在思考')).toBeInTheDocument();finish({messages:[{id:'u1',role:'user',content:'修改后的问题'},{id:'a1',role:'assistant',content:'**新回答**'}],contentRevision:9});expect(await screen.findByText('新回答')).toHaveProperty('tagName','STRONG');expect(screen.queryByText('正在思考')).not.toBeInTheDocument()});
  it('ignores a regenerate result after switching to another node',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});const branch={...graph,activeInstanceId:'branch',nodes:[...graph.nodes,{id:'branch',parentId:'root',topicId:'t2',title:'模块B',status:'active' as const}]};apiMock.graph.mockResolvedValueOnce(graph).mockResolvedValue(branch);apiMock.messageSnapshot.mockImplementation(async(_w:string,i:string)=>({messages:i==='root'?[{id:'u1',role:'user',content:'A问题'}]:[{id:'b1',role:'user',content:'B消息'}],contentRevision:1}));let finish!:(x:unknown)=>void;apiMock.regenerate.mockReturnValue(new Promise(resolve=>{finish=resolve}));renderChat();expect(await screen.findByText('A问题')).toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'编辑'}));fireEvent.change(screen.getByRole('textbox',{name:'编辑你的提问'}),{target:{value:'A修改'}});fireEvent.click(screen.getByRole('button',{name:'保存并重新生成'}));window.dispatchEvent(new MessageEvent('message',{data:{type:'conversation-workflow-changed'}}));expect(await screen.findByText('B消息')).toBeInTheDocument();finish({messages:[{id:'u1',role:'user',content:'A修改'}],contentRevision:2});await waitFor(()=>expect(screen.queryByText('A修改')).not.toBeInTheDocument());expect(screen.getByText('B消息')).toBeInTheDocument()});
  it('supports a numeric SQLite message id and keeps original content when regenerate fails',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.messageSnapshot.mockResolvedValue({messages:[{id:42,role:'user',content:'数字 ID 原问题'}],contentRevision:5});apiMock.regenerate.mockRejectedValue(new ApiError('conflict',409,'conflict'));renderChat();expect(await screen.findByText('数字 ID 原问题')).toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:'编辑'}));fireEvent.change(screen.getByRole('textbox',{name:'编辑你的提问'}),{target:{value:'不应本地写入'}});fireEvent.click(screen.getByRole('button',{name:'保存并重新生成'}));await waitFor(()=>expect(apiMock.regenerate).toHaveBeenCalledWith('wf-1','root',42,'不应本地写入',5));expect(screen.getByText('数字 ID 原问题')).toBeInTheDocument();expect(screen.queryByText('不应本地写入')).not.toBeInTheDocument();expect(screen.getByRole('alert')).toHaveTextContent('编辑期间对话已发生变化，请重新打开编辑后再试。')});

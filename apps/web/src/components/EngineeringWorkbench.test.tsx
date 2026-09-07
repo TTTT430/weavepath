@@ -20,7 +20,11 @@ describe('EngineeringWorkbench',()=>{
   fireEvent.click(screen.getByRole('button',{name:'开始对比'}));
   expect(await screen.findByText('结论 C')).toBeInTheDocument();
   expect(screen.getByText(/不会合并对话记录/)).toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText('接纳这条结论'));
+  const conclusion=screen.getByLabelText('接纳这条结论');
+  expect(conclusion.closest('label')).toHaveClass('conclusion-choice');
+  expect(conclusion.nextElementSibling).toHaveTextContent('接纳这条结论');
+  fireEvent.click(conclusion);
+  expect(conclusion.closest('label')).toHaveClass('is-selected');
   fireEvent.click(screen.getByRole('button',{name:'接纳所选知识'}));
   await waitFor(()=>expect(apiMock.mergeKnowledge).toHaveBeenCalledWith('wf',expect.objectContaining({targetInstanceId:'c',sourceInstanceIds:['c'],artifactIds:[],items:[expect.objectContaining({sourceInstanceId:'c',sourceRunId:'r1',content:'结论 C'})]})));
   expect(await screen.findByText(/已保存接纳知识/)).toBeInTheDocument();
@@ -32,5 +36,15 @@ describe('EngineeringWorkbench',()=>{
   fireEvent.change(screen.getByLabelText('内容'),{target:{value:'# result'}});
   fireEvent.click(screen.getByRole('button',{name:'保存新版本'}));
   await waitFor(()=>expect(apiMock.createArtifact).toHaveBeenCalledWith('wf',expect.objectContaining({name:'评估报告',content:'# result',kind:'report'})));
+ });
+
+ it('uses compact selectable branch chips in the experiment form',async()=>{
+  view();fireEvent.click(screen.getByRole('button',{name:/^实验$/}));
+  const branch=screen.getByLabelText('情感分析');
+  expect(branch.closest('label')).toHaveClass('branch-chip');
+  expect(branch.closest('label')).not.toHaveClass('is-selected');
+  fireEvent.click(branch);
+  expect(branch).toBeChecked();
+  expect(branch.closest('label')).toHaveClass('is-selected');
  });
 });

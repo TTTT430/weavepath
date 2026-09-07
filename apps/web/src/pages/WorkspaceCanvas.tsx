@@ -261,6 +261,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
   try{await api.renameWorkflow(graph.workflowId,name,graph.graphRevision);setRenamingWorkflow(false);setWorkflowNameDraft('');await load();notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId})}
   catch(caught){if(caught instanceof ApiError&&caught.status===409){await load();setError(t('renameConflict'))}else setError(caught instanceof Error?caught.message:String(caught))}finally{setBusy(false)}
  }
+ function beginWorkflowRename(){if(!graph||busy)return;setWorkflowNameDraft(graph.name);setRenamingWorkflow(true)}
 
  async function fork(input:{title:string;topicId?:string;initialMessage?:string}){
   if(!graph||!node)return;setBusy(true);setError('');
@@ -351,7 +352,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose}:Wor
 
  return <main className="workspace-canvas-page">
   <header className="canvas-header">
-   <nav className="canvas-breadcrumb" aria-label={t('workflowCanvas')}>{renamingWorkflow?<form onSubmit={event=>{event.preventDefault();void renameWorkflow()}}><input autoFocus aria-label={t('workflowName')} value={workflowNameDraft} maxLength={240} onChange={event=>setWorkflowNameDraft(event.target.value)}/><button type="button" onClick={()=>setRenamingWorkflow(false)}>{t('cancel')}</button><button className="primary" disabled={busy||!workflowNameDraft.trim()}>{t('save')}</button></form>:<><button type="button" className={layer.kind==='workflow'?'current':''} onClick={backToWorkflow}>{graph.name}</button><button type="button" className="breadcrumb-edit" aria-label={t('renameWorkflow')} onClick={()=>{setWorkflowNameDraft(graph.name);setRenamingWorkflow(true)}}>{t('rename')}</button></>}{layer.kind==='turn'&&<><span aria-hidden="true">›</span><strong>{node?.title||layer.instanceId}</strong></>}</nav>
+   <nav className="canvas-breadcrumb" aria-label={t('workflowCanvas')}>{renamingWorkflow?<form onSubmit={event=>{event.preventDefault();void renameWorkflow()}}><input autoFocus aria-label={t('workflowName')} value={workflowNameDraft} maxLength={240} onChange={event=>setWorkflowNameDraft(event.target.value)} onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();setRenamingWorkflow(false);setWorkflowNameDraft('')}}}/><button type="button" onClick={()=>{setRenamingWorkflow(false);setWorkflowNameDraft('')}}>{t('cancel')}</button><button className="primary" disabled={busy||!workflowNameDraft.trim()}>{t('save')}</button></form>:<button type="button" className={`workflow-title ${layer.kind==='workflow'?'current':''}`} title={t('renameWorkflow')} onClick={backToWorkflow} onDoubleClick={beginWorkflowRename} onKeyDown={event=>{if(event.key==='F2'){event.preventDefault();beginWorkflowRename()}}}>{graph.name}</button>}{layer.kind==='turn'&&<><span aria-hidden="true">›</span><strong>{node?.title||layer.instanceId}</strong></>}</nav>
    <p>{layer.kind==='workflow'?t('openTurnCanvas'):t('canvasLocalOnly')}</p>
    <LanguageSelect/>{onClose&&<button type="button" onClick={onClose}>{t('close')}</button>}
   </header>

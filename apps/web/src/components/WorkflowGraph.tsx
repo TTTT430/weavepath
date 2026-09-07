@@ -4,6 +4,7 @@ import'@xyflow/react/dist/style.css';
 import type{Graph,Instance}from'../domain/types';
 import{graphEdges,memoryPath}from'../domain/graph';
 import type{CanvasPosition}from'../lib/canvasState';
+import{AppIcon}from'./AppIcon';
 
 interface ConversationData extends Record<string,unknown>{
  instance:Instance
@@ -48,13 +49,13 @@ export function ConversationCard({data,selected=false}:{data:ConversationData;se
  const node=data.instance,subtitle=nodeSubtitle(node),branchLabel=data.branchLabel||'New branch',openCanvasLabel=data.openCanvasLabel||'Canvas',detailsLabel=data.detailsLabel||'Details',emptySummaryLabel=data.emptySummaryLabel||'Continue this conversation or create a branch.',events=useClickArbitration(()=>data.onSelect(node.id),()=>data.onOpenCanvas(node.id));
  return <div className={`flow-node ${data.active?'is-active':''} ${node.status==='pruned'?'is-pruned':''} ${selected?'is-selected':''}`} data-instance-id={node.id} {...events}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
-  {data.hasChildren&&<button type="button" className="node-collapse" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${node.title}`} onClick={event=>{event.preventDefault();event.stopPropagation();data.onToggleCollapse(node.id)}}>{data.collapsed?'＋':'−'}</button>}
-  {data.onBranch&&node.status!=='pruned'&&<button type="button" className="node-branch-action" aria-label={`${branchLabel}: ${node.title}`} title={branchLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onBranch?.(node.id)}}>＋</button>}
+  {data.hasChildren&&<button type="button" className="node-collapse icon-button" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${node.title}`} title={data.collapsed?data.expandLabel:data.collapseLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onToggleCollapse(node.id)}}><AppIcon name={data.collapsed?'plus':'minus'}/></button>}
+  {data.onBranch&&node.status!=='pruned'&&<button type="button" className="node-branch-action icon-button" aria-label={`${branchLabel}: ${node.title}`} title={branchLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onBranch?.(node.id)}}><AppIcon name="plus"/></button>}
   <header className="flow-node-head"><i aria-hidden="true"/><strong>{node.title}</strong>{data.active&&<b aria-hidden="true"/>}</header>
   <p className={`flow-node-summary ${subtitle?'':'is-empty'}`}>{subtitle||emptySummaryLabel}</p>
   <footer className="flow-node-footer">
-   <button type="button" onClick={event=>{event.stopPropagation();data.onSelect(node.id)}}>◎ {detailsLabel}</button>
-   <button type="button" onClick={event=>{event.stopPropagation();data.onOpenCanvas(node.id)}}>▦ {openCanvasLabel}</button>
+   <button type="button" onClick={event=>{event.stopPropagation();data.onSelect(node.id)}}><AppIcon name="details"/><span>{detailsLabel}</span></button>
+   <button type="button" onClick={event=>{event.stopPropagation();data.onOpenCanvas(node.id)}}><AppIcon name="canvas"/><span>{openCanvasLabel}</span></button>
   </footer>
  </div>;
 }
@@ -104,7 +105,7 @@ export function WorkflowGraph({graph,selectedId,collapsedNodeIds=[],nodePosition
  },[focusRequest,instance,nodes]);
  return <ReactFlow<ConversationFlowNode> className="synapse-flow" nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.2,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable nodesConnectable={false} deleteKeyCode={null} elementsSelectable={false} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)} {...wrapperEvents}>
   <Background color="var(--canvas-grid-dot)" gap={20} size={1}/>{shouldShowMiniMap(nodes.length)&&<MiniMap/>}<Controls/>
-  <Panel position="top-right" className="canvas-tools"><button type="button" onClick={locate} disabled={!nodes.length} aria-label={resolvedLabels.locate}>◎</button><button type="button" onClick={fit} disabled={!nodes.length} aria-label={resolvedLabels.fit}>↔</button></Panel>
+  <Panel position="top-right" className="canvas-tools"><button type="button" className="icon-button" onClick={locate} disabled={!nodes.length} aria-label={resolvedLabels.locate} title={resolvedLabels.locate}><AppIcon name="locate"/></button><button type="button" className="icon-button" onClick={fit} disabled={!nodes.length} aria-label={resolvedLabels.fit} title={resolvedLabels.fit}><AppIcon name="fit"/></button></Panel>
  </ReactFlow>;
 }
 

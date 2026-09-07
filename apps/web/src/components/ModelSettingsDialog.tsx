@@ -3,6 +3,7 @@ import type{AISettingsInput}from'../domain/types';
 import{api,ApiError}from'../lib/api';
 import{useI18n,type Locale}from'../lib/i18n';
 import{AppearanceSelect}from'./AppearanceSelect';
+import{AppIcon}from'./AppIcon';
 import'../settings.css';
 
 const presets={
@@ -35,7 +36,7 @@ export function ModelSettingsDialog({onClose,onSaved}:{onClose:()=>void;onSaved:
  async function save(){setBusy(true);setNotice('');try{await api.saveAISettings(body());await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
  async function reset(){setBusy(true);try{await api.resetAISettings();try{localStorage.removeItem(DRAFT_KEY);sessionStorage.removeItem(SESSION_SECRET_KEY)}catch{/* Ignore storage failures. */}await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e));setBusy(false)}}
  return <div className="modal-backdrop settings-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)onClose()}}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="model-settings-title">
-  <header className="settings-modal-header"><h2 id="model-settings-title">{t('modelSettings')}</h2><button className="settings-close" type="button" aria-label={t('close')} onClick={onClose}>×</button></header>
+  <header className="settings-modal-header"><h2 id="model-settings-title">{t('modelSettings')}</h2><button className="settings-close icon-button" type="button" aria-label={t('close')} title={t('close')} onClick={onClose}><AppIcon name="close"/></button></header>
   <div className="settings-modal-body">
    <div className="settings-form-grid">
     <label>{t('language')}<select value={locale} onChange={e=>setLocale(e.target.value as Locale)}><option value="zh-CN">中文</option><option value="en">English</option></select></label><AppearanceSelect/>

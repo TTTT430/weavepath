@@ -504,7 +504,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .composer { padding: 9px 10px; background: #f8fbfc; border-color: #c8d7dc; border-radius: 16px; box-shadow: 6px 7px 18px #8da0aa24, -5px -5px 14px #fff; }
 .composer:focus-within { border-color: #72aeb1; box-shadow: 0 0 0 3px #7db7ba24, 6px 7px 18px #8da0aa20; }
 .inherited-memory { width: min(var(--chat-content-width),100%); margin: 0 auto 12px; padding: 6px; background: #eef4f6; border: 1px solid #d2dee2; border-radius: 14px; box-shadow: 4px 4px 12px #8da0aa18, -3px -3px 9px #fff; }
-.inherited-memory > button { display: flex; width: 100%; padding: 7px 9px; color: #315e62; text-align: left; background: transparent; border: 0; border-radius: 10px; box-shadow: none; }
+.inherited-memory > button { display: flex; width: 100%; align-items: center; gap: 5px; padding: 7px 9px; color: #315e62; text-align: left; background: transparent; border: 0; border-radius: 10px; box-shadow: none; }
 .inherited-memory > button:hover { background: #e3eeee; }
 .inherited-memory > button:focus-visible { outline: 2px solid #247d83; outline-offset: 2px; }
 .inherited-memory-body { padding: 2px 8px 5px; color: #53686e; font-size: .88rem; }
@@ -1353,6 +1353,304 @@ html .artifact-list button,
 html .node-checks label,
 html .artifact-choice { color: var(--ui-text); background: var(--ui-input); border-color: var(--ui-border-strong); }
 html .artifact-list button.current { color: var(--ui-accent); background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 36%,var(--ui-border)); }
+
+/* Compact action language --------------------------------------------------
+   Text remains on primary decisions. Repeated micro-actions use one SVG
+   language, a predictable hit area, and tooltips/accessibility names. */
+html .app-icon,
+html .message-action-icon {
+  display: block;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+html button.icon-button,
+html button.message-action-button,
+html button.workflow-sidebar-icon {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  line-height: 1;
+}
+html .workspace-view-tabs button,
+html .sidebar-controls button,
+html .workflow-launch,
+html .composer button,
+html .canvas-breadcrumb form button,
+html .inspector-actions button,
+html .modal-actions button {
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* Conversation list: the row owns selection; pin/rename appear on hover or
+   keyboard focus without changing the row width. */
+html .workflow-sidebar-item {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 36px;
+  grid-template-columns: minmax(0,1fr) auto;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 7px;
+}
+html .workflow-sidebar-item:hover,
+html .workflow-sidebar-item:focus-within {
+  background: var(--ui-panel);
+}
+html .workflow-sidebar-item.current {
+  background: var(--ui-accent-soft);
+  border-color: color-mix(in srgb,var(--ui-accent) 20%,transparent);
+}
+html .sidebar nav .workflow-sidebar-select,
+html .sidebar nav .workflow-sidebar-select:hover,
+html .workflow-sidebar-item.current .workflow-sidebar-select {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  overflow: hidden;
+  padding: 7px 8px;
+  color: var(--ui-muted);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+html .workflow-sidebar-item:hover .workflow-sidebar-select,
+html .workflow-sidebar-item:focus-within .workflow-sidebar-select { color: var(--ui-text); }
+html .workflow-sidebar-item.current .workflow-sidebar-select { color: var(--ui-accent); }
+html .workflow-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-right: 3px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(4px);
+  transition: opacity .14s ease,transform .14s ease;
+}
+html .workflow-sidebar-item:hover .workflow-sidebar-actions,
+html .workflow-sidebar-item:focus-within .workflow-sidebar-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+html .sidebar nav button.workflow-sidebar-icon {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: var(--ui-subtle);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+html .sidebar nav button.workflow-sidebar-icon:hover,
+html .sidebar nav button.workflow-sidebar-icon:focus-visible {
+  color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+}
+html .workflow-sidebar-icon[aria-pressed="true"] { color: var(--ui-accent); }
+html .workflow-sidebar-icon[aria-pressed="true"] .app-icon { fill: currentColor; }
+html .workflow-sidebar-rename {
+  display: grid;
+  min-width: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0,1fr) auto auto;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+}
+html .workflow-sidebar-rename input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 5px 7px;
+  color: var(--ui-text);
+  background: var(--ui-input);
+  border: 1px solid var(--ui-accent);
+  border-radius: 6px;
+}
+
+/* Message edit/copy actions stay subordinate to the message content. */
+html .message-actions { gap: 3px; }
+html .message.actionable:hover .message-actions,
+html .message.actionable:focus-within .message-actions { max-height: 32px; margin-top: 5px; }
+html .message-actions button.message-action-button {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: var(--ui-subtle);
+  background: transparent;
+  border-color: transparent;
+  border-radius: 6px;
+}
+html .message-actions button.message-action-button:hover,
+html .message-actions button.message-action-button:focus-visible {
+  color: var(--ui-accent);
+  background: var(--ui-panel-muted);
+  border-color: var(--ui-border);
+}
+html .message-actions button.message-action-button.is-copied { color: var(--ui-success); }
+
+/* Keep adjacent actions at one visual rhythm, while preserving the stronger
+   primary/destructive colors that communicate consequence. */
+html .inspector-actions button,
+html .modal-actions button,
+html .settings-modal .modal-actions button,
+html .agent-run-actions button {
+  min-height: 36px;
+  padding: 7px 12px;
+  border-radius: 8px;
+}
+html .new-workflow,
+html .settings-button,
+html .workflow-launch,
+html .agent-run-launch,
+html .flow-node-footer button,
+html .turn-node-footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+html .flow-node-footer button,
+html .turn-node-footer button { gap: 4px; }
+html .modal-heading button.icon-button,
+html .agent-runs > header button.icon-button,
+html button.settings-close.icon-button {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  flex: 0 0 32px;
+  border-radius: 7px;
+}
+
+/* Engineering Lab controls -------------------------------------------------
+   Checkboxes must keep their intrinsic size: the shared form input rule is
+   intentionally full width, but applying that width to a checkbox separates
+   its caption across the entire card. */
+html .engineering-header button,
+html .engineering-control > button,
+html .merge-bar > button,
+html .engineering-section form > button {
+  min-height: 36px;
+  padding: 7px 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  border-radius: 8px;
+}
+html .engineering-header nav button { min-width: 82px; min-height: 32px; padding: 5px 12px; }
+html .engineering-section input[type="checkbox"] {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  min-width: 15px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--ui-accent);
+  cursor: pointer;
+}
+html .node-checks { align-items: center; gap: 7px; min-width: 0; }
+html .node-checks .branch-chip,
+html .engineering-section form .node-checks .branch-chip {
+  display: inline-flex;
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 7px 10px;
+  color: var(--ui-muted);
+  line-height: 1.15;
+  white-space: nowrap;
+  background: var(--ui-panel-muted);
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+html .node-checks .branch-chip:hover,
+html .engineering-section form .node-checks .branch-chip:hover {
+  color: var(--ui-text);
+  background: var(--ui-panel-raised);
+  border-color: var(--ui-border-strong);
+}
+html .node-checks .branch-chip.is-selected,
+html .engineering-section form .node-checks .branch-chip.is-selected {
+  color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+  border-color: color-mix(in srgb,var(--ui-accent) 52%,var(--ui-border));
+}
+html .node-checks .branch-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html .comparison-result .conclusion-choice {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 7px 10px;
+  color: var(--ui-success);
+  line-height: 1.2;
+  background: var(--ui-success-soft);
+  border: 1px solid color-mix(in srgb,var(--ui-success) 38%,var(--ui-border));
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+html .comparison-result .conclusion-choice:hover,
+html .comparison-result .conclusion-choice.is-selected {
+  background: color-mix(in srgb,var(--ui-success-soft) 72%,var(--ui-panel-raised));
+  border-color: color-mix(in srgb,var(--ui-success) 62%,var(--ui-border));
+}
+html .comparison-result .conclusion-choice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html .artifact-choice {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 7px 10px;
+  line-height: 1.2;
+  cursor: pointer;
+  user-select: none;
+}
+html .artifact-choice.is-selected {
+  color: var(--ui-accent);
+  background: var(--ui-accent-soft);
+  border-color: color-mix(in srgb,var(--ui-accent) 48%,var(--ui-border));
+}
+html .artifact-choice span,
+html .engineering-section fieldset label span { min-width: 0; overflow-wrap: anywhere; }
+html .engineering-section fieldset { padding: 9px 10px 10px; }
+html .engineering-section fieldset legend { padding: 0 5px; color: var(--ui-muted); }
+html .engineering-section fieldset label {
+  min-height: 30px;
+  margin: 0;
+  padding: 5px 7px;
+  color: var(--ui-muted);
+  background: var(--ui-panel-muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
 
 /* All modal surfaces use the same appearance tokens. */
 html .modal-backdrop { background: rgba(17,24,39,.48); backdrop-filter: blur(3px); }

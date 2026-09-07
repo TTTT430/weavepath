@@ -10,6 +10,7 @@ import type {AIStatus,AgentRun,AgentRunEvent,Graph,Instance} from '../domain/typ
 import {memoryPath} from '../domain/graph';
 import {api,ApiError} from '../lib/api';
 import {useI18n} from '../lib/i18n';
+import {AppIcon} from './AppIcon';
 
 const EVENT_PAGE_SIZE=100;
 const DEFAULT_TOOL={name:'safe_calculator',version:'1.0.0'};
@@ -277,11 +278,11 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
  const tools=selected?.availableTools?.length?selected.availableTools:[DEFAULT_TOOL];
 
  return <div className="agent-run-entry">
-  <button ref={launchRef} className="agent-run-launch" disabled={!graph||!active||createPending} onClick={openBrief}>▶ {createPending?t('waitingForRun'):t('runWithAgent')}</button>
+  <button ref={launchRef} className="agent-run-launch" disabled={!graph||!active||createPending} onClick={openBrief}><AppIcon name="play"/><span>{createPending?t('waitingForRun'):t('runWithAgent')}</span></button>
   <button ref={countRef} className="agent-run-count" disabled={!graph||!active} onClick={()=>setPanelOwner(key)}>{t('runs')} {runs.length}</button>
   {briefOpen&&<div className="modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)closeBrief()}}>
    <section className="modal agent-brief" role="dialog" aria-modal="true" aria-labelledby="agent-brief-title" aria-describedby="agent-brief-provenance" onKeyDown={event=>dialogKeys(event,closeBrief)}>
-    <header className="modal-heading"><h2 id="agent-brief-title">{t('executionBrief')}</h2><button type="button" aria-label={t('close')} onClick={closeBrief}>×</button></header>
+    <header className="modal-heading"><h2 id="agent-brief-title">{t('executionBrief')}</h2><button type="button" className="icon-button" aria-label={t('close')} title={t('close')} onClick={closeBrief}><AppIcon name="close"/></button></header>
     <small>{t('concreteRoute')}</small>
     <div className="route-chips">{route.map(node=><span key={node.id} title={node.id}>{node.title}</span>)}</div>
     <dl id="agent-brief-provenance" className="run-provenance">
@@ -303,7 +304,7 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
   </div>}
   {panelOpen&&<div className="modal-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)closePanel()}}>
    <section className="modal agent-runs" role="dialog" aria-modal="true" aria-labelledby="agent-runs-title" onKeyDown={event=>dialogKeys(event,closePanel)}>
-    <header><h2 id="agent-runs-title">{t('runs')}</h2><button type="button" onClick={()=>graph&&active&&void loadRunsFor(graph.workflowId,active.id,key)} disabled={listLoading}>{t('refresh')}</button><button type="button" aria-label={t('close')} autoFocus onClick={closePanel}>×</button></header>
+    <header><h2 id="agent-runs-title">{t('runs')}</h2><button type="button" onClick={()=>graph&&active&&void loadRunsFor(graph.workflowId,active.id,key)} disabled={listLoading}>{t('refresh')}</button><button type="button" className="icon-button" aria-label={t('close')} title={t('close')} autoFocus onClick={closePanel}><AppIcon name="close"/></button></header>
     {error&&<p className="agent-error" role="alert">{error}</p>}
     <div className="agent-runs-layout">
      <div className="run-list">{!runs.length&&!listLoading&&<p>{t('noRuns')}</p>}{runs.map(run=><button type="button" key={run.runId} className={String(selected?.runId)===String(run.runId)?'current':''} onClick={()=>void inspect(run,key)}><strong>{run.objective}</strong><span className={`run-status ${run.status}`}>{status(run)}</span><small>{t('revision')}: {run.inputContentRevision}</small>{run.errorCode&&<em>{t('errorCode')}: {run.errorCode}</em>}</button>)}</div>

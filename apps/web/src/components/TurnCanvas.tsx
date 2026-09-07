@@ -2,6 +2,7 @@ import{useEffect,useMemo,useState}from'react';
 import{Background,Controls,Handle,MiniMap,Panel,Position,ReactFlow,useNodesState,type Node,type NodeProps,type ReactFlowInstance,type Viewport}from'@xyflow/react';
 import type{ConversationTurn,Message,TurnCanvasSnapshot}from'../domain/types';
 import type{CanvasPosition}from'../lib/canvasState';
+import{AppIcon}from'./AppIcon';
 
 interface CanvasTurn extends ConversationTurn{isRoutePlaceholder?:boolean}
 interface TurnData extends Record<string,unknown>{
@@ -29,12 +30,12 @@ function TurnCard({data,selected=false}:{data:TurnData;selected?:boolean}){
  const placeholder=!!turn.isRoutePlaceholder,routeId=turn.routeInstanceId||'';
  return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''} ${placeholder?'is-route-placeholder':''}`} onClick={event=>{event.stopPropagation();if(event.detail<2)data.onSelect(turn.id,routeId)}} title={data.detailsLabel}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
-  <button type="button" className="turn-collapse" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}>{data.collapsed?'＋':'−'}</button>
-  {!placeholder&&data.onBranch&&<button type="button" className="turn-branch" aria-label={`${data.branchLabel}: ${turn.sequence}`} title={data.branchLabel} onClick={event=>{event.stopPropagation();data.onBranch?.(turn)}}>＋</button>}
+  <button type="button" className="turn-collapse icon-button" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} title={data.collapsed?data.expandLabel:data.collapseLabel} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}><AppIcon name={data.collapsed?'plus':'minus'}/></button>
+  {!placeholder&&data.onBranch&&<button type="button" className="turn-branch icon-button" aria-label={`${data.branchLabel}: ${turn.sequence}`} title={data.branchLabel} onClick={event=>{event.stopPropagation();data.onBranch?.(turn)}}><AppIcon name="plus"/></button>}
   <header><strong>{placeholder?(turn.routeTitle||data.turnLabel):`${data.turnLabel} ${turn.sequence}`}</strong>{!placeholder&&turn.routeTitle&&<small className="turn-route-title">{turn.routeTitle}</small>}<span className={`turn-status ${turn.status}`}>{data.statusLabels[turn.status]||turn.status}</span></header>
   <p className="turn-user">{excerpt(turn.userMessage.content)}</p>
   {!data.collapsed&&<div className="turn-responses"><small>{data.responseLabel}: {turn.responses.length}</small>{turn.responses.map(message=><p key={message.id} className={`turn-response ${message.role}`}><small>{data.roleLabels[message.role]||message.role}</small>{excerpt(message.content)}</p>)}</div>}
-  <footer className="turn-node-footer"><button type="button" onClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId)}}>◎ {data.detailsLabel}</button></footer>
+  <footer className="turn-node-footer"><button type="button" onClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId)}}><AppIcon name="details"/><span>{data.detailsLabel}</span></button></footer>
  </article>;
 }
 
@@ -88,7 +89,7 @@ export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPosi
   {!nodes.length&&<p className="turn-canvas-empty">{labels.empty}</p>}
   <ReactFlow<TurnFlowNode> className="synapse-flow" nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView={!initialViewport} fitViewOptions={{padding:.2,maxZoom:1}} defaultViewport={initialViewport} minZoom={.25} maxZoom={1.5} nodesDraggable elementsSelectable={false} nodesConnectable={false} deleteKeyCode={null} onlyRenderVisibleElements onNodesChange={onNodesChange} onNodeDragStop={(_event,node)=>onNodePositionChange?.(node.id,node.position)} onInit={setInstance} onMoveEnd={(_event,viewport)=>onViewportChange?.(viewport)}>
    <Background color="var(--canvas-grid-dot)" gap={20} size={1}/>{nodes.length>=8&&<MiniMap/>}<Controls/>
-   <Panel position="top-right" className="canvas-tools"><button type="button" onClick={locate} disabled={!nodes.length} aria-label={labels.locate}>◎</button><button type="button" onClick={fit} disabled={!nodes.length} aria-label={labels.fit}>↔</button></Panel>
+   <Panel position="top-right" className="canvas-tools"><button type="button" className="icon-button" onClick={locate} disabled={!nodes.length} aria-label={labels.locate} title={labels.locate}><AppIcon name="locate"/></button><button type="button" className="icon-button" onClick={fit} disabled={!nodes.length} aria-label={labels.fit} title={labels.fit}><AppIcon name="fit"/></button></Panel>
   </ReactFlow>
  </div>;
 }
