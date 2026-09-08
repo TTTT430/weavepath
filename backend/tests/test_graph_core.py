@@ -49,6 +49,40 @@ def test_fork_initial_message_is_child_local_and_bumps_content_revision(store: G
     assert [(item["content"], item["inherited"]) for item in messages] == [("branch work", False)]
 
 
+def test_workflow_node_summary_tracks_latest_local_exchange(store: GraphStore):
+    wf = create(store)
+    store.append_message(wf, "A", role="user", content="## 设计数据集\n需要覆盖中文情感分类。")
+    pending = next(node for node in store.get_graph(wf)["nodes"] if node["id"] == "A")
+    assert pending["summary"] == "设计数据集 需要覆盖中文情感分类。"
+
+    store.append_message(
+        wf, "A", role="assistant",
+        content="**建议**先定义正面、中性和负面三类，再制定标注规范。",
+    )
+    answered = next(node for node in store.get_graph(wf)["nodes"] if node["id"] == "A")
+    assert answered["summary"] == (
+        "设计数据集 需要覆盖中文情感分类。 — 建议先定义正面、中性和负面三类，再制定标注规范。"
+    )
+
+
+def test_workflow_node_summary_is_local_and_keeps_siblings_isolated(store: GraphStore):
+    wf = create(store)
+    store.append_message(wf, "A", role="user", content="shared parent context")
+    store.fork(wf, "A", title="B", topic_id="B", instance_id="B")
+    store.fork(wf, "A", title="E", topic_id="E", instance_id="E")
+    store.append_message(wf, "B", role="user", content="private branch B question")
+    store.append_message(wf, "B", role="assistant", content="private branch B answer")
+    store.append_message(wf, "E", role="user", content="private branch E question")
+
+    summaries = {node["id"]: node["summary"] for node in store.get_graph(wf)["nodes"]}
+    assert summaries == {
+        "A": "shared parent context",
+        "B": "private branch B question — private branch B answer",
+        "E": "private branch E question",
+    }
+    assert "branch B" not in summaries["E"]
+
+
 def test_fork_generates_human_titles_when_title_is_omitted(store: GraphStore):
     wf = create(store)
     first = store.fork(wf, "A", instance_id="B")

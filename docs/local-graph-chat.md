@@ -90,7 +90,7 @@ A
 
 1. 工作流按钮在当前 WorkspaceShell 内切换到 Workflow surface，不发送聊天消息，不丢失草稿、消息滚动或正在进行的请求。**Verified local preview。**
 2. D 的 route chooser 同时显示 `A-B-C-D` 与 `A-E-D`；单击选择并激活具体实例，双击在激活后进入该实例的 Turn Canvas。普通 Chat 必须跟随相同路线。**Verified local preview。**
-3. B 中写入 `B_ONLY` 后，D2 的 context、inspect 和摘要均不得出现它。**消息路线隔离已验证；摘要系统尚未实现。**
+3. B 中写入 `B_ONLY` 后，D2 的 context、inspect 和节点概览均不得出现它。**消息路线隔离与第一层节点的 local-only extractive overview 已验证；后台语义摘要仍是后续能力。**
 4. E 中写入 `E_ONLY` 后，D1 不得出现它。**消息路线隔离已验证。**
 5. fork 后父节点继续聊天，已创建子节点会动态看到父路线最新消息；创建时 checkpoint 快照仍保留用于审计。**后端测试已验证。**
 6. 单击或双击 D2 只发送一次 activate；成功后画布与 Chat 都指向 D2，输入框原内容不变。“继续对话”只切回 Chat，不重复激活。失败时重新读取后端实际 active route 并保留错误。**Verified local preview。**

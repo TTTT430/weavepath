@@ -1357,11 +1357,42 @@ html .flow-node-summary {
 }
 html .flow-node-summary.is-empty { color: var(--ui-subtle); font-style: italic; }
 html .flow-node-footer,
-html .turn-node-footer { display: flex; align-items: center; gap: 3px; padding: 8px 11px; border-top: 1px solid var(--ui-border); }
+html .turn-node-footer {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--ui-border);
+}
 html .flow-node-footer button,
-html .turn-node-footer button { min-height: 25px; padding: 3px 7px; color: var(--ui-muted); font-size: 10px; background: transparent; border-color: transparent; border-radius: 5px; }
+html .turn-node-footer button {
+  min-height: 28px;
+  padding: 4px 8px;
+  color: var(--ui-muted);
+  font-size: 10px;
+  line-height: 1;
+  background: transparent;
+  border-color: transparent;
+  border-radius: 6px;
+}
+/* The legacy generic `.flow-node span` rule adds a top margin and truncation
+   to every span in a card. Footer labels are controls, not card excerpts. */
+html .flow-node-footer button > span,
+html .turn-node-footer button > span {
+  display: block;
+  max-width: none;
+  margin: 0;
+  overflow: visible;
+  line-height: 1;
+  text-overflow: clip;
+  white-space: nowrap;
+}
 html .flow-node-footer button:hover,
 html .turn-node-footer button:hover { color: var(--ui-accent); background: var(--ui-accent-soft); }
+html .flow-node-footer button:focus-visible,
+html .turn-node-footer button:focus-visible { color: var(--ui-accent); outline: 2px solid color-mix(in srgb,var(--ui-accent) 46%,transparent); outline-offset: 1px; }
 html .node-drag-handle { position: absolute; top: -11px; left: 50%; z-index: 3; width: 28px; height: 14px; color: var(--ui-subtle); font-size: 10px; line-height: 9px; text-align: center; background: var(--canvas-card); border: 1px solid var(--canvas-card-border); border-radius: 7px; transform: translateX(-50%); }
 html .flow-node .node-drag-handle { display: block; max-width: none; margin: 0; overflow: visible; white-space: nowrap; }
 html .node-collapse,

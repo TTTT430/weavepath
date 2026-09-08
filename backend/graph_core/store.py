@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import sqlite3
 import threading
 import uuid
@@ -53,6 +54,18 @@ def _prompt_branch_title(initial_message: str | None) -> str | None:
     if not summary:
         return None
     return summary if len(summary) <= 48 else summary[:47].rstrip() + "…"
+
+
+def _summary_excerpt(content: str, limit: int) -> str:
+    """Turn message content into a compact, readable canvas-card excerpt."""
+    value = re.sub(r"```(?:[^\n]*)\n?", " ", content)
+    value = re.sub(r"!?\[([^\]]+)\]\([^)]*\)", r"\1", value)
+    value = re.sub(r"(?m)^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s*", "", value)
+    value = re.sub(r"[*_~`]", "", value)
+    value = " ".join(value.split()).strip()
+    if len(value) <= limit:
+        return value
+    return value[: max(1, limit - 1)].rstrip(" ,，。;；:：-") + "…"
 
 
 class GraphStore:
@@ -174,10 +187,51 @@ class GraphStore:
             "surfaceScope": row["surface_scope"], "ownerInstanceId": row["owner_instance_id"],
             "titleGenerated": bool(row["title_is_generated"]),
             "contentRevision": row["content_revision"],
+            "summary": self._conversation_summary(cx, workflow_id, row["id"]),
             "memoryRoute": self._route_ids(cx, workflow_id, row["id"]),
             "checkpointAnchor": self._checkpoint_anchor(cx, row),
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
         }
+
+    def _conversation_summary(self, cx: sqlite3.Connection, workflow_id: str,
+                              instance_id: str) -> str:
+        """Summarize the latest local exchange without leaking another route.
+
+        This intentionally reads only ``local_messages`` owned by the concrete
+        workflow node. Parent messages belong to the memory route, but using
+        them here would make child cards repeat the same text and could make a
+        sibling's overview misleading. The summary is extractive so opening the
+        canvas never triggers an extra model request.
+        """
+        rows = cx.execute(
+            "SELECT id,role,content FROM local_messages "
+            "WHERE workflow_id=? AND instance_id=? AND role IN ('user','assistant') "
+            "ORDER BY id DESC LIMIT 24",
+            (workflow_id, instance_id),
+        ).fetchall()
+        if not rows:
+            return ""
+        latest_user = next((message for message in rows if message["role"] == "user"), None)
+        if latest_user is None:
+            latest_assistant = next(
+                (message for message in rows if message["role"] == "assistant"), None
+            )
+            return _summary_excerpt(latest_assistant["content"], 190) if latest_assistant else ""
+
+        user_excerpt = _summary_excerpt(latest_user["content"], 76)
+        latest_answer = next(
+            (message for message in rows
+             if message["role"] == "assistant" and message["id"] > latest_user["id"]),
+            None,
+        )
+        if not latest_answer:
+            return _summary_excerpt(latest_user["content"], 190)
+        answer_excerpt = _summary_excerpt(latest_answer["content"], 110)
+        if not user_excerpt:
+            return answer_excerpt
+        if not answer_excerpt:
+            return user_excerpt
+        return f"{user_excerpt} — {answer_excerpt}"
 
     def _checkpoint_anchor(self, cx: sqlite3.Connection,
                            instance: sqlite3.Row) -> dict[str, Any] | None:
