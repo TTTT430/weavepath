@@ -145,9 +145,37 @@ CREATE TABLE IF NOT EXISTS chat_requests(
 CREATE INDEX IF NOT EXISTS idx_chat_requests_status ON chat_requests(status,updated_at);
 """
 
+# Runtime v2 remains an additive preview and deliberately does not advance the
+# conversation-graph schema version.  These tables/columns belong to the Agent
+# Runtime journal, not to the graph contract consumed by host adapters.
+V9_RUNTIME = """
+CREATE TABLE IF NOT EXISTS run_approvals(
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    tool_call_id TEXT NOT NULL UNIQUE REFERENCES tool_calls(id) ON DELETE CASCADE,
+    side_effect TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected')),
+    created_at TEXT NOT NULL,
+    decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_run_approvals_run ON run_approvals(run_id,created_at);
+
+CREATE TABLE IF NOT EXISTS model_step_usage(
+    step_id TEXT PRIMARY KEY REFERENCES run_steps(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+    usage_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_step_usage_run ON model_step_usage(run_id,created_at);
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS runtime_schema_migrations("
+        "version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)"
+    )
     applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
     if 1 not in applied:
         conn.executescript(V1)
@@ -265,4 +293,39 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     # graph schema contract (currently v7). Create it for both fresh and
     # already-migrated databases without advancing the graph schema version.
     conn.executescript(V8)
+    runtime_applied = {
+        row[0] for row in conn.execute("SELECT version FROM runtime_schema_migrations")
+    }
+    if 1 not in runtime_applied:
+        run_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)")}
+        if "root_run_id" not in run_columns:
+            conn.execute("ALTER TABLE agent_runs ADD COLUMN root_run_id TEXT")
+        if "parent_run_id" not in run_columns:
+            conn.execute("ALTER TABLE agent_runs ADD COLUMN parent_run_id TEXT")
+        if "attempt_number" not in run_columns:
+            conn.execute("ALTER TABLE agent_runs ADD COLUMN attempt_number INTEGER NOT NULL DEFAULT 1")
+        tool_columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+        if "provider_call_id" not in tool_columns:
+            conn.execute("ALTER TABLE tool_calls ADD COLUMN provider_call_id TEXT")
+        conn.executescript(V9_RUNTIME)
+        conn.execute(
+            "UPDATE agent_runs SET root_run_id=id WHERE root_run_id IS NULL OR root_run_id=''"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_root "
+            "ON agent_runs(root_run_id,attempt_number)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_parent ON agent_runs(parent_run_id)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_calls_provider "
+            "ON tool_calls(run_id,provider_call_id) WHERE provider_call_id IS NOT NULL"
+        )
+        # The marker is deliberately last so an interrupted/partial migration
+        # safely reruns all idempotent checks on the next startup.
+        conn.execute(
+            "INSERT INTO runtime_schema_migrations(version,applied_at) VALUES(1,?)",
+            (_now(),),
+        )
     conn.commit()

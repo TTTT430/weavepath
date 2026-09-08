@@ -11,9 +11,11 @@ EVENT_SCHEMA_VERSION = 1
 EVENT_TYPES = frozenset({
     "message.started", "message.delta", "message.completed", "message.failed", "message.cancelled",
     "run.created", "run.started", "run.completed", "run.failed", "run.interrupted",
+    "run.cancel_requested", "run.cancelled", "run.retry_created", "run.resumed",
     "context.frozen", "model.started", "model.completed", "model.failed",
     "tool.requested", "tool.started", "tool.completed", "tool.failed",
-    "approval.required",
+    "tool.cancelled", "tool.interrupted",
+    "approval.required", "approval.approved", "approval.rejected",
 })
 
 

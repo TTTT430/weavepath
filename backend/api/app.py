@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from agent_runtime import (AgentModelPort, AgentRunError, AgentRunRepository, AgentRuntimeService,
-                           OpenAICompatibleAgentAdapter, calculator_registry)
+                           OpenAICompatibleAgentAdapter, runtime_registry)
 from api.llm import LLMClient, LLMUnavailable, OpenAICompatibleLLM
 from api.model_settings import RuntimeModelSettings
 from engineering import EngineeringRepository
@@ -282,6 +282,22 @@ class CreateAgentRunInput(CamelModel):
         return value.strip()
 
 
+class RetryAgentRunInput(CamelModel):
+    idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
+    expected_content_revision: int | None = Field(None, alias="expectedContentRevision", ge=0)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def retry_key_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("idempotencyKey must not be blank")
+        return value.strip() if value is not None else None
+
+
+class AgentApprovalDecisionInput(CamelModel):
+    decision: Literal["approved", "rejected"]
+
+
 class ModelSettingsInput(CamelModel):
     base_url: str = Field(alias="baseUrl", min_length=1, max_length=2048)
     model: str = Field(min_length=1, max_length=200)
@@ -429,7 +445,9 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 agent_model = OpenAICompatibleAgentAdapter(lambda: llm)
             elif hasattr(llm, "_client"):
                 agent_model = OpenAICompatibleAgentAdapter(llm._client)
-        run_service = (AgentRuntimeService(graph_store, run_repository, agent_model, calculator_registry(),
+        workspace_root = os.getenv("WEAVEPATH_WORKSPACE_ROOT")
+        run_service = (AgentRuntimeService(graph_store, run_repository, agent_model,
+                                           runtime_registry(workspace_root),
                                            engineering=engineering)
                        if agent_model is not None else None)
     except BaseException:
@@ -459,6 +477,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     app.state.store = graph_store
     app.state.model_settings = settings
     app.state.agent_runs = run_repository
+    app.state.agent_runtime = run_service
     app.state.engineering = engineering
     app.state.host_adapter = host_adapter
     # Fast same-process cancellation state; durable request identity/results
@@ -819,6 +838,30 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def get_agent_run_events(run_id: str, after_sequence: int = Query(0, alias="afterSequence", ge=0),
                              limit: int = Query(100, ge=1, le=500)):
         return run_repository.events(run_id, after_sequence, limit)
+
+    @app.post(prefix + "/runs/{run_id}/cancel")
+    def cancel_agent_run(run_id: str):
+        if run_service is not None:
+            return run_service.cancel(run_id)
+        return run_repository.request_cancel(run_id)
+
+    @app.post(prefix + "/runs/{run_id}/retry", status_code=201)
+    def retry_agent_run(run_id: str, body: RetryAgentRunInput):
+        if run_service is None:
+            raise LLMUnavailable("AI provider is not configured")
+        return run_service.retry(run_id, body.model_dump(by_alias=True, exclude_none=True))
+
+    @app.post(prefix + "/runs/{run_id}/approvals/{approval_id}/decision")
+    def decide_agent_approval(run_id: str, approval_id: str,
+                              body: AgentApprovalDecisionInput):
+        if run_service is not None:
+            return run_service.decide_approval(run_id, approval_id, body.decision)
+        # Rejecting remains safe without an executor; approving must never
+        # transition a durable run to ``running`` when no service can consume
+        # the approved tool call.
+        if body.decision == "rejected":
+            return run_repository.decide_approval(run_id, approval_id, body.decision)
+        raise LLMUnavailable("AI provider is not configured")
 
     @app.get(prefix + "/workflows/{workflow_id}/artifacts")
     def list_artifacts(workflow_id: str):

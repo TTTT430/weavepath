@@ -1,6 +1,6 @@
 # 开发状态
 
-更新日期：2026-09-07
+更新日期：2026-09-08
 
 ## 状态定义
 
@@ -21,15 +21,15 @@
 | `backend/pyproject.toml` | Done | 声明 Python 3.12、FastAPI、Uvicorn 和测试依赖 |
 | `backend/graph_core/` | In progress | 已验证 SQLite GraphStore、动态 parent 路线记忆（checkpoint 创建快照用于审计）、同 topic 多实例、leaf-first prune、实例级 `contentRevision`、workflow `eventRevision`、schema v1→v7 前向迁移、checkpoint cursor、空内部路线投影、系统/用户标题来源和从具体用户 turn 创建分支；仍未拆稳定 repository/ports，也没有自动 rollback/downgrade |
 | `backend/api/` | In progress | health/SQLite schema version 为 7；核心 `/api/v1`、OpenAI-compatible Local Chat（JSON 与 SSE 流式）、取消请求、聊天幂等、模型设置、Route-to-Agent Run preview、Engineering Lab preview、`GET .../turns`/`turn-tree`、可省略 prompt 的内部 `fork-chat` 和 revision-safe rename 已完成自动化验证；graph snapshot 与 legacy manifest 协议仍为 schema v1，尚无 WebSocket、认证/多租户边界和完整 application service 分层 |
-| `backend/tests/` | In progress | graph/API、路线隔离、AI 设置、Agent Runtime、工程记录、工具安全、turn cursor、空分支/自动命名/手动重命名和 v1→v7 migration 已纳入套件；2026-09-07 当前完整后端套件为 113 项通过 |
-| `apps/web/` | In progress | React chat/model settings、可读 Agent 执行时间线、原生 `WorkspaceShell`、可操作双层画布和 Engineering Lab 已实现；前端统一套件、typecheck/production build、既有主路径 E2E 与实验室只读浏览器验收已建立，实验室写入路径、真实窄屏和失败 Run 浏览器路径仍待补验 |
+| `backend/tests/` | In progress | graph/API、路线隔离、AI 设置、Agent Runtime、工程记录、工具安全、turn cursor、空分支/自动命名/手动重命名和 v1→v7 migration 已纳入套件；2026-09-08 当前完整后端套件为 141 项通过 |
+| `apps/web/` | In progress | React chat/model settings、可读 Agent 执行时间线、审批/取消/重试与缓存 usage、原生 `WorkspaceShell`、可操作双层画布和 Engineering Lab 已实现；前端 123 项测试、typecheck/production build 和既有主路径 E2E 已建立，Runtime v2 新路径的真实 provider 浏览器 E2E、实验室写入路径和真实窄屏仍待补验 |
 | WorkspaceShell / 双层画布 | Verified local preview | 默认入口为同页“对话 / 工作流”；顶层只显示 `surface_scope=workflow` 的对话，选择节点即同步 Chat 的具体路线，双击还会钻入已激活 owner 的内部 Turn Tree。两层使用统一的 Synapse 式卡片、连线和 inspector；卡片 `＋` 可直接创建并激活对应 scope 的子分支，空 turn 路线立即显示。第二层 route selection/composer 与 Chat 共用消息真源，内部路线不会进入第一层；“继续对话”只返回已经同步的 Chat。边界见 ADR-0004 |
 | `scripts/dev.ps1` | Done for current slice | 从仓库根目录启动 API:8000 和 Web:5173，可用 `-WebPort` 覆盖 Web 端口 |
 | `scripts/check.ps1` | Done for current slice | 统一执行后端测试/compileall 与前端测试/build |
 | Local Graph Chat | Verified local preview | create/message/branch/route isolation/i18n、草稿保持、本地记录/动态继承记忆分离、Markdown、原生工作流切换、画布选择与 Chat 路线同步、可操作 Turn Canvas、卡片快捷空分支、自动/手动标题、精确 turn 分支并回答、SSE 流式输出、停止生成、失败回答重试和聊天请求幂等已完成自动化验证；正式 HostAdapter 和完整 Phase 1 退出条件仍未完成 |
 | Surface sync | Done for current slice | 同页 selection 激活后通过 `WorkspaceShell` 的直接 callback/signal 驱动 Chat 重读权威 route，避免快速切页依赖浏览器广播；Chat 与 Turn Canvas 的请求 lifecycle 以及可选 `/graph` 兼容入口继续使用按 workflow、route 和 `requestId` 隔离的 `BroadcastChannel + window.opener.postMessage` 提示。这些提示只触发重新读取，SQLite/local snapshot 才是真源；它不是 WebSocket、跨设备同步或持久化的进行中 UI 状态恢复 |
 | Local AI Chat | In progress | 已实现网页/环境变量配置、模型发现、连接验证、OpenAI-compatible JSON/SSE 回复、逐 token 草稿、停止生成、失败回答独立重试、请求幂等、编辑最近提问并原子重新生成、思考/内联错误状态、稳定错误码和当前路线消息写回；API key 仅进程内存；仍无凭据库或 metabolize |
-| Route-to-Agent Run v1 | Verified local preview | 已验证 execution brief、具体路线 frozen context、durable event journal、`safe_calculator` / `1.0.0`、生产 OpenAI-compatible adapter、测试专用 `ScriptedMockAgentAdapter`、idempotency/revision/interrupted recovery，以及 Web run dialog/timeline；仅限本机单进程/单 worker 的同步窄切片，不代表 Phase 2 完成 |
+| Agent Runtime v2 P0 | Done for current slice | cache-aware 请求按 policy/tools/live route/accepted knowledge/current request 装配；checkpoint 仅审计，动态父记忆和兄弟隔离已验证。逐 model step 记录 OpenAI/DeepSeek cache usage，缺失时保持不可用；加入持久化取消、重试 lineage、审批、patch Artifact 及显式根目录只读工具。仍是本机单进程同步 preview，不代表 Phase 2 完成 |
 | Engineering Lab v1 | Done for current slice | schema v5 已加入不读取 transcript 的 2–4 分支对比、显式知识/Artifact 合并、路线作用域接纳知识、版本化 Artifact/数据集和实验快照；schema v6 加入双层路线分类，当前 schema v7 继续沿用这些表并增加标题来源；自动 evaluator/scorer、参数矩阵、Artifact diff/外部文件引用仍未实现 |
 | Route Memory / metabolize | Planned | Phase 3 |
 | `conversation-workflow-bridge-v4` | Legacy frozen | 当前最完整的 Codex 原型；不再承载新的全局业务状态 |
@@ -51,7 +51,7 @@
 
 1. 为 schema v7 前向 migration runner 补齐升级矩阵、失败恢复、备份和 rollback/downgrade 发布策略。
 2. 建立正式 Standalone HostAdapter、Host MockAdapter 和 adapter contract test，覆盖 `can_read_local_turns`、精确 cursor fork 与导航降级；测试专用 `ScriptedMockAgentAdapter` 不替代 HostAdapter。
-3. 扩展 Tool/Failure/Approval Timeline，并为宿主注入上下文、归档事件和 transcript projector 增加 typed classifier。
+3. 为宿主注入上下文、归档事件和 transcript projector 增加 typed classifier；Runtime v2 的 Tool/Failure/Approval 自动化时间线已完成，真实浏览器故障/审批路径仍需补验。
 4. 评估多进程/跨设备场景后再引入 WebSocket；可选同源 `/graph` 兼容窗口继续使用 browser events。
 5. 人工确认并删除旧的 `backend/workflow.db` 测试产物。
 
@@ -68,17 +68,17 @@
 
 该验证仅覆盖本机单用户 Standalone slice；正式 Codex/Claude HostAdapter、failure/approval 完整事件投影、跨设备同步、真实窄屏和生产部署不在本次范围内。
 
-## Route-to-Agent Run v1 验证记录
+## Route-to-Agent Run v1 与 Runtime v2 P0 验证记录
 
 2026-09-07 的 **Verified local preview** 记录如下：
 
-- 当前 Python 3.12 统一后端套件 113 项通过，其中覆盖 run create/read/events/metrics、frozen context、event sequence、重启恢复、工具安全、adapter contract、idempotency 与 revision；
+- 当前 Python 3.12 统一后端套件 141 项通过，其中覆盖 run create/read/events/metrics、cache-aware route context、event sequence、重启恢复、工具安全、adapter contract、idempotency 与 revision；
 - 当前前端 Vitest 统一套件覆盖 brief、可读执行时间线、重复提交保护、失败 Run 恢复、事件分页、工程实验室和路线切换竞态；
 - Python compileall、TypeScript typecheck 与 production build 通过；仍有非阻塞 chunk-size 警告；
 - 真实浏览器使用受控 OpenAI-compatible 假上游完成 `数据集 → 情感分析` 路线的模型→`safe_calculator`→timeline→最终回答闭环；兄弟路线 canary 未进入请求；
 - 浏览器 E2E 验证的是桌面视口成功路径；失败 Run 目前有组件测试，真实窄屏响应式行为也尚未完成浏览器验收。
 
-逐项证据和剩余局限见 [Route-to-Agent Run v1](route-to-agent-run-v1.md)。本机验证仍不包含 SSE/cancel、任意 shell/文件/网络工具、自动 evaluator/scorer、参数矩阵、多 Agent 或正式 Codex/Claude adapter；当前也没有生产级认证、多租户授权和公网部署保证。
+逐项证据和剩余局限见 [Route-to-Agent Run v1](route-to-agent-run-v1.md) 与 [Runtime v2 P0](runtime-v2-p0.md)。Local Chat SSE/cancel 和 Runtime v2 的审批/取消/重试已实现；本机验证仍不包含任意 shell、写文件、网络工具、自动 evaluator/scorer、参数矩阵、多 Agent 或正式 Codex/Claude adapter，当前也没有生产级认证、多租户授权和公网部署保证。
 # 本轮实现（跳过 Evaluation）
 
 - Chat 幂等请求已从进程内缓存升级为 SQLite `chat_requests` 辅助表，支持重启恢复、失败/取消重试、结果重放和用户消息去重。

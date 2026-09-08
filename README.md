@@ -18,17 +18,19 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 - `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
 - 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
 
-当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，双击节点进入该对话内部的 Turn Tree。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 113 项通过，并完成 compileall；前端仍由统一测试、typecheck 和 production build 验证。`/graph` 只保留为兼容入口。
+当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，双击节点进入该对话内部的 Turn Tree。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 141 项通过，并完成 compileall；前端 123 项测试、typecheck 和 production build 通过。`/graph` 只保留为兼容入口。
 
 第一版 OpenAI-compatible AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。聊天请求已支持 SSE 逐 token 输出、停止生成、失败回答独立重试和幂等键；只有完整回答才写入 assistant 消息。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
 
-### Route-to-Agent Run v1（本机预览已验证）
+### Agent Runtime v2 P0（本机自动化预览）
 
-仓库已完成第一个从具体对话路线启动 Agent Run 的窄纵向切片本机验证。该能力定位为 **Verified local synchronous durable preview**：用户确认 execution brief 后，系统从一个具体实例冻结路线上下文，记录持久化 event journal，并通过已配置的 OpenAI-compatible provider 调用唯一注册工具 `safe_calculator` / `1.0.0`；界面提供 run dialog 和 timeline。`ScriptedMockAgentAdapter` 只用于确定性测试，不是用户可选择的生产 provider。
+仓库已在 Route-to-Agent Run v1 的基础上完成 Runtime v2 的本轮 P0：用户确认 execution brief 后，运行时按 `System Policy → 稳定排序 Tools → 当前 A→B→C 路线消息 → accepted knowledge → 当前请求` 装配模型输入。路线消息每次启动运行时都从父链动态读取，checkpoint 只保留审计快照；因此 C 会读取最新 A-B-C，而 A-B-C 与 A-B-E 只共享 A-B，兄弟内容不会串线。模型输入通过白名单投影排除 run ID、时间戳、幂等键和 UI 状态。应用不自建 KV cache，只为供应商 prompt cache 保持确定性前缀，并逐 model step 记录 OpenAI/DeepSeek 实际返回的 cached token；供应商未报告时界面明确显示“不可用”。
+
+Runtime v2 还加入持久化取消、重试 lineage、`awaiting_approval` 审批状态和安全工具边界。`safe_calculator` 无副作用；`propose_patch` 必须经用户批准，批准后只生成可审查的版本化 Artifact，不修改工作区文件；`read_file` 与 `workspace_search` 仅在显式配置 `WEAVEPATH_WORKSPACE_ROOT` 时开放。界面可查看审批、事件、Artifact、缓存复用率与数据覆盖率。完整合同、限制和测试路径见 [Runtime v2 P0](docs/runtime-v2-p0.md) 与 [Prompt cache / KV cache 策略](docs/prompt-cache-observability.md)。
 
 该 preview 当前是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。官方 app factory 已用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；跨进程 run owner/lease 仍属于后续运行时硬化范围。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
 
-2026-09-07 的当前统一本机验证基线包括 113 项后端测试、Python compileall，以及前端统一测试、TypeScript/production build 和双层画布/Route-to-Agent Run/Engineering Lab 浏览器验收。其中 Route-to-Agent Run 路径使用受控 OpenAI-compatible 上游完成 `safe_calculator` 工具调用并返回最终消息，兄弟路线 canary 未进入模型请求。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，schema v7 为自动分支标题增加持久化来源标记；这些都不代表完整 Evaluation 或 Artifact 阶段已经完成。证据与逐项矩阵见 [Route-to-Agent Run v1](docs/route-to-agent-run-v1.md)。Local Chat 的 SSE/取消/回答重试已完成；任意 shell/文件/网络工具、自动 evaluator/scorer、多 Agent，以及正式 Codex/Claude adapter 仍未包含。
+2026-09-08 的当前统一本机自动化基线包括 141 项后端测试、Python compileall、123 项前端测试、TypeScript typecheck 和 production build；既有双层画布/Route-to-Agent Run/Engineering Lab 浏览器验收仍保留。Runtime v2 P0 新增的审批、取消、重试、cache-aware context 和 usage 可观测性目前完成自动化验证，尚未宣称完成新的真实供应商浏览器 E2E。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，schema v7 为自动分支标题增加持久化来源标记；Runtime 表使用独立 migration marker，不改变 graph schema v7。Local Chat 的 SSE/取消/回答重试已完成；任意 shell、写文件、网络工具、自动 evaluator/scorer、多 Agent、跨进程 run lease，以及正式 Codex/Claude adapter 仍未包含。
 
 Chat 与 Turn Canvas 的跨 surface 生命周期同步仅用于本机 Web 界面的即时反馈：`BroadcastChannel`（兼容窗口另加同源 `postMessage`）携带按 workflow、route 和 `requestId` 隔离的刷新提示，接收方仍会重新读取当前路线的 SQLite/local snapshot。事件本身不是数据真源，也不保存 transcript；刷新页面后不保证恢复此前的“正在思考”等界面瞬时状态。该机制不是 WebSocket、跨进程消息总线或跨设备同步；持久化的聊天请求记录只承担幂等、重试和结果重放，不应被解释为完整的前端生命周期恢复。
 

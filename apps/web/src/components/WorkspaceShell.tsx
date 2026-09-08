@@ -35,7 +35,7 @@ export function WorkspaceShell(){
     <WorkspaceCanvas workflowId={workflowId} visible={view==='workflow'} onContinue={()=>setView('chat')} onConversationActivated={conversationActivated}/>
    </div>
    <div className={`workspace-surface lab-surface ${view==='lab'?'is-active':''}`} aria-hidden={view!=='lab'}>
-    <EngineeringWorkbench workflowId={workflowId} graph={graph} visible={view==='lab'}/>
+    <EngineeringWorkbench workflowId={workflowId} graph={graph} visible={view==='lab'} onKnowledgeChanged={instanceId=>conversationActivated({workflowId,instanceId})}/>
    </div>
   </section>
  </main>;

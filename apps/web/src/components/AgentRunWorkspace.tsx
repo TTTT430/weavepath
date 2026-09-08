@@ -6,17 +6,50 @@ import {
  type KeyboardEvent,
  type RefObject,
 } from 'react';
-import type {AIStatus,AgentRun,AgentRunEvent,Graph,Instance} from '../domain/types';
+import type {AgentApprovalRequest,AIStatus,AgentRun,AgentRunEvent,Graph,Instance} from '../domain/types';
 import {memoryPath} from '../domain/graph';
 import {api,ApiError} from '../lib/api';
 import {useI18n} from '../lib/i18n';
 import {AppIcon} from './AppIcon';
 
 const EVENT_PAGE_SIZE=100;
-const DEFAULT_TOOL={name:'safe_calculator',version:'1.0.0'};
 const lines=(value:string)=>value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
 const show=(value:unknown)=>typeof value==='string'?value:JSON.stringify(value,null,2);
 const runKey=(owner:string,runId:string|number)=>`${owner}:${runId}`;
+const ACTIVE_RUN_STATUSES=new Set<AgentRun['status']>(['queued','running','awaiting_approval','cancelling']);
+const CANCELLABLE_RUN_STATUSES=new Set<AgentRun['status']>(['queued','running','awaiting_approval']);
+const RETRYABLE_RUN_STATUSES=new Set<AgentRun['status']>(['failed','cancelled','interrupted']);
+
+function record(value:unknown):Record<string,unknown>{return value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{}}
+function textField(value:Record<string,unknown>,...keys:string[]){for(const key of keys){const item=value[key];if(typeof item==='string'&&item.trim())return item}return''}
+function eventTool(event:AgentRunEvent){const payload=record(event.payload);return textField(payload,'toolName','tool','name')}
+function eventArtifact(event:AgentRunEvent){const payload=record(event.payload),nested=record(payload.artifact);return{text:textField(payload,'artifactName','name')||textField(nested,'name'),kind:textField(payload,'kind','mimeType')||textField(nested,'kind','mimeType'),diff:textField(payload,'diff','patch','unifiedDiff')||textField(nested,'diff','patch','unifiedDiff')}}
+function percent(value:number){const normalized=value<=1?value*100:value;return `${Math.max(0,Math.min(100,normalized)).toFixed(normalized>0&&normalized<1?1:0)}%`}
+
+function eventApprovals(events:AgentRunEvent[]):AgentApprovalRequest[]{
+ const approvals=new Map<string,AgentApprovalRequest>();
+ for(const event of events){
+  if(!event.type.startsWith('approval.'))continue;
+  const payload=record(event.payload),nested=record(payload.approval);
+  const approvalId=textField(payload,'approvalId','id')||textField(nested,'approvalId','id');
+  if(!approvalId)continue;
+  const existing=approvals.get(approvalId);
+  const status=event.type==='approval.approved'?'approved':event.type==='approval.rejected'?'rejected':'pending';
+  approvals.set(approvalId,{
+   approvalId,
+   runId:(payload.runId??nested.runId??existing?.runId)as string|number|undefined,
+   toolCallId:textField(payload,'toolCallId')||textField(nested,'toolCallId')||existing?.toolCallId,
+   toolName:textField(payload,'toolName','tool')||textField(nested,'toolName','tool')||existing?.toolName||'—',
+   toolVersion:textField(payload,'toolVersion','version')||textField(nested,'toolVersion','version')||existing?.toolVersion,
+   arguments:payload.arguments??nested.arguments??existing?.arguments,
+   sideEffect:(payload.sideEffect??nested.sideEffect??existing?.sideEffect)as boolean|string|undefined,
+   status,
+   createdAt:textField(payload,'createdAt')||textField(nested,'createdAt')||existing?.createdAt,
+   decidedAt:textField(payload,'decidedAt')||textField(nested,'decidedAt')||existing?.decidedAt,
+  });
+ }
+ return[...approvals.values()];
+}
 
 interface RunCompletionTarget {workflowId:string;instanceId:string;inputContentRevision:number}
 interface Props {
@@ -79,11 +112,14 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
  const[eventState,setEventState]=useState<OwnedEvents>({owner:'',runId:null,items:[],cursor:0,hasMore:false,loading:false});
  const[routeError,setRouteError]=useState({owner:'',message:''});
  const[artifactBusy,setArtifactBusy]=useState(false),[savedArtifacts,setSavedArtifacts]=useState<Set<string>>(()=>new Set());
+ const[runAction,setRunAction]=useState('');
  const[listLoadingOwner,setListLoadingOwner]=useState('');
  const[pendingOwners,setPendingOwners]=useState<Set<string>>(()=>new Set());
  const loadGenerations=useRef<Map<string,number>>(new Map()),detailSeq=useRef(0),currentKeyRef=useRef('');
  const createLocks=useRef<Set<string>>(new Set()),eventLocks=useRef<Set<string>>(new Set());
  const idempotency=useRef<Map<string,{signature:string;key:string}>>(new Map());
+ const retryIdempotency=useRef<Map<string,string>>(new Map());
+ const completionNotified=useRef(new Set<string>()).current;
  const launchRef=useRef<HTMLButtonElement>(null),countRef=useRef<HTMLButtonElement>(null);
  const key=graph&&active?`${graph.workflowId}:${active.id}`:'';
  currentKeyRef.current=key;
@@ -133,6 +169,36 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
   if(graph&&active&&key)void loadRunsFor(graph.workflowId,active.id,key);
  },[key]);
 
+ useEffect(()=>{
+  if(!panelOpen||!selected||!ACTIVE_RUN_STATUSES.has(selected.status))return;
+  const owner=key,runId=selected.runId,lock=runKey(owner,runId);
+  let disposed=false;
+  const poll=window.setInterval(async()=>{
+   if(disposed||currentKeyRef.current!==owner||eventLocks.current.has(lock))return;
+   eventLocks.current.add(lock);
+   try{
+    const detail=await api.agentRun(runId);
+    if(disposed||currentKeyRef.current!==owner)return;
+    replaceSelected(owner,detail);
+    const page=await api.agentRunEvents(runId,eventState.cursor,EVENT_PAGE_SIZE);
+    if(disposed||currentKeyRef.current!==owner)return;
+    const cursor=page.nextAfterSequence??page.events.at(-1)?.sequence??eventState.cursor;
+    setEventState(current=>current.owner===owner&&String(current.runId)===String(runId)?{
+     ...current,
+     items:[...current.items,...page.events.filter(item=>!current.items.some(old=>old.sequence===item.sequence))],
+     cursor,
+     hasMore:page.events.length===EVENT_PAGE_SIZE&&cursor>current.cursor,
+    }:current);
+    if(detail.status==='completed'&&!completionNotified.has(lock)){
+     completionNotified.add(lock);
+     await onRunCompleted?.({workflowId:detail.workflowId,instanceId:detail.instanceId,inputContentRevision:detail.inputContentRevision});
+    }
+   }catch{/* A transient polling failure should not replace the persisted run state. */}
+   finally{eventLocks.current.delete(lock)}
+  },1500);
+  return()=>{disposed=true;window.clearInterval(poll)};
+ },[panelOpen,key,selected?.runId,selected?.status,eventState.cursor,onRunCompleted]);
+
  function openBrief(){
   setObjective(active?.title||'');
   setConstraints('');
@@ -150,8 +216,16 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
   if(currentKeyRef.current!==owner)return;
   setRunState(current=>{
    const items=current.owner===owner?current.items:[];
-   return{owner,items:items.some(item=>String(item.runId)===String(run.runId))?items:[run,...items]};
+   const index=items.findIndex(item=>String(item.runId)===String(run.runId));
+   if(index<0)return{owner,items:[run,...items]};
+   const next=[...items];next[index]=run;return{owner,items:next};
   });
+ }
+
+ function replaceSelected(owner:string,run:AgentRun){
+  if(currentKeyRef.current!==owner)return;
+  addRun(owner,run);
+  setSelectedState(current=>current.owner===owner&&String(current.run?.runId)===String(run.runId)?{owner,run}:current);
  }
 
  function creationError(error:unknown){
@@ -268,14 +342,61 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
   finally{setArtifactBusy(false)}
  }
 
+ async function cancelRun(){
+  if(!selected||runAction)return;
+  const owner=key,action=`cancel:${selected.runId}`;
+  setRunAction(action);setErrorFor(owner,'');
+  try{
+   const updated=await api.cancelAgentRun(selected.runId);
+   replaceSelected(owner,updated);
+   if(currentKeyRef.current===owner)await inspect(updated,owner);
+  }catch(caught){setErrorFor(owner,caught instanceof ApiError&&caught.code?`${t('runActionFailed')} ${t('errorCode')}: ${caught.code}`:t('runActionFailed'))}
+  finally{setRunAction('')}
+ }
+
+ async function retryRun(){
+  if(!selected||runAction)return;
+  const owner=key,sourceId=String(selected.runId),action=`retry:${sourceId}`;
+  const idempotencyKey=retryIdempotency.current.get(sourceId)||crypto.randomUUID();
+  retryIdempotency.current.set(sourceId,idempotencyKey);
+  setRunAction(action);setErrorFor(owner,'');
+  try{
+   const retried=await api.retryAgentRun(selected.runId,{idempotencyKey,expectedContentRevision:contentRevision});
+   retryIdempotency.current.delete(sourceId);
+   addRun(owner,retried);
+   if(retried.status==='completed')await onRunCompleted?.({workflowId:retried.workflowId,instanceId:retried.instanceId,inputContentRevision:retried.inputContentRevision});
+   if(currentKeyRef.current===owner)await inspect(retried,owner);
+  }catch(caught){setErrorFor(owner,caught instanceof ApiError&&caught.code?`${t('runActionFailed')} ${t('errorCode')}: ${caught.code}`:t('runActionFailed'))}
+  finally{setRunAction('')}
+ }
+
+ async function decideApproval(approval:AgentApprovalRequest,decision:'approved'|'rejected'){
+  if(!selected||approval.status!=='pending'||runAction)return;
+  const owner=key,action=`approval:${approval.approvalId}:${decision}`;
+  setRunAction(action);setErrorFor(owner,'');
+  try{
+   const updated=await api.decideAgentApproval(selected.runId,approval.approvalId,decision);
+   replaceSelected(owner,updated);
+   if(currentKeyRef.current===owner)await inspect(updated,owner);
+  }catch(caught){setErrorFor(owner,caught instanceof ApiError&&caught.code?`${t('runActionFailed')} ${t('errorCode')}: ${caught.code}`:t('runActionFailed'))}
+  finally{setRunAction('')}
+ }
+
  const eventName=(type:string)=>({
-  'run.created':locale==='zh-CN'?'运行已创建':'Run created','context.frozen':locale==='zh-CN'?'上下文已冻结':'Context frozen','run.started':locale==='zh-CN'?'开始执行':'Execution started','model.started':locale==='zh-CN'?'模型开始思考':'Model started','model.completed':locale==='zh-CN'?'模型步骤完成':'Model step completed','model.failed':locale==='zh-CN'?'模型步骤失败':'Model step failed','tool.requested':locale==='zh-CN'?'请求工具':'Tool requested','tool.started':locale==='zh-CN'?'工具开始执行':'Tool started','tool.completed':locale==='zh-CN'?'工具完成':'Tool completed','tool.failed':locale==='zh-CN'?'工具失败':'Tool failed','run.completed':locale==='zh-CN'?'运行完成':'Run completed','run.failed':locale==='zh-CN'?'运行失败':'Run failed','run.interrupted':locale==='zh-CN'?'运行中断':'Run interrupted'
+  'run.created':locale==='zh-CN'?'运行已创建':'Run created','context.frozen':locale==='zh-CN'?'上下文已冻结':'Context frozen','run.started':locale==='zh-CN'?'开始执行':'Execution started','run.cancel_requested':locale==='zh-CN'?'已请求取消':'Cancellation requested','run.cancelled':locale==='zh-CN'?'运行已取消':'Run cancelled','run.retry_created':locale==='zh-CN'?'已创建重试':'Retry created','run.resumed':locale==='zh-CN'?'恢复执行':'Execution resumed','model.started':locale==='zh-CN'?'模型开始思考':'Model started','model.completed':locale==='zh-CN'?'模型步骤完成':'Model step completed','model.failed':locale==='zh-CN'?'模型步骤失败':'Model step failed','tool.requested':locale==='zh-CN'?'请求工具':'Tool requested','tool.started':locale==='zh-CN'?'工具开始执行':'Tool started','tool.completed':locale==='zh-CN'?'工具完成':'Tool completed','tool.failed':locale==='zh-CN'?'工具失败':'Tool failed','tool.cancelled':locale==='zh-CN'?'工具已取消':'Tool cancelled','tool.interrupted':locale==='zh-CN'?'工具执行中断':'Tool interrupted','approval.required':locale==='zh-CN'?'等待工具批准':'Tool approval requested','approval.approved':locale==='zh-CN'?'工具调用已批准':'Tool call approved','approval.rejected':locale==='zh-CN'?'工具调用已拒绝':'Tool call rejected','run.completed':locale==='zh-CN'?'运行完成':'Run completed','run.failed':locale==='zh-CN'?'运行失败':'Run failed','run.interrupted':locale==='zh-CN'?'运行中断':'Run interrupted'
  }as Record<string,string>)[type]||type;
  const eventIcon=(type:string)=>type.startsWith('tool.')?'⌁':type.startsWith('model.')?'✦':type.includes('failed')?'!':type.includes('completed')?'✓':'•';
  const duration=(value:number|null|undefined)=>value==null?'—':value<1000?`${value} ms`:`${(value/1000).toFixed(2)} s`;
 
- const status=(run:AgentRun)=>t(({queued:'runQueued',running:'runRunning',completed:'runCompleted',failed:'runFailed',interrupted:'runInterrupted'}as const)[run.status]||'runFailed');
- const tools=selected?.availableTools?.length?selected.availableTools:[DEFAULT_TOOL];
+ const status=(run:AgentRun)=>t(({queued:'runQueued',running:'runRunning',awaiting_approval:'runWaitingApproval',cancelling:'runCancelling',cancelled:'runCancelled',completed:'runCompleted',failed:'runFailed',interrupted:'runInterrupted',unknown:'runUnknown'}as const)[run.status]);
+ const tools=selected?.availableTools||[];
+ // The detail response is authoritative because approval events intentionally
+ // omit arguments. Let it override the event-derived fallback so the user can
+ // always inspect the exact parameters before approving a side effect.
+ const approvals=selected?[...new Map([...eventApprovals(events),...(selected.approvalRequests||[])].map(item=>[item.approvalId,item])).values()]:[];
+ const cache=selected?.metrics;
+ const hitRate=cache?.cacheReuseRatio??(cache?.cachedInputTokens!=null&&cache?.uncachedInputTokens!=null&&cache.cachedInputTokens+cache.uncachedInputTokens>0?cache.cachedInputTokens/(cache.cachedInputTokens+cache.uncachedInputTokens):null);
+ const cacheAvailable=cache?.cacheStatus==='reported'||(cache?.cacheStatus==null&&(cache?.cachedInputTokens!=null||cache?.uncachedInputTokens!=null||hitRate!=null));
 
  return <div className="agent-run-entry">
   <button ref={launchRef} className="agent-run-launch" disabled={!graph||!active||createPending} onClick={openBrief}><AppIcon name="play"/><span>{createPending?t('waitingForRun'):t('runWithAgent')}</span></button>
@@ -290,7 +411,6 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
      <div><dt>{t('instanceId')}</dt><dd>{active?.id}</dd></div>
      <div><dt>{t('revision')}</dt><dd>{contentRevision}</dd></div>
      <div><dt>{t('adapterModel')}</dt><dd>{modelLabel(undefined,aiStatus)}</dd></div>
-     <div><dt>{t('tools')}</dt><dd>{DEFAULT_TOOL.name} {DEFAULT_TOOL.version}</dd></div>
     </dl>
     <label>{t('objective')}<textarea autoFocus value={objective} onChange={event=>setObjective(event.target.value)}/></label>
     <label>{t('constraints')}<textarea placeholder={t('onePerLine')} value={constraints} onChange={event=>setConstraints(event.target.value)}/></label>
@@ -306,27 +426,32 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
    <section className="modal agent-runs" role="dialog" aria-modal="true" aria-labelledby="agent-runs-title" onKeyDown={event=>dialogKeys(event,closePanel)}>
     <header><h2 id="agent-runs-title">{t('runs')}</h2><button type="button" onClick={()=>graph&&active&&void loadRunsFor(graph.workflowId,active.id,key)} disabled={listLoading}>{t('refresh')}</button><button type="button" className="icon-button" aria-label={t('close')} title={t('close')} autoFocus onClick={closePanel}><AppIcon name="close"/></button></header>
     {error&&<p className="agent-error" role="alert">{error}</p>}
-    <div className="agent-runs-layout">
-     <div className="run-list">{!runs.length&&!listLoading&&<p>{t('noRuns')}</p>}{runs.map(run=><button type="button" key={run.runId} className={String(selected?.runId)===String(run.runId)?'current':''} onClick={()=>void inspect(run,key)}><strong>{run.objective}</strong><span className={`run-status ${run.status}`}>{status(run)}</span><small>{t('revision')}: {run.inputContentRevision}</small>{run.errorCode&&<em>{t('errorCode')}: {run.errorCode}</em>}</button>)}</div>
+     <div className="agent-runs-layout">
+      <div className="run-list">{!runs.length&&!listLoading&&<p>{t('noRuns')}</p>}{runs.map(run=><button type="button" key={run.runId} className={String(selected?.runId)===String(run.runId)?'current':''} onClick={()=>void inspect(run,key)}><strong>{run.objective}</strong><span className={`run-status ${run.status}`}>{status(run)}</span><small>{t('attempt')}: {run.attemptNumber??1} · {t('revision')}: {run.inputContentRevision}</small>{run.errorCode&&<em>{t('errorCode')}: {run.errorCode}</em>}</button>)}</div>
 	     {selected&&<article className="run-detail">
-      <h3>{selected.objective}</h3>
-      <p><span className={`run-status ${selected.status}`}>{status(selected)}</span> · {t('revision')}: {selected.inputContentRevision}</p>
-      <dl className="run-provenance compact">
-       <div><dt>{t('workflowId')}</dt><dd>{selected.workflowId}</dd></div>
-       <div><dt>{t('instanceId')}</dt><dd>{selected.instanceId}</dd></div>
-       <div><dt>{t('adapterModel')}</dt><dd>{modelLabel(selected.modelSnapshot,aiStatus)}</dd></div>
-       <div><dt>{t('tools')}</dt><dd>{tools.map(tool=>`${tool.name} ${tool.version}`).join(', ')}</dd></div>
-       {selected.contextSha256&&<div><dt>{t('contextHash')}</dt><dd title={selected.contextSha256}>{selected.contextSha256}</dd></div>}
+       <div className="run-detail-heading"><div><h3>{selected.objective}</h3><p><span className={`run-status ${selected.status}`}>{status(selected)}</span> · {t('attempt')}: {selected.attemptNumber??1} · {t('revision')}: {selected.inputContentRevision}</p></div><div className="agent-run-actions">{CANCELLABLE_RUN_STATUSES.has(selected.status)&&<button type="button" disabled={!!runAction} onClick={()=>void cancelRun()}>{runAction===`cancel:${selected.runId}`?t('cancellingRun'):t('cancelRun')}</button>}{RETRYABLE_RUN_STATUSES.has(selected.status)&&<button type="button" className="primary" disabled={!!runAction} onClick={()=>void retryRun()}>{runAction===`retry:${selected.runId}`?t('retryingRun'):t('retryRun')}</button>}</div></div>
+       {ACTIVE_RUN_STATUSES.has(selected.status)&&<p className="agent-wait" role="status">{t('backgroundRunHint')}</p>}
+       <dl className="run-provenance compact">
+        <div><dt>{t('workflowId')}</dt><dd>{selected.workflowId}</dd></div>
+        <div><dt>{t('instanceId')}</dt><dd>{selected.instanceId}</dd></div>
+        <div><dt>{t('attempt')}</dt><dd>{selected.attemptNumber??1}</dd></div>
+        {selected.rootRunId!=null&&<div><dt>{t('rootRun')}</dt><dd>{selected.rootRunId}</dd></div>}
+        {selected.parentRunId!=null&&<div><dt>{t('parentRun')}</dt><dd>{selected.parentRunId}</dd></div>}
+        <div><dt>{t('adapterModel')}</dt><dd>{modelLabel(selected.modelSnapshot,aiStatus)}</dd></div>
+        <div><dt>{t('tools')}</dt><dd>{tools.length?tools.map(tool=>`${tool.name} ${tool.version}`).join(', '):'—'}</dd></div>
+        {selected.contextSha256&&<div><dt>{t('contextHash')}</dt><dd title={selected.contextSha256}>{selected.contextSha256}</dd></div>}
       </dl>
       <small>{t('concreteRoute')}</small>
 	      <div className="route-chips">{(selected.memoryRoute?.length?selected.memoryRoute:route.map(node=>({instanceId:node.id,topicId:node.topicId,title:node.title}))).map(node=><span key={node.instanceId} title={node.instanceId}>{node.title}</span>)}</div>
-	      {selected.metrics&&<div className="run-metrics"><div><strong>{duration(selected.metrics.durationMs)}</strong><small>{locale==='zh-CN'?'总耗时':'Duration'}</small></div><div><strong>{selected.metrics.modelStepCount}</strong><small>{locale==='zh-CN'?'模型步骤':'Model steps'}</small></div><div><strong>{selected.metrics.toolCallCount}</strong><small>{locale==='zh-CN'?'工具调用':'Tool calls'}</small></div><div><strong>{duration(selected.metrics.toolDurationMs)}</strong><small>{locale==='zh-CN'?'工具耗时':'Tool time'}</small></div></div>}
+	      {selected.metrics&&<><div className="run-metrics"><div><strong>{duration(selected.metrics.durationMs)}</strong><small>{locale==='zh-CN'?'总耗时':'Duration'}</small></div><div><strong>{selected.metrics.modelStepCount}</strong><small>{locale==='zh-CN'?'模型步骤':'Model steps'}</small></div><div><strong>{selected.metrics.toolCallCount}</strong><small>{locale==='zh-CN'?'工具调用':'Tool calls'}</small></div><div><strong>{duration(selected.metrics.toolDurationMs)}</strong><small>{locale==='zh-CN'?'工具耗时':'Tool time'}</small></div></div><section className="cache-metrics"><h4>{t('cacheMetrics')}</h4>{!cacheAvailable?<p>{t('cacheDataUnavailable')}</p>:<dl><div><dt>{t('cachedTokens')}</dt><dd>{cache?.cachedInputTokens??'—'}</dd></div><div><dt>{t('cacheMissTokens')}</dt><dd>{cache?.uncachedInputTokens??'—'}</dd></div><div><dt>{t('cacheHitRate')}</dt><dd>{hitRate==null?'—':percent(hitRate)}</dd></div><div><dt>{t('cacheCoverage')}</dt><dd>{cache?.cacheCoverage==null?'—':percent(cache.cacheCoverage)}</dd></div></dl>}</section></>}
 	      {!!selected.acceptedKnowledge?.length&&<section className="accepted-knowledge"><h4>{locale==='zh-CN'?'本次使用的接纳知识':'Accepted knowledge used'}</h4>{selected.acceptedKnowledge.map(item=><article key={item.knowledgeItemId}><strong>{item.title}</strong><p>{item.content}</p></article>)}</section>}
+	      {!!approvals.length&&<section className="approval-section"><h4>{t('approvalRequired')}</h4><p>{t('approvalHint')}</p>{approvals.map(approval=><article className={`approval-card ${approval.status}`} key={approval.approvalId}><header><div><strong>{approval.toolName}{approval.toolVersion?` ${approval.toolVersion}`:''}</strong><small>{approval.approvalId}</small></div><span className={`approval-status ${approval.status}`}>{t(approval.status==='approved'?'approvalApproved':approval.status==='rejected'?'approvalRejected':'approvalPending')}</span></header>{approval.sideEffect!=null&&<p><b>{t('sideEffect')}:</b> {String(approval.sideEffect)}</p>}{approval.arguments!==undefined&&<details open={approval.status==='pending'}><summary>{t('toolArguments')}</summary><pre>{show(approval.arguments)}</pre></details>}{approval.status==='pending'&&<div className="approval-actions"><button type="button" disabled={!!runAction} onClick={()=>void decideApproval(approval,'rejected')}>{t('reject')}</button><button type="button" className="primary" disabled={!!runAction} onClick={()=>void decideApproval(approval,'approved')}>{t('approve')}</button></div>}</article>)}</section>}
 	      {selected.errorCode&&<p className="agent-error">{t('errorCode')}: {selected.errorCode}</p>}
-	      <h4>{locale==='zh-CN'?'执行时间线':'Execution timeline'}</h4>
-	      <ol className="run-events timeline">{events.map(event=><li className={event.type.includes('failed')?'failed':event.type.includes('completed')?'completed':''} key={event.sequence}><i aria-hidden="true">{eventIcon(event.type)}</i><div><strong>{eventName(event.type)}</strong>{event.createdAt&&<time>{new Date(event.createdAt).toLocaleTimeString(locale)}</time>}<details><summary>{locale==='zh-CN'?'查看事件数据':'Event data'}</summary><pre>{show(event.payload)}</pre></details></div></li>)}</ol>
-      {eventState.owner===key&&String(eventState.runId)===String(selected.runId)&&eventState.hasMore&&<button type="button" disabled={eventState.loading} onClick={()=>void loadMoreEvents()}>{t('loadMoreEvents')}</button>}
-	      {(selected.finalAnswer||selected.toolResults?.length||selected.finalMessageId)&&<><div className="run-result-heading"><h4>{t('result')}</h4>{selected.finalAnswer&&<button type="button" disabled={artifactBusy||savedArtifacts.has(String(selected.runId))} onClick={()=>void saveResultArtifact()}>{savedArtifacts.has(String(selected.runId))?(locale==='zh-CN'?'已保存为 Artifact':'Saved as artifact'):(locale==='zh-CN'?'保存为 Artifact':'Save as artifact')}</button>}</div><pre>{show(selected.finalAnswer||selected.toolResults?.length?selected.finalAnswer||selected.toolResults:{finalMessageId:selected.finalMessageId})}</pre></>}
+	      {!!selected.artifacts?.length&&<section className="run-artifacts"><h4>{t('artifactsProduced')}</h4>{selected.artifacts.map(artifact=><article key={artifact.artifactId}><strong>{artifact.name}</strong><small>{artifact.kind} · v{artifact.version}</small>{artifact.content&&<pre>{artifact.content}</pre>}</article>)}</section>}
+	      <h4>{t('executionTimeline')}</h4>
+	      {eventState.loading&&!events.length?<p className="timeline-empty" role="status">{t('timelineLoading')}</p>:!events.length?<p className="timeline-empty">{t('noEvents')}</p>:<ol className="run-events timeline">{events.map(event=>{const tool=eventTool(event),artifact=eventArtifact(event);return <li className={event.type.includes('failed')||event.type.includes('rejected')?'failed':event.type.includes('completed')||event.type.includes('approved')?'completed':''} key={event.sequence}><i aria-hidden="true">{eventIcon(event.type)}</i><div><strong>{eventName(event.type)}</strong>{event.createdAt&&<time>{new Date(event.createdAt).toLocaleTimeString(locale)}</time>}{tool&&<p className="event-tool">{t('tools')}: <b>{tool}</b></p>}{artifact.text&&<p className="event-artifact">{t('artifactsProduced')}: <b>{artifact.text}</b>{artifact.kind&&<small> · {artifact.kind}</small>}</p>}{artifact.diff&&<details className="event-diff"><summary>{t('diffPreview')}</summary><pre>{artifact.diff}</pre></details>}<details><summary>{t('viewEventData')}</summary><pre>{show(event.payload)}</pre></details></div></li>})}</ol>}
+       {eventState.owner===key&&String(eventState.runId)===String(selected.runId)&&eventState.hasMore&&<button type="button" disabled={eventState.loading} onClick={()=>void loadMoreEvents()}>{t('loadMoreEvents')}</button>}
+	      {(selected.finalAnswer||selected.toolResults?.length||selected.finalMessageId)&&<><div className="run-result-heading"><h4>{t('result')}</h4>{selected.finalAnswer&&<button type="button" disabled={artifactBusy||savedArtifacts.has(String(selected.runId))} onClick={()=>void saveResultArtifact()}>{savedArtifacts.has(String(selected.runId))?t('savedAsArtifact'):t('saveAsArtifact')}</button>}</div><pre>{show(selected.finalAnswer||selected.toolResults?.length?selected.finalAnswer||selected.toolResults:{finalMessageId:selected.finalMessageId})}</pre></>}
      </article>}
     </div>
    </section>

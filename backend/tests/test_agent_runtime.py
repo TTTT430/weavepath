@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import httpx
 import pytest
@@ -11,9 +12,12 @@ from fastapi.testclient import TestClient
 
 from agent_runtime import (AgentRunRepository, AgentRuntimeService, ModelTurn,
                            OpenAICompatibleAgentAdapter, ScriptedMockAgentAdapter,
-                           calculator_registry)
+                           calculator_registry, runtime_registry)
+from agent_runtime.adapters import _usage
+from agent_runtime.tools import Tool, ToolRegistry
 from api.app import create_app
 from api.llm import LLMUnavailable, OpenAICompatibleLLM
+from engineering import EngineeringRepository
 from graph_core import GraphStore
 from graph_core.migrations import V1, V2
 
@@ -85,7 +89,7 @@ def test_context_snapshot_is_route_specific_and_excludes_sibling():
         detail = client.get(f"/api/v1/runs/{result['runId']}").json()
         assert [node["instanceId"] for node in detail["memoryRoute"]] == ["A", "B", "C"]
         assert [(tool["name"], tool["version"]) for tool in detail["availableTools"]] == [
-            ("safe_calculator", "1.0.0")
+            ("propose_patch", "1.0.0"), ("safe_calculator", "1.0.0")
         ]
         assert "messages" not in detail
     store.close()
@@ -112,7 +116,7 @@ def test_frozen_context_and_hash_remain_stable_after_later_route_write():
         assert [message["content"] for message in frozen["messages"]] == ["frozen input"]
         assert frozen["objective"] == "Calculate the result"
         assert [(tool["name"], tool["version"]) for tool in frozen["availableTools"]] == [
-            ("safe_calculator", "1.0.0")
+            ("propose_patch", "1.0.0"), ("safe_calculator", "1.0.0")
         ]
 
         store.append_message(wf, "A", role="user", content="later route write")
@@ -216,6 +220,166 @@ def test_revision_conflict_prevents_final_assistant_write():
         assert response.status_code == 409 and response.json()["code"] == "runRevisionConflict"
         assert response.json()["runId"]
         assert [m["content"] for m in store.list_messages(wf, "A", scope="local")["messages"]] == ["concurrent"]
+    store.close()
+
+
+def test_parent_route_revision_change_rejects_stale_child_run_writeback():
+    store = GraphStore(":memory:")
+    state: dict[str, str] = {}
+    model = ScriptedMockAgentAdapter(
+        [ModelTurn(final_answer="must not commit to C")],
+        on_turn=lambda _: store.append_message(
+            state["wf"], "B", role="user", content="new parent context"
+        ),
+    )
+    app = create_app(store, agent_model=model)
+    with TestClient(app) as client:
+        wf, _ = workflow(client)
+        state["wf"] = wf
+        store.append_message(wf, "A", role="user", content="A context")
+        store.fork(wf, "A", title="B", instance_id="B", initial_message="B context")
+        store.fork(wf, "B", title="C", instance_id="C", initial_message="C request")
+        revision = store.list_messages(wf, "C", scope="local")["contentRevision"]
+
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/C/runs",
+            json=request(revision, "parent-revision-conflict"),
+        )
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "runRevisionConflict"
+        detail = client.get(f"/api/v1/runs/{response.json()['runId']}").json()
+        assert detail["status"] == "failed"
+        assert [item["instanceId"] for item in detail["routeRevisionVector"]] == [
+            "A", "B", "C"
+        ]
+        assert "must not commit to C" not in {
+            message["content"]
+            for message in store.list_messages(wf, "C", scope="local")["messages"]
+        }
+        assert "new parent context" in {
+            message["content"]
+            for message in store.list_messages(wf, "B", scope="local")["messages"]
+        }
+    store.close()
+
+
+def test_sibling_revision_change_does_not_conflict_with_child_run_writeback():
+    store = GraphStore(":memory:")
+    state: dict[str, str] = {}
+    model = ScriptedMockAgentAdapter(
+        [ModelTurn(final_answer="C may commit")],
+        on_turn=lambda _: store.append_message(
+            state["wf"], "E", role="user", content="sibling-only update"
+        ),
+    )
+    app = create_app(store, agent_model=model)
+    with TestClient(app) as client:
+        wf, _ = workflow(client)
+        state["wf"] = wf
+        store.append_message(wf, "A", role="user", content="A context")
+        store.fork(wf, "A", title="B", instance_id="B", initial_message="B context")
+        store.fork(wf, "B", title="C", instance_id="C", initial_message="C request")
+        store.fork(wf, "B", title="E", instance_id="E", initial_message="E request")
+        revision = store.list_messages(wf, "C", scope="local")["contentRevision"]
+
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/C/runs",
+            json=request(revision, "sibling-revision-does-not-conflict"),
+        )
+
+        assert response.status_code == 201
+        detail = response.json()
+        assert detail["status"] == "completed"
+        assert detail["finalAnswer"] == "C may commit"
+        assert [item["instanceId"] for item in detail["routeRevisionVector"]] == [
+            "A", "B", "C"
+        ]
+        assert "C may commit" in {
+            message["content"]
+            for message in store.list_messages(wf, "C", scope="local")["messages"]
+        }
+        assert "sibling-only update" not in {
+            message["content"]
+            for message in store.list_messages(wf, "C", scope="effective")["messages"]
+        }
+    store.close()
+
+
+def test_accepted_knowledge_change_on_parent_rejects_stale_child_run_writeback():
+    store = GraphStore(":memory:")
+    state: dict[str, Any] = {}
+
+    def merge_into_parent(_: int) -> None:
+        state["engineering"].merge_knowledge(
+            state["wf"], target_instance_id="B", source_instance_ids=["E"],
+            items=[{
+                "sourceInstanceId": "E", "kind": "constraint", "title": "New rule",
+                "content": "This arrived after the model input was assembled.",
+            }], artifact_ids=[],
+        )
+
+    model = ScriptedMockAgentAdapter(
+        [ModelTurn(final_answer="stale knowledge answer")], on_turn=merge_into_parent,
+    )
+    app = create_app(store, agent_model=model)
+    state["engineering"] = app.state.engineering
+    with TestClient(app) as client:
+        wf, _ = workflow(client)
+        state["wf"] = wf
+        store.fork(wf, "A", title="B", instance_id="B", initial_message="B context")
+        store.fork(wf, "B", title="C", instance_id="C", initial_message="C request")
+        store.fork(wf, "B", title="E", instance_id="E", initial_message="E evidence")
+        revision = store.list_messages(wf, "C", scope="local")["contentRevision"]
+
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/C/runs",
+            json=request(revision, "knowledge-parent-conflict"),
+        )
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "runRevisionConflict"
+        assert "stale knowledge answer" not in {
+            message["content"]
+            for message in store.list_messages(wf, "C", scope="local")["messages"]
+        }
+    store.close()
+
+
+def test_accepted_knowledge_change_on_sibling_does_not_conflict_with_child_run():
+    store = GraphStore(":memory:")
+    state: dict[str, Any] = {}
+
+    def merge_into_sibling(_: int) -> None:
+        state["engineering"].merge_knowledge(
+            state["wf"], target_instance_id="E", source_instance_ids=["C"],
+            items=[{
+                "sourceInstanceId": "C", "kind": "fact", "title": "Sibling fact",
+                "content": "This belongs only to E and its descendants.",
+            }], artifact_ids=[],
+        )
+
+    model = ScriptedMockAgentAdapter(
+        [ModelTurn(final_answer="C remains valid")], on_turn=merge_into_sibling,
+    )
+    app = create_app(store, agent_model=model)
+    state["engineering"] = app.state.engineering
+    with TestClient(app) as client:
+        wf, _ = workflow(client)
+        state["wf"] = wf
+        store.fork(wf, "A", title="B", instance_id="B", initial_message="B context")
+        store.fork(wf, "B", title="C", instance_id="C", initial_message="C request")
+        store.fork(wf, "B", title="E", instance_id="E", initial_message="E request")
+        revision = store.list_messages(wf, "C", scope="local")["contentRevision"]
+
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/C/runs",
+            json=request(revision, "knowledge-sibling-no-conflict"),
+        )
+
+        assert response.status_code == 201
+        assert response.json()["status"] == "completed"
+        assert response.json()["finalAnswer"] == "C remains valid"
     store.close()
 
 
@@ -752,3 +916,709 @@ def test_completed_run_result_survives_database_reopen(tmp_path):
     assert detail["status"] == "completed"
     assert detail["finalAnswer"] == "persisted"
     reopened.close()
+
+
+def test_runtime_v2_retry_persists_attempt_lineage():
+    store = GraphStore(":memory:")
+    app = create_app(store, agent_model=ScriptedMockAgentAdapter([
+        ModelTurn(final_answer="first"), ModelTurn(final_answer="second"),
+    ]))
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        first = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision)
+        ).json()
+        retried = client.post(f"/api/v1/runs/{first['runId']}/retry", json={
+            "idempotencyKey": "retry-key",
+        })
+        assert retried.status_code == 201
+        second = retried.json()
+        assert second["status"] == "completed"
+        assert second["parentRunId"] == first["runId"]
+        assert second["rootRunId"] == first["runId"]
+        assert second["attemptNumber"] == 2
+        assert client.get(f"/api/v1/runs/{first['runId']}").json()["attemptNumber"] == 1
+        events = client.get(f"/api/v1/runs/{second['runId']}/events").json()["events"]
+        assert any(event["type"] == "run.retry_created" for event in events)
+    store.close()
+
+
+def test_runtime_v2_cancel_is_durable_and_late_model_answer_is_discarded():
+    entered, release = threading.Event(), threading.Event()
+
+    class BlockingModel:
+        def bind(self):
+            return self
+
+        def snapshot(self):
+            return {"provider": "test", "model": "blocking"}
+
+        def next(self, messages, tools):
+            del messages, tools
+            entered.set()
+            assert release.wait(2)
+            return ModelTurn(final_answer="must be discarded", usage={
+                "inputTokens": 100, "outputTokens": 3,
+                "cachedInputTokens": 60, "uncachedInputTokens": 40,
+                "cacheStatus": "reported",
+            })
+
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    repository = AgentRunRepository(store._conn, store._lock)
+    service = AgentRuntimeService(store, repository, BlockingModel(), runtime_registry())
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(service.execute, graph["workflowId"], "A", request(0))
+        assert entered.wait(1)
+        run_id = repository.list(graph["workflowId"], "A")[0]["runId"]
+        assert service.cancel(run_id)["status"] == "cancelling"
+        release.set()
+        result = future.result(timeout=2)
+    assert result["status"] == "cancelled"
+    assert repository.get(run_id)["errorCode"] == "runCancelled"
+    metrics = repository.get(run_id)["metrics"]
+    assert metrics["modelStepCount"] == 1
+    assert metrics["inputTokens"] == 100
+    assert metrics["outputTokens"] == 3
+    assert metrics["cachedInputTokens"] == 60
+    assert metrics["uncachedInputTokens"] == 40
+    assert metrics["cacheReuseRatio"] == pytest.approx(0.6)
+    assert metrics["cacheCoverage"] == pytest.approx(1.0)
+    assert metrics["cacheStatus"] == "reported"
+    assert store.list_messages(graph["workflowId"], "A", scope="local")["messages"] == []
+    types = [event["type"] for event in repository.events(run_id, 0, 100)["events"]]
+    assert types.count("run.cancel_requested") == 1
+    assert types.count("run.cancelled") == 1
+    store.close()
+
+
+def test_approval_never_executes_an_unallowlisted_side_effect_tool():
+    invoked = False
+
+    def danger(arguments):
+        nonlocal invoked
+        invoked = True
+        return {"changed": True, **arguments}
+
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    repository = AgentRunRepository(store._conn, store._lock)
+    service = AgentRuntimeService(
+        store,
+        repository,
+        ScriptedMockAgentAdapter([ModelTurn(tool_name="danger", tool_arguments={})]),
+        ToolRegistry([Tool(
+            name="danger", version="1.0.0", description="Must never run.",
+            schema={"type": "object", "additionalProperties": False},
+            execute=danger, side_effect="workspace_write",
+        )]),
+        engineering=EngineeringRepository(store._conn, store._lock),
+    )
+    waiting = service.execute(graph["workflowId"], "A", request(0))
+    approval = waiting["approvalRequests"][0]
+    with pytest.raises(Exception) as caught:
+        service.decide_approval(waiting["runId"], approval["approvalId"], "approved")
+    assert getattr(caught.value, "code", None) == "unknownTool"
+    assert invoked is False
+    assert repository.get(waiting["runId"])["status"] == "failed"
+    store.close()
+
+
+def test_approved_side_effect_and_cancel_race_always_reaches_a_terminal_state():
+    entered, release = threading.Event(), threading.Event()
+
+    def blocking_proposal(arguments):
+        entered.set()
+        assert release.wait(2)
+        return {**arguments, "filesystemChanged": False}
+
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    repository = AgentRunRepository(store._conn, store._lock)
+    service = AgentRuntimeService(
+        store,
+        repository,
+        ScriptedMockAgentAdapter([ModelTurn(
+            tool_name="propose_patch",
+            tool_arguments={"path": "src/a.py", "patch": "+safe"},
+        )]),
+        ToolRegistry([Tool(
+            name="propose_patch", version="1.0.0", description="Proposal only.",
+            schema={"type": "object"}, execute=blocking_proposal, side_effect="artifact",
+        )]),
+        engineering=EngineeringRepository(store._conn, store._lock),
+    )
+    waiting = service.execute(graph["workflowId"], "A", request(0))
+    approval_id = waiting["approvalRequests"][0]["approvalId"]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        approval_future = pool.submit(
+            service.decide_approval, waiting["runId"], approval_id, "approved"
+        )
+        assert entered.wait(1)
+        assert service.cancel(waiting["runId"])["status"] == "cancelling"
+        release.set()
+        result = approval_future.result(timeout=2)
+    assert result["status"] == "cancelled"
+    detail = repository.get(waiting["runId"])
+    assert detail["status"] == "cancelled"
+    assert len(detail["artifacts"]) == 1
+    assert detail["artifacts"][0]["metadata"]["filesystemChanged"] is False
+    assert detail["toolCalls"][0]["status"] == "completed"
+    store.close()
+
+
+def test_cancel_before_approval_prevents_the_side_effect_and_closes_the_request():
+    invoked = False
+
+    def proposal(arguments):
+        nonlocal invoked
+        invoked = True
+        return {**arguments, "filesystemChanged": False}
+
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    repository = AgentRunRepository(store._conn, store._lock)
+    service = AgentRuntimeService(
+        store,
+        repository,
+        ScriptedMockAgentAdapter([ModelTurn(
+            tool_name="propose_patch", tool_arguments={"path": "x.py", "patch": "+safe"},
+        )]),
+        ToolRegistry([Tool(
+            name="propose_patch", version="1.0.0", description="Proposal only.",
+            schema={"type": "object"}, execute=proposal, side_effect="artifact",
+        )]),
+        engineering=EngineeringRepository(store._conn, store._lock),
+    )
+    waiting = service.execute(graph["workflowId"], "A", request(0))
+    approval_id = waiting["approvalRequests"][0]["approvalId"]
+    cancelled = service.cancel(waiting["runId"])
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["approvalRequests"][0]["status"] == "rejected"
+    with pytest.raises(Exception):
+        service.decide_approval(waiting["runId"], approval_id, "approved")
+    assert invoked is False
+    detail = repository.get(waiting["runId"])
+    assert detail["status"] == "cancelled"
+    assert detail["artifacts"] == []
+    assert detail["toolCalls"][0]["status"] == "cancelled"
+    store.close()
+
+
+def test_cancel_winning_before_the_side_effect_claim_creates_no_artifact():
+    invoked = False
+    claim_entered, release_claim = threading.Event(), threading.Event()
+
+    def proposal(arguments):
+        nonlocal invoked
+        invoked = True
+        return {**arguments, "filesystemChanged": False}
+
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    repository = AgentRunRepository(store._conn, store._lock)
+    original_claim = repository.claim_approved_tool
+
+    def delayed_claim(run_id, approval_id):
+        claim_entered.set()
+        assert release_claim.wait(2)
+        original_claim(run_id, approval_id)
+
+    repository.claim_approved_tool = delayed_claim  # type: ignore[method-assign]
+    service = AgentRuntimeService(
+        store,
+        repository,
+        ScriptedMockAgentAdapter([ModelTurn(
+            tool_name="propose_patch", tool_arguments={"path": "x.py", "patch": "+safe"},
+        )]),
+        ToolRegistry([Tool(
+            name="propose_patch", version="1.0.0", description="Proposal only.",
+            schema={"type": "object"}, execute=proposal, side_effect="artifact",
+        )]),
+        engineering=EngineeringRepository(store._conn, store._lock),
+    )
+    waiting = service.execute(graph["workflowId"], "A", request(0))
+    approval_id = waiting["approvalRequests"][0]["approvalId"]
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        approval_future = pool.submit(
+            service.decide_approval, waiting["runId"], approval_id, "approved"
+        )
+        assert claim_entered.wait(1)
+        assert service.cancel(waiting["runId"])["status"] == "cancelling"
+        release_claim.set()
+        result = approval_future.result(timeout=2)
+    assert result["status"] == "cancelled"
+    assert invoked is False
+    detail = repository.get(waiting["runId"])
+    assert detail["artifacts"] == []
+    assert detail["toolCalls"][0]["status"] == "cancelled"
+    store.close()
+
+
+def test_patch_proposal_returns_approval_immediately_and_approval_creates_only_artifact():
+    store = GraphStore(":memory:")
+    proposal = ModelTurn(
+        tool_name="propose_patch",
+        tool_arguments={"path": "src/example.py", "patch": "--- a/src/example.py\n+++ b/src/example.py"},
+        tool_call_id="provider-proposal-1",
+    )
+    app = create_app(store, agent_model=ScriptedMockAgentAdapter([proposal]))
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        body = request(revision)
+        first = client.post(f"/api/v1/workflows/{wf}/instances/A/runs", json=body)
+        assert first.status_code == 201
+        waiting = first.json()
+        assert waiting["status"] == "awaiting_approval"
+        assert len(waiting["approvalRequests"]) == 1
+        approval = waiting["approvalRequests"][0]
+        replay = client.post(f"/api/v1/workflows/{wf}/instances/A/runs", json=body)
+        assert replay.status_code == 201
+        assert replay.json()["status"] == "awaiting_approval"
+        assert replay.json()["runId"] == waiting["runId"]
+
+        approved = client.post(
+            f"/api/v1/runs/{waiting['runId']}/approvals/{approval['approvalId']}/decision",
+            json={"decision": "approved"},
+        )
+        assert approved.status_code == 200
+        completed = approved.json()
+        assert completed["status"] == "completed"
+        assert completed["approvalRequests"][0]["status"] == "approved"
+        assert completed["artifacts"][0]["kind"] == "patch"
+        assert completed["artifacts"][0]["metadata"]["filesystemChanged"] is False
+        result = completed["toolResults"][0]["output"]
+        assert result["filesystemChanged"] is False
+        assert result["artifactId"] == completed["artifacts"][0]["artifactId"]
+        assert client.post(
+            f"/api/v1/runs/{waiting['runId']}/approvals/{approval['approvalId']}/decision",
+            json={"decision": "approved"},
+        ).json()["artifacts"] == completed["artifacts"]
+    store.close()
+
+
+def test_rejected_approval_cancels_run_without_artifact():
+    store = GraphStore(":memory:")
+    app = create_app(store, agent_model=ScriptedMockAgentAdapter([ModelTurn(
+        tool_name="propose_patch", tool_arguments={"path": "x.py", "patch": "+safe"},
+    )]))
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        waiting = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision)
+        ).json()
+        approval_id = waiting["approvalRequests"][0]["approvalId"]
+        rejected = client.post(
+            f"/api/v1/runs/{waiting['runId']}/approvals/{approval_id}/decision",
+            json={"decision": "rejected"},
+        ).json()
+        assert rejected["status"] == "cancelled"
+        assert rejected["errorCode"] == "approvalRejected"
+        assert rejected["artifacts"] == []
+    store.close()
+
+
+def test_approved_artifact_survives_route_revision_conflict_and_run_fails_terminally():
+    store = GraphStore(":memory:")
+    app = create_app(store, agent_model=ScriptedMockAgentAdapter([ModelTurn(
+        tool_name="propose_patch", tool_arguments={"path": "x.py", "patch": "+proposal"},
+    )]))
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        waiting = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision)
+        ).json()
+        store.append_message(wf, "A", role="user", content="route changed")
+        approval_id = waiting["approvalRequests"][0]["approvalId"]
+        response = client.post(
+            f"/api/v1/runs/{waiting['runId']}/approvals/{approval_id}/decision",
+            json={"decision": "approved"},
+        )
+        assert response.status_code == 409
+        detail = client.get(f"/api/v1/runs/{waiting['runId']}").json()
+        assert detail["status"] == "failed"
+        assert detail["errorCode"] == "runRevisionConflict"
+        assert len(detail["artifacts"]) == 1
+    store.close()
+
+
+def test_workspace_tools_require_explicit_root_and_reject_escape_or_secrets(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("needle = 42\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("needle=secret\n", encoding="utf-8")
+    sensitive = [
+        ".env.test", ".envrc", ".npmrc", "id_rsa", "private.pem",
+        "credentials.json", "token.json", "model-settings.json", "workspace.db-wal",
+        "workspace.db.backup", ".envrc.local", ".env~", "id_rsa.bak",
+        "id_ed25519_sk", "client.ppk", "signing.keystore", "archive.pkcs12",
+        "application_default_credentials.json", "service-account.json",
+    ]
+    for name in sensitive:
+        (tmp_path / name).write_text("needle=secret\n", encoding="utf-8")
+    assert runtime_registry().resolve("read_file") is None
+    registry = runtime_registry(tmp_path)
+    reader, search = registry.resolve("read_file"), registry.resolve("workspace_search")
+    assert reader is not None and search is not None
+    registry.validate(reader, {"path": "src/main.py"})
+    assert reader.execute({"path": "src/main.py"})["content"].splitlines() == ["needle = 42"]
+    found = search.execute({"query": "needle", "maxResults": 10})
+    assert [item["path"] for item in found["matches"]] == ["src/main.py"]
+    with pytest.raises(ValueError):
+        registry.validate(reader, {"path": "../outside.txt"})
+    with pytest.raises(ValueError):
+        registry.validate(reader, {"path": ".env"})
+    for name in sensitive:
+        with pytest.raises(ValueError):
+            registry.validate(reader, {"path": name})
+
+
+def test_model_usage_and_cache_metrics_are_persisted():
+    store = GraphStore(":memory:")
+    app = create_app(store, agent_model=ScriptedMockAgentAdapter([ModelTurn(
+        final_answer="done", usage={"inputTokens": 100, "outputTokens": 8,
+                                    "cachedInputTokens": 60, "uncachedInputTokens": 40},
+    )]))
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        run = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision)
+        ).json()
+        metrics = client.get(f"/api/v1/runs/{run['runId']}").json()["metrics"]
+        assert metrics["inputTokens"] == 100
+        assert metrics["outputTokens"] == 8
+        assert metrics["cachedInputTokens"] == 60
+        assert metrics["uncachedInputTokens"] == 40
+        assert metrics["cacheReuseRatio"] == pytest.approx(0.6)
+        assert metrics["cacheCoverage"] == pytest.approx(1.0)
+        assert metrics["cacheStatus"] == "reported"
+    store.close()
+
+
+def test_cache_ratio_uses_only_reported_calls_and_coverage_uses_all_model_steps():
+    store = GraphStore(":memory:")
+    app = create_app(store, agent_model=ScriptedMockAgentAdapter([
+        ModelTurn(tool_name="safe_calculator", tool_arguments={"expression": "2+2"},
+                  usage={"inputTokens": 100, "outputTokens": 3, "cachedInputTokens": 50,
+                         "uncachedInputTokens": 50, "cacheStatus": "reported"}),
+        ModelTurn(final_answer="4", usage={"inputTokens": 50, "outputTokens": 1,
+                                            "cachedInputTokens": None,
+                                            "uncachedInputTokens": None,
+                                            "cacheStatus": "unsupported"}),
+    ]))
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        run = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision)
+        ).json()
+        metrics = client.get(f"/api/v1/runs/{run['runId']}").json()["metrics"]
+        assert metrics["inputTokens"] == 150
+        assert metrics["outputTokens"] == 4
+        assert metrics["cachedInputTokens"] == 50
+        assert metrics["uncachedInputTokens"] == 50
+        assert metrics["cacheReuseRatio"] == pytest.approx(0.5)
+        assert metrics["cacheCoverage"] == pytest.approx(0.5)
+        assert metrics["cacheStatus"] == "reported"
+    store.close()
+
+
+def test_cache_ratio_never_cross_pairs_partial_usage_from_different_calls():
+    store = GraphStore(":memory:")
+    app = create_app(store, agent_model=ScriptedMockAgentAdapter([
+        ModelTurn(
+            tool_name="safe_calculator", tool_arguments={"expression": "2+2"},
+            usage={"inputTokens": 100, "outputTokens": 3, "cachedInputTokens": 50,
+                   "uncachedInputTokens": 50, "cacheStatus": "reported"},
+        ),
+        ModelTurn(
+            final_answer="4",
+            usage={"inputTokens": None, "outputTokens": 1, "cachedInputTokens": 100,
+                   "uncachedInputTokens": None, "cacheStatus": "reported"},
+        ),
+    ]))
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        run = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision)
+        ).json()
+        metrics = client.get(f"/api/v1/runs/{run['runId']}").json()["metrics"]
+        # Both reported cached counts remain auditable, but only the complete
+        # first call is eligible for a ratio denominator.
+        assert metrics["cachedInputTokens"] == 150
+        assert metrics["cacheReuseRatio"] == pytest.approx(0.5)
+        assert metrics["cacheCoverage"] == pytest.approx(0.5)
+        assert 0 <= metrics["cacheReuseRatio"] <= 1
+    store.close()
+
+
+def test_recovery_preserves_approval_but_converges_cancelling_to_cancelled():
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    wf = graph["workflowId"]
+    repo = AgentRunRepository(store._conn, store._lock)
+    waiting, _ = repo.create(workflow_id=wf, instance_id="A", request=request(0, "approval"),
+                             context={"messages": []}, model_snapshot={})
+    repo.start(waiting["runId"])
+    repo.request_approval(waiting["runId"], 1, name="propose_patch", version="1.0.0",
+                          arguments={"path": "x.py", "patch": "+x"}, side_effect="artifact")
+    cancelling, _ = repo.create(workflow_id=wf, instance_id="A", request=request(0, "cancel"),
+                                context={"messages": []}, model_snapshot={})
+    repo.start(cancelling["runId"])
+    assert repo.request_cancel(cancelling["runId"])["status"] == "cancelling"
+    assert repo.recover_interrupted() == 1
+    assert repo.get(waiting["runId"])["status"] == "awaiting_approval"
+    assert repo.get(cancelling["runId"])["status"] == "cancelled"
+    store.close()
+
+
+def test_recovery_journals_unfinished_approved_tools_without_replaying_them():
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    wf = graph["workflowId"]
+    repo = AgentRunRepository(store._conn, store._lock)
+    run, _ = repo.create(
+        workflow_id=wf,
+        instance_id="A",
+        request=request(0, "executing-recovery"),
+        context={"messages": []},
+        model_snapshot={},
+    )
+    repo.start(run["runId"])
+    waiting = repo.request_approval(
+        run["runId"], 1, name="propose_patch", version="1.0.0",
+        arguments={"path": "x.py", "patch": "+x"}, side_effect="artifact",
+    )
+    approval_id = waiting["approvalRequests"][0]["approvalId"]
+    repo.decide_approval(run["runId"], approval_id, "approved")
+    repo.claim_approved_tool(run["runId"], approval_id)
+
+    preclaim, _ = repo.create(
+        workflow_id=wf,
+        instance_id="A",
+        request=request(0, "approved-before-claim-recovery"),
+        context={"messages": []},
+        model_snapshot={},
+    )
+    repo.start(preclaim["runId"])
+    preclaim_waiting = repo.request_approval(
+        preclaim["runId"], 1, name="propose_patch", version="1.0.0",
+        arguments={"path": "y.py", "patch": "+y"}, side_effect="artifact",
+    )
+    repo.decide_approval(
+        preclaim["runId"], preclaim_waiting["approvalRequests"][0]["approvalId"],
+        "approved",
+    )
+
+    cancelling, _ = repo.create(
+        workflow_id=wf,
+        instance_id="A",
+        request=request(0, "cancel-during-execution-recovery"),
+        context={"messages": []},
+        model_snapshot={},
+    )
+    repo.start(cancelling["runId"])
+    cancelling_waiting = repo.request_approval(
+        cancelling["runId"], 1, name="propose_patch", version="1.0.0",
+        arguments={"path": "z.py", "patch": "+z"}, side_effect="artifact",
+    )
+    cancelling_approval = cancelling_waiting["approvalRequests"][0]["approvalId"]
+    repo.decide_approval(cancelling["runId"], cancelling_approval, "approved")
+    repo.claim_approved_tool(cancelling["runId"], cancelling_approval)
+    assert repo.request_cancel(cancelling["runId"])["status"] == "cancelling"
+
+    assert repo.recover_interrupted() == 3
+    detail = repo.get(run["runId"])
+    assert detail["status"] == "interrupted"
+    assert detail["toolCalls"][0]["status"] == "interrupted"
+    assert detail["steps"][0]["status"] == "interrupted"
+    events = repo.events(run["runId"], 0, 100)["events"]
+    interrupted = next(event for event in events if event["type"] == "tool.interrupted")
+    assert interrupted["payload"]["executionOutcome"] == "unknown"
+    preclaim_detail = repo.get(preclaim["runId"])
+    assert preclaim_detail["status"] == "interrupted"
+    assert preclaim_detail["toolCalls"][0]["status"] == "interrupted"
+    assert next(
+        event for event in repo.events(preclaim["runId"], 0, 100)["events"]
+        if event["type"] == "tool.interrupted"
+    )["payload"]["executionOutcome"] == "notStarted"
+    cancelling_detail = repo.get(cancelling["runId"])
+    assert cancelling_detail["status"] == "cancelled"
+    assert cancelling_detail["toolCalls"][0]["status"] == "interrupted"
+    assert next(
+        event for event in repo.events(cancelling["runId"], 0, 100)["events"]
+        if event["type"] == "tool.interrupted"
+    )["payload"]["executionOutcome"] == "unknown"
+    store.close()
+
+
+def test_cache_aware_prompt_has_stable_prefix_dynamic_parent_memory_and_sibling_isolation():
+    captured: list[tuple[list[dict], list[dict]]] = []
+
+    class CaptureModel:
+        def bind(self):
+            return self
+
+        def snapshot(self):
+            return {"provider": "test", "model": "capture", "systemPrompt": "Stable host rule"}
+
+        def next(self, messages, tools):
+            captured.append((json.loads(json.dumps(messages)), json.loads(json.dumps(tools))))
+            return ModelTurn(final_answer=f"answer-{len(captured)}")
+
+    store = GraphStore(":memory:")
+    app = create_app(store, agent_model=CaptureModel())
+    with TestClient(app) as client:
+        wf, _ = workflow(client)
+        store.append_message(wf, "A", role="user", content="A shared")
+        store.fork(wf, "A", title="B", instance_id="B", initial_message="B shared")
+        store.fork(wf, "B", title="C", instance_id="C", initial_message="C private")
+        store.fork(wf, "B", title="E", instance_id="E", initial_message="E private")
+        # Parent updates after both forks are live memory, not frozen checkpoint data.
+        store.append_message(wf, "B", role="assistant", content="B latest")
+        for instance_id, key in (("C", "cache-c"), ("E", "cache-e")):
+            revision = store.list_messages(wf, instance_id, scope="local")["contentRevision"]
+            client.post(
+                f"/api/v1/workflows/{wf}/instances/{instance_id}/runs",
+                json=request(revision, key),
+            ).raise_for_status()
+
+        c_messages, c_tools = captured[0]
+        e_messages, e_tools = captured[1]
+        assert c_messages[0]["role"] == "system"
+        assert c_messages[0]["content"].count("Stable host rule") == 1
+        assert [tool["name"] for tool in c_tools] == sorted(tool["name"] for tool in c_tools)
+        assert c_tools == e_tools
+        c_content = [message["content"] for message in c_messages]
+        e_content = [message["content"] for message in e_messages]
+        assert c_content[1:4] == e_content[1:4] == ["A shared", "B shared", "B latest"]
+        assert c_content[4] == "C private" and e_content[4] == "E private"
+        assert "E private" not in json.dumps(c_messages)
+        assert "C private" not in json.dumps(e_messages)
+        # Volatile request identity and UI/database state never enter provider prompt text.
+        serialized = json.dumps(c_messages) + json.dumps(c_tools)
+        assert "cache-c" not in serialized and "run_" not in serialized
+
+        runs = app.state.agent_runs.list(wf, "C") + app.state.agent_runs.list(wf, "E")
+        assert len({run["stablePrefixSha256"] for run in runs}) == 1
+        assert all(run["promptLayoutVersion"] == "agent-cache-v2" for run in runs)
+    store.close()
+
+
+def test_usage_parser_normalizes_openai_and_deepseek_cache_fields():
+    openai = _usage({"usage": {
+        "prompt_tokens": 120, "completion_tokens": 7,
+        "prompt_tokens_details": {"cached_tokens": 90},
+    }})
+    assert openai == {"inputTokens": 120, "outputTokens": 7,
+                      "cachedInputTokens": 90, "uncachedInputTokens": 30,
+                      "cacheStatus": "reported"}
+    responses = _usage({"usage": {
+        "input_tokens": 90, "output_tokens": 3,
+        "input_tokens_details": {"cached_tokens": 40},
+    }})
+    assert responses == {"inputTokens": 90, "outputTokens": 3,
+                          "cachedInputTokens": 40, "uncachedInputTokens": 50,
+                          "cacheStatus": "reported"}
+    deepseek = _usage({"usage": {
+        "completion_tokens": 5, "prompt_cache_hit_tokens": 80,
+        "prompt_cache_miss_tokens": 20,
+    }})
+    assert deepseek == {"inputTokens": 100, "outputTokens": 5,
+                        "cachedInputTokens": 80, "uncachedInputTokens": 20,
+                        "cacheStatus": "reported"}
+    assert _usage({"usage": {"prompt_tokens": 10, "completion_tokens": 2}})[
+        "cacheStatus"
+    ] == "unsupported"
+    assert _usage({}) is None
+    invalid = _usage({"usage": {"prompt_tokens": 10,
+                                 "prompt_tokens_details": {"cached_tokens": 20}}})
+    assert invalid is not None and invalid["cacheStatus"] == "invalid"
+    assert invalid["cachedInputTokens"] is None
+    inconsistent_deepseek = _usage({"usage": {
+        "prompt_tokens": 10, "prompt_cache_hit_tokens": 8,
+        "prompt_cache_miss_tokens": 3,
+    }})
+    assert inconsistent_deepseek is not None
+    assert inconsistent_deepseek["cacheStatus"] == "invalid"
+    conflicting_formats = _usage({"usage": {
+        "prompt_tokens": 10,
+        "prompt_tokens_details": {"cached_tokens": 7},
+        "prompt_cache_hit_tokens": 6,
+        "prompt_cache_miss_tokens": 4,
+    }})
+    assert conflicting_formats is not None
+    assert conflicting_formats["cacheStatus"] == "invalid"
+
+
+def test_openai_adapter_does_not_duplicate_builder_system_policy(monkeypatch):
+    captured: dict[str, Any] = {}
+    original_client = httpx.Client
+
+    def handler(request_: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request_.content))
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
+            "message": {"content": "done"}}]})
+
+    monkeypatch.setattr(
+        "agent_runtime.adapters.httpx.Client",
+        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+    )
+    adapter = OpenAICompatibleAgentAdapter(lambda: OpenAICompatibleLLM(
+        base_url="https://provider.test/v1", model="m", system_prompt="host rule",
+    ))
+    adapter.next([{"role": "system", "content": "policy + host rule"},
+                  {"role": "user", "content": "request"}], [])
+    assert captured["messages"] == [
+        {"role": "system", "content": "policy + host rule"},
+        {"role": "user", "content": "request"},
+    ]
+
+
+def test_protocol_failure_still_journals_provider_cache_usage(monkeypatch):
+    original_client = httpx.Client
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"content": "truncated response"},
+            }],
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 3,
+                "prompt_tokens_details": {"cached_tokens": 12},
+            },
+        })
+
+    monkeypatch.setattr(
+        "agent_runtime.adapters.httpx.Client",
+        lambda timeout: original_client(
+            timeout=timeout, transport=httpx.MockTransport(handler)
+        ),
+    )
+    store = GraphStore(":memory:")
+    adapter = OpenAICompatibleAgentAdapter(lambda: OpenAICompatibleLLM(
+        base_url="https://provider.test/v1", model="cache-aware-model",
+    ))
+    app = create_app(store, agent_model=adapter)
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision)
+        )
+        assert response.status_code == 502
+        assert response.json()["code"] == "modelProtocolError"
+        run = app.state.agent_runs.list(wf, "A")[0]
+        detail = client.get(f"/api/v1/runs/{run['runId']}").json()
+        assert detail["status"] == "failed"
+        assert detail["steps"][0]["status"] == "failed"
+        assert detail["metrics"] | {
+            "modelStepCount": 1,
+            "inputTokens": 20,
+            "outputTokens": 3,
+            "cachedInputTokens": 12,
+            "uncachedInputTokens": 8,
+            "cacheReuseRatio": pytest.approx(0.6),
+            "cacheCoverage": pytest.approx(1.0),
+            "cacheStatus": "reported",
+        } == detail["metrics"]
+    store.close()

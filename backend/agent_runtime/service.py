@@ -4,15 +4,17 @@ import json
 import math
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from typing import Any, Iterator
 from urllib.parse import urlsplit
 
 from agent_runtime.adapters import AgentModelPort
+from agent_runtime.prompt_builder import assemble_agent_context
 from agent_runtime.repository import AgentRunRepository
 from agent_runtime.tools import ToolRegistry
 from api.llm import LLMUnavailable
-from graph_core import Conflict, GraphStore
+from graph_core import Conflict, GraphStore, Validation
 from engineering import EngineeringRepository
 
 
@@ -144,20 +146,190 @@ class AgentRuntimeService:
         with self._claim(claim_key):
             return self._execute_claimed(workflow_id, instance_id, request)
 
+    def cancel(self, run_id: str) -> dict[str, Any]:
+        return self.repository.request_cancel(run_id)
+
+    def retry(self, run_id: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        source = self.repository.get(run_id, details=False)
+        if source["status"] not in {"completed", "failed", "cancelled", "interrupted"}:
+            raise AgentRunError("runNotRetryable", "Agent run is not in a retryable state", 409, run_id)
+        request = self.repository.retry_payload(run_id)
+        options = options or {}
+        request["idempotencyKey"] = options.get("idempotencyKey") or ("retry-" + uuid.uuid4().hex)
+        if options.get("expectedContentRevision") is None:
+            snapshot = self.graph.list_messages(source["workflowId"], source["instanceId"], scope="effective")
+            request["expectedContentRevision"] = snapshot["contentRevision"]
+        else:
+            request["expectedContentRevision"] = options["expectedContentRevision"]
+        key = (source["workflowId"], source["instanceId"], request["idempotencyKey"])
+        with self._claim(key):
+            return self._execute_claimed(source["workflowId"], source["instanceId"], request,
+                                         parent_run_id=run_id)
+
+    def decide_approval(self, run_id: str, approval_id: str, decision: str) -> dict[str, Any]:
+        approval_key = ("approval", run_id, approval_id)
+        with self._claim(approval_key):
+            try:
+                decided = self.repository.decide_approval(run_id, approval_id, decision)
+            except Conflict as exc:
+                raise AgentRunError("approvalConflict", str(exc), 409, run_id) from exc
+            current = self.repository.get(run_id)
+            approval = next(
+                (item for item in current["approvalRequests"]
+                 if item["approvalId"] == approval_id), None
+            )
+            if approval is None:
+                raise AgentRunError("notFound", "Approval request was not found", 404, run_id)
+            if decision == "rejected" or current["status"] in {
+                "completed", "failed", "cancelled", "interrupted"
+            }:
+                return current
+            cancelled = self._finish_cancel_if_requested(run_id)
+            if cancelled is not None:
+                return cancelled
+            matching_call = next(
+                (call for call in current.get("toolCalls", [])
+                 if call["toolCallId"] == approval["toolCallId"]), None
+            )
+            if matching_call is None:
+                cancelled = self._fail_or_finish_cancel(run_id, "toolExecutionFailed")
+                if cancelled is not None:
+                    return cancelled
+                raise AgentRunError("toolExecutionFailed", "Approved tool call is missing", 500, run_id)
+            if matching_call["status"] == "completed":
+                return self.repository.get(run_id)
+            arguments = approval["arguments"]
+            try:
+                self.repository.claim_approved_tool(run_id, approval_id)
+            except Conflict as exc:
+                cancelled = self._finish_cancel_if_requested(run_id)
+                if cancelled is not None:
+                    return cancelled
+                raise AgentRunError(
+                    "approvalConflict", "Approved tool call could not be claimed", 409, run_id
+                ) from exc
+            tool = self.tools.resolve(approval["toolName"])
+            # Approval is necessary but not sufficient authority. Revalidate
+            # the exact persisted tool contract against the small executor
+            # allowlist *before* invoking any implementation. Future tools
+            # cannot become executable merely by declaring a side effect.
+            if (tool is None or tool.name != "propose_patch" or tool.version != "1.0.0"
+                    or tool.side_effect != "artifact"
+                    or approval["toolVersion"] != tool.version
+                    or approval["sideEffect"] != tool.side_effect
+                    or self.engineering is None):
+                self.repository.finish_approved_tool(
+                    run_id, approval_id, output=None, error_code="unknownTool", duration_ms=0,
+                )
+                cancelled = self._fail_or_finish_cancel(run_id, "unknownTool")
+                if cancelled is not None:
+                    return cancelled
+                raise AgentRunError(
+                    "unknownTool", "Approved tool has no allowed side-effect executor", 409, run_id
+                )
+            started = time.monotonic()
+            try:
+                self.tools.validate(tool, arguments)
+                output = tool.execute(arguments)
+                artifact = self.engineering.create_artifact(
+                    current["workflowId"], name=f"{output['path']}.patch", kind="patch",
+                    mime_type="text/x-diff", content=output["patch"],
+                    instance_id=current["instanceId"], run_id=run_id,
+                    metadata={"proposedPath": output["path"], "filesystemChanged": False},
+                )
+                output = {**output, "artifactId": artifact["artifactId"]}
+                self.repository.finish_approved_tool(
+                    run_id, approval_id, output=output, error_code=None,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+                cancelled = self._finish_cancel_if_requested(run_id)
+                if cancelled is not None:
+                    return cancelled
+                try:
+                    self.repository.complete(
+                        run_id,
+                        f"Patch proposal for {output['path']} was saved as a reviewable Artifact; "
+                        "no workspace file was changed.",
+                    )
+                    return self.repository.get(run_id)
+                except Conflict as exc:
+                    current = self.repository.get(run_id, details=False)
+                    if current["status"] == "cancelled":
+                        return self.repository.get(run_id)
+                    if current["status"] == "cancelling":
+                        return self.repository.finish_cancel(run_id)
+                    cancelled = self._fail_or_finish_cancel(run_id, "runRevisionConflict")
+                    if cancelled is not None:
+                        return cancelled
+                    raise AgentRunError(
+                        "runRevisionConflict", "Route changed before approval completed", 409, run_id
+                    ) from exc
+            except (Conflict, AgentRunError):
+                raise
+            except Exception as exc:
+                self.repository.finish_approved_tool(
+                    run_id, approval_id, output=None, error_code="toolExecutionFailed",
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+                cancelled = self._fail_or_finish_cancel(run_id, "toolExecutionFailed")
+                if cancelled is not None:
+                    return cancelled
+                raise AgentRunError("toolExecutionFailed", "Approved tool execution failed", 500,
+                                    run_id) from exc
+
+    def _finish_cancel_if_requested(self, run_id: str) -> dict[str, Any] | None:
+        status = self.repository.status(run_id)
+        if status == "cancelled":
+            return self.repository.get(run_id)
+        if status == "cancelling":
+            return self.repository.finish_cancel(run_id)
+        return None
+
+    def _fail_or_finish_cancel(self, run_id: str, code: str) -> dict[str, Any] | None:
+        """Let exactly one terminal transition win a fail/cancel race."""
+        self.repository.fail(run_id, code)
+        return self._finish_cancel_if_requested(run_id)
+
     def _execute_claimed(self, workflow_id: str, instance_id: str,
-                         request: dict[str, Any]) -> dict[str, Any]:
+                         request: dict[str, Any], parent_run_id: str | None = None) -> dict[str, Any]:
         try:
             existing = self.repository.find_idempotent(workflow_id, instance_id, request)
         except Conflict as exc:
             raise AgentRunError("idempotencyConflict", str(exc), 409) from exc
         if existing is not None:
-            if existing["status"] in {"queued", "running"}:
+            if existing["status"] == "awaiting_approval":
+                return existing
+            if existing["status"] in {"queued", "running", "cancelling"}:
                 return self.repository.wait_terminal(existing["runId"])
             return existing
-        snapshot = self.graph.list_messages(workflow_id, instance_id, scope="effective")
+        # Capture the live route, every route-node revision, and its effective
+        # messages under GraphStore's single lock.  Using separate graph and
+        # message reads here would leave a race where a parent could change
+        # between the two snapshots and the run would guard the wrong input.
+        # The runtime used to accept unbounded effective messages, so keep the
+        # preview limit effectively unbounded rather than silently truncating
+        # the model context at the HTTP preview default.
+        try:
+            snapshot = self.graph.context_preview(
+                workflow_id, instance_id, max_chars=2_147_483_647
+            )
+        except Validation as exc:
+            # Preserve the Runtime API's stable inactive-target contract; the
+            # graph projection intentionally reports this as a validation
+            # error for its own callers.
+            raise AgentRunError(
+                "runTargetInactive", "Conversation instance is not active", 409
+            ) from exc
         if snapshot["contentRevision"] != request["expectedContentRevision"]:
             raise AgentRunError("runRevisionConflict", "Route changed before the run started", 409)
-        memory_route = self._route(workflow_id, instance_id)
+        memory_route = snapshot["memoryRoute"]
+        route_revision_vector = [
+            {
+                "instanceId": node["instanceId"],
+                "contentRevision": node["contentRevision"],
+            }
+            for node in memory_route
+        ]
         accepted_knowledge = (self.engineering.accepted_knowledge(workflow_id, instance_id)
                               if self.engineering else [])
         try:
@@ -171,19 +343,29 @@ class AgentRuntimeService:
             raise AgentRunError(
                 "aiUnavailable", "Agent provider is unavailable", 503
             ) from exc
-        tool_specs = self.tools.specs()
+        assembled = assemble_agent_context(
+            route_messages=snapshot["messages"], accepted_knowledge=accepted_knowledge,
+            request=request, tools=self.tools.specs(),
+            provider_system_prompt=model_snapshot.get("systemPrompt", ""),
+        )
+        tool_specs, prompt_messages = assembled.tools, assembled.messages
         context = {"workflowId": workflow_id, "instanceId": instance_id,
                    "inputContentRevision": snapshot["contentRevision"],
                    "memoryRoute": memory_route,
+                   "routeRevisionVector": route_revision_vector,
                    "acceptedKnowledge": accepted_knowledge,
                    "availableTools": tool_specs,
+                   "promptLayoutVersion": assembled.prompt_layout_version,
+                   "stablePrefixSha256": assembled.stable_prefix_sha256,
+                   "modelRequestSha256": assembled.request_sha256,
                    "messages": snapshot["messages"], "objective": request["objective"],
                    "constraints": request["constraints"], "deliverables": request["deliverables"],
                    "acceptanceChecks": request["acceptanceChecks"]}
         try:
             run, created = self.repository.create(workflow_id=workflow_id, instance_id=instance_id,
                                                    request=request, context=context,
-                                                   model_snapshot=model_snapshot)
+                                                   model_snapshot=model_snapshot,
+                                                   parent_run_id=parent_run_id)
         except Conflict as exc:
             reason = str(exc).lower()
             if "idempotency" in reason:
@@ -198,38 +380,51 @@ class AgentRuntimeService:
         run_id = run["runId"]
         try:
             self.repository.start(run_id)
-            messages = [{"role": m["role"], "content": m["content"]} for m in snapshot["messages"]
-                        if m["role"] in {"system", "user", "assistant"}]
-            messages.append({"role": "user", "content": json.dumps({
-                "objective": request["objective"], "constraints": request["constraints"],
-                "deliverables": request["deliverables"],
-                "acceptanceChecks": request["acceptanceChecks"],
-                "acceptedKnowledge": accepted_knowledge,
-            }, ensure_ascii=False)})
+            messages = list(prompt_messages)
             step_sequence = 0
             for _ in range(self.max_steps):
+                cancelled = self._finish_cancel_if_requested(run_id)
+                if cancelled is not None:
+                    return cancelled
                 step_sequence += 1
                 self.repository.event(run_id, "model.started", {"stepSequence": step_sequence})
+                turn = None
                 try:
                     turn = bound_model.next(messages, tool_specs)
                     self._validate_turn(turn)
                 except LLMUnavailable as exc:
                     failure = _stable_provider_error(exc, run_id)
-                    self.repository.event(run_id, "model.failed", {"errorCode": failure.code})
+                    self.repository.record_model(
+                        run_id, step_sequence, "providerError", error_code=failure.code
+                    )
                     raise failure from exc
                 except AgentRunError as exc:
-                    self.repository.event(run_id, "model.failed", {"errorCode": exc.code})
+                    self.repository.record_model(
+                        run_id, step_sequence, "invalidTurn",
+                        getattr(turn, "usage", None), error_code=exc.code,
+                    )
                     raise
                 except ValueError as exc:
-                    self.repository.event(run_id, "model.failed", {"errorCode": "modelProtocolError"})
+                    self.repository.record_model(
+                        run_id, step_sequence, "protocolError", getattr(exc, "usage", None),
+                        error_code="modelProtocolError",
+                    )
                     raise AgentRunError("modelProtocolError", "Model returned an invalid agent turn", 502) from exc
+                turn_kind = "finalAnswer" if turn.final_answer is not None else "toolRequest"
+                self.repository.record_model(
+                    run_id, step_sequence, turn_kind, getattr(turn, "usage", None)
+                )
+                cancelled = self._finish_cancel_if_requested(run_id)
+                if cancelled is not None:
+                    return cancelled
                 if turn.final_answer is not None:
-                    self.repository.record_model(run_id, step_sequence, "finalAnswer")
                     try:
                         return self.repository.complete(run_id, turn.final_answer.strip())
                     except Conflict as exc:
+                        cancelled = self._finish_cancel_if_requested(run_id)
+                        if cancelled is not None:
+                            return cancelled
                         raise AgentRunError("runRevisionConflict", "Route changed while the run was executing", 409) from exc
-                self.repository.record_model(run_id, step_sequence, "toolRequest")
                 self.repository.event(run_id, "tool.requested", {
                     "toolName": turn.tool_name, "stepSequence": step_sequence,
                 })
@@ -244,26 +439,35 @@ class AgentRuntimeService:
                     duration = int((time.monotonic() - started) * 1000)
                     self.repository.record_tool(run_id, step_sequence, name=tool.name, version=tool.version,
                         arguments=turn.tool_arguments, output=None, error_code="toolArgumentsInvalid",
-                        duration_ms=duration)
+                        duration_ms=duration, provider_call_id=turn.tool_call_id)
                     raise AgentRunError("toolArgumentsInvalid", "Tool arguments are invalid") from exc
+                approval_id: str | None = None
+                if tool.side_effect != "none":
+                    step_sequence += 1
+                    return self.repository.request_approval(
+                        run_id, step_sequence, name=tool.name, version=tool.version,
+                        arguments=turn.tool_arguments, side_effect=tool.side_effect,
+                        provider_call_id=turn.tool_call_id,
+                    )
+                tool_sequence = step_sequence + 1
                 self.repository.event(run_id, "tool.started", {
                     "toolName": tool.name, "toolVersion": tool.version,
-                    "stepSequence": step_sequence + 1,
+                    "stepSequence": tool_sequence,
                 })
                 try:
                     output = tool.execute(turn.tool_arguments)
                 except Exception as exc:
-                    step_sequence += 1
                     duration = int((time.monotonic() - started) * 1000)
+                    step_sequence += 1
                     self.repository.record_tool(run_id, step_sequence, name=tool.name, version=tool.version,
                         arguments=turn.tool_arguments, output=None, error_code="toolExecutionFailed",
-                        duration_ms=duration)
+                        duration_ms=duration, provider_call_id=turn.tool_call_id)
                     raise AgentRunError("toolExecutionFailed", "Tool execution failed", 500) from exc
                 duration = int((time.monotonic() - started) * 1000)
                 step_sequence += 1
                 _, call_id = self.repository.record_tool(run_id, step_sequence, name=tool.name,
                     version=tool.version, arguments=turn.tool_arguments, output=output,
-                    error_code=None, duration_ms=duration)
+                    error_code=None, duration_ms=duration, provider_call_id=turn.tool_call_id)
                 messages.append({"role": "assistant", "content": "", "toolCall": {
                     "id": turn.tool_call_id or call_id, "name": tool.name, "arguments": turn.tool_arguments}})
                 messages.append({"role": "tool", "content": json.dumps(
@@ -271,18 +475,28 @@ class AgentRuntimeService:
                                  "toolCallId": turn.tool_call_id or call_id})
             raise AgentRunError("modelProtocolError", "Agent run exceeded the maximum step count", 502)
         except AgentRunError as exc:
-            self.repository.fail(run_id, exc.code)
+            cancelled = self._fail_or_finish_cancel(run_id, exc.code)
+            if cancelled is not None:
+                return cancelled
             exc.run_id = run_id
             raise
         except LLMUnavailable as exc:
             failure = _stable_provider_error(exc, run_id)
-            self.repository.fail(run_id, failure.code)
+            cancelled = self._fail_or_finish_cancel(run_id, failure.code)
+            if cancelled is not None:
+                return cancelled
             raise failure from exc
         except Conflict as exc:
             current = self.repository.get(run_id, details=False)
+            if current["status"] == "cancelled":
+                return self.repository.get(run_id)
+            if current["status"] == "cancelling":
+                return self.repository.finish_cancel(run_id)
             code = current.get("errorCode") or "runRevisionConflict"
             self.repository.fail(run_id, code)
             raise AgentRunError(code, "Agent run is no longer active", 409, run_id) from exc
         except Exception as exc:
-            self.repository.fail(run_id, "aiUnavailable")
+            cancelled = self._fail_or_finish_cancel(run_id, "aiUnavailable")
+            if cancelled is not None:
+                return cancelled
             raise AgentRunError("aiUnavailable", "Agent run failed", 503, run_id) from exc

@@ -549,16 +549,23 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .run-list > button.current { background: #dfeeed; border-color: #8ebbbd; }
 .run-status { align-self: start; padding: 2px 6px; font-size: 10px; border-radius: 999px; background: #e8eef0; }
 .run-status.running { color: #0b625e; background: #dff3ef; }
+.run-status.awaiting_approval { color: #76520f; background: #fff0c8; }
+.run-status.cancelling { color: #76520f; background: #fff0c8; }
+.run-status.cancelled { color: #53686e; background: #e8eef0; }
 .run-status.completed { color: #315f2a; background: #e4f2df; }
 .run-status.failed { color: #8d2d20; background: #fff1ee; }
 .run-status.interrupted { color: #7b5b20; background: #fff3d6; }
 .run-detail { min-width: 0; padding: 12px; overflow: auto; background: #f5f9fa; border: 1px solid #d5e1e4; border-radius: 12px; }
 .run-detail h3 { margin-top: 0; }.run-detail h4 { margin-bottom: 6px; }
+.run-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }.run-detail-heading > div:first-child { min-width: 0; }.run-detail-heading h3,.run-detail-heading p { margin: 0 0 7px; }.agent-run-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .run-detail pre { max-width: 100%; overflow: auto; white-space: pre-wrap; }
 .run-events { display: grid; gap: 7px; padding-left: 22px; }
 .run-events li { padding: 7px; background: #fff; border: 1px solid #dae4e6; border-radius: 8px; }
 .run-events pre { margin: 5px 0 0; font-size: 11px; }
 .run-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin: 10px 0 14px; }.run-metrics > div { display: grid; gap: 2px; padding: 9px; background: #fff; border: 1px solid #d9e3e7; border-radius: 8px; }.run-metrics strong { font-size: 14px; }.run-metrics small { color: #6c7c83; font-size: 9px; }
+.cache-metrics,.approval-section,.run-artifacts { margin: 10px 0 14px; padding: 10px; background: #fff; border: 1px solid #d9e3e7; border-radius: 9px; }.cache-metrics h4,.approval-section > h4,.run-artifacts > h4 { margin-top: 0; }.cache-metrics > p,.approval-section > p { margin: 4px 0 10px; color: #64757c; }.cache-metrics dl { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin: 0; }.cache-metrics dl div { min-width: 0; padding: 7px; background: #f2f6f7; border-radius: 7px; }.cache-metrics dt { color: #64757c; font-size: 10px; }.cache-metrics dd { margin: 3px 0 0; font-weight: 600; }
+.approval-section { border-color: #dfc071; background: #fffbef; }.approval-card { margin-top: 8px; padding: 10px; background: #fff; border: 1px solid #dec989; border-radius: 8px; }.approval-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }.approval-card > header div { display: grid; min-width: 0; gap: 2px; }.approval-card > header small { overflow-wrap: anywhere; color: #758087; }.approval-status { padding: 2px 7px; border-radius: 999px; color: #76520f; background: #fff0c8; font-size: 10px; white-space: nowrap; }.approval-status.approved { color: #315f2a; background: #e4f2df; }.approval-status.rejected { color: #8d2d20; background: #fff1ee; }.approval-card details { margin-top: 8px; }.approval-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 9px; }
+.run-artifacts { display: grid; gap: 7px; }.run-artifacts article { display: grid; gap: 3px; padding: 8px; background: #f2f6f7; border: 1px solid #d9e3e7; border-radius: 7px; }.run-artifacts article small { color: #64757c; }.event-tool,.event-artifact { margin: 4px 0; color: #64757c; font-size: 11px; }.event-diff pre { max-height: 240px; padding: 8px; background: #172126; color: #f5f7f7; border-radius: 7px; }.timeline-empty { padding: 10px; color: #64757c; background: #f2f6f7; border: 1px dashed #cbd7dc; border-radius: 8px; }
 .accepted-knowledge { margin: 10px 0; padding: 10px; background: #f1f4ff; border: 1px solid #d5dcf5; border-radius: 8px; }.accepted-knowledge h4 { margin-top: 0; }.accepted-knowledge article { margin-top: 7px; }.accepted-knowledge p { margin: 3px 0; color: #53626f; }
 .run-events.timeline { position: relative; padding-left: 0; list-style: none; }.run-events.timeline::before { position: absolute; top: 8px; bottom: 8px; left: 13px; width: 1px; background: #cbd7dc; content: ""; }.run-events.timeline li { position: relative; z-index: 1; display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 8px; padding: 0; background: transparent; border: 0; }.run-events.timeline li > i { display: grid; place-items: center; width: 27px; height: 27px; color: #526b72; font-style: normal; background: #eef3f5; border: 1px solid #cbd7dc; border-radius: 50%; }.run-events.timeline li.completed > i { color: #32642d; background: #e5f2e1; border-color: #bcd6b4; }.run-events.timeline li.failed > i { color: #963b2e; background: #fff0ed; border-color: #e5b5ad; }.run-events.timeline li > div { min-width: 0; padding: 4px 0 9px; }.run-events.timeline time { float: right; color: #7b898f; font-size: 9px; }.run-events.timeline details { margin-top: 4px; }.run-events.timeline summary { color: #667980; font-size: 10px; cursor: pointer; }.run-result-heading { display: flex; align-items: center; gap: 8px; }.run-result-heading h4 { flex: 1; }
 
@@ -614,6 +621,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
   .run-list { max-height: 30dvh; }
   .run-detail { min-height: 260px; overflow: visible; }
   .run-provenance { grid-template-columns: minmax(0,1fr); }
+  .run-detail-heading { display: grid; }.agent-run-actions { justify-content: stretch; }.agent-run-actions button { flex: 1; }
+  .cache-metrics dl { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .workspace-topbar { grid-template-columns: auto 1fr; }
   .workspace-topbar > strong { display: none; }
   .workspace-topbar > span { display: none; }
@@ -1413,15 +1422,39 @@ html .agent-wait {
 html .run-provenance > div,
 html .run-detail,
 html .run-events li,
-html .run-metrics > div {
+html .run-metrics > div,
+html .cache-metrics,
+html .approval-card,
+html .run-artifacts,
+html .run-artifacts article,
+html .timeline-empty {
   color: var(--ui-text);
   background: var(--ui-panel-muted);
   border-color: var(--ui-border);
 }
+html .cache-metrics dl div { color: var(--ui-text); background: var(--ui-panel-raised); }
+html .cache-metrics dt,
+html .cache-metrics > p,
+html .approval-section > p,
+html .approval-card > header small,
+html .run-artifacts article small,
+html .event-tool,
+html .event-artifact,
+html .timeline-empty { color: var(--ui-subtle); }
+html .approval-section { color: var(--ui-text); background: var(--ui-warning-soft); border-color: color-mix(in srgb,var(--ui-warning) 42%,var(--ui-border)); }
+html .approval-card { background: var(--ui-panel-raised); border-color: color-mix(in srgb,var(--ui-warning) 35%,var(--ui-border)); }
+html .approval-status { color: var(--ui-warning); background: var(--ui-warning-soft); }
+html .approval-status.approved { color: var(--ui-success); background: var(--ui-success-soft); }
+html .approval-status.rejected { color: var(--ui-danger); background: var(--ui-danger-soft); }
+html .event-diff pre { color: var(--ui-code-text); background: var(--ui-code-bg); border: 1px solid var(--ui-border); }
 html .run-list > button { color: var(--ui-text); background: var(--ui-panel); border-color: var(--ui-border); }
 html .run-list > button.current { color: var(--ui-accent); background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 46%,var(--ui-border)); }
 html .run-status { color: var(--ui-muted); background: var(--ui-panel-muted); }
 html .run-status.running { color: var(--ui-accent); background: var(--ui-accent-soft); }
+html .run-status.awaiting_approval,
+html .run-status.cancelling { color: var(--ui-warning); background: var(--ui-warning-soft); }
+html .run-status.cancelled,
+html .run-status.unknown { color: var(--ui-muted); background: var(--ui-panel-muted); }
 html .run-status.completed { color: var(--ui-success); background: var(--ui-success-soft); }
 html .run-status.failed { color: var(--ui-danger); background: var(--ui-danger-soft); }
 html .run-status.interrupted { color: var(--ui-warning); background: var(--ui-warning-soft); }

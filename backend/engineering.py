@@ -239,6 +239,21 @@ class EngineeringRepository:
                     raise Validation("merge artifact does not belong to a selected source")
                 cx.execute("INSERT INTO knowledge_merge_artifacts VALUES(?,?)", (merge_id, artifact_id))
                 linked.append(self._artifact(artifact))
+            if created:
+                # Accepted knowledge is part of every descendant Agent model
+                # input. Advance the target route revision so an in-flight run
+                # based on older knowledge cannot write a stale answer. A
+                # merge into B invalidates B descendants; a sibling merge does
+                # not affect their route vectors.
+                cx.execute(
+                    "UPDATE conversation_instances SET content_revision=content_revision+1,"
+                    "updated_at=? WHERE workflow_id=? AND id=?",
+                    (now, workflow_id, target_instance_id),
+                )
+                cx.execute(
+                    "UPDATE workflows SET content_revision=content_revision+1,updated_at=? "
+                    "WHERE id=?", (now, workflow_id),
+                )
         return {"mergeId": merge_id, "workflowId": workflow_id,
                 "targetInstanceId": target_instance_id, "sourceInstanceIds": sources,
                 "knowledgeItems": created, "artifacts": linked, "transcriptsMerged": False,

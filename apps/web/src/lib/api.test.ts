@@ -31,7 +31,35 @@ describe('agent runtime API contract',()=>{
    {instanceId:'a',topicId:'ta',title:'数据集'},
    {instanceId:'b',topicId:'tb',title:'实验'},
   ]);
-  expect(run.availableTools).toEqual([{name:'safe_calculator',version:'1.0.0',description:'Arithmetic'}]);
+ expect(run.availableTools).toEqual([{name:'safe_calculator',version:'1.0.0',description:'Arithmetic'}]);
+ });
+
+ it('uses the durable cancel, retry and approval decision endpoints',async()=>{
+  const body={runId:'run-7',workflowId:'wf',instanceId:'b',status:'running',inputContentRevision:2,objective:'test',constraints:[],deliverables:[],acceptanceChecks:[]};
+  const fetchMock=vi.fn().mockResolvedValue(response(200,body));
+  vi.stubGlobal('fetch',fetchMock);
+  await api.cancelAgentRun('run-7');
+  await api.retryAgentRun('run-7',{idempotencyKey:'retry-1',expectedContentRevision:3});
+  await api.decideAgentApproval('run-7','approval/1','approved');
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/runs/run-7/cancel');
+  expect(fetchMock.mock.calls[0][1]).toMatchObject({method:'POST'});
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/runs/run-7/retry');
+  expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({idempotencyKey:'retry-1',expectedContentRevision:3});
+  expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/runs/run-7/approvals/approval%2F1/decision');
+  expect(JSON.parse(String((fetchMock.mock.calls[2][1] as RequestInit).body))).toEqual({decision:'approved'});
+ });
+
+ it('normalizes legacy approval status and cache fields while preserving unavailable and unknown states',async()=>{
+  const base={runId:'run-7',workflowId:'wf',instanceId:'b',inputContentRevision:2,objective:'test',constraints:[],deliverables:[],acceptanceChecks:[]};
+  const fetchMock=vi.fn()
+   .mockResolvedValueOnce(response(200,{...base,status:'waiting_approval',approvals:[{id:'approval-1',tool:{name:'apply_patch',version:'1'},toolArguments:{path:'a'},status:'pending'}],metrics:{durationMs:null,modelStepCount:1,toolCallCount:1,toolDurationMs:0,inputTokens:100,outputTokens:2,estimatedCost:null,cachedInputTokens:60,cacheMissTokens:40,cacheHitRate:.6,cacheStatus:'unavailable'}}))
+   .mockResolvedValueOnce(response(200,{...base,status:'future_provider_state'}));
+  vi.stubGlobal('fetch',fetchMock);
+  const legacy=await api.agentRun('run-7');
+  expect(legacy.status).toBe('awaiting_approval');
+  expect(legacy.approvalRequests).toEqual([expect.objectContaining({approvalId:'approval-1',toolName:'apply_patch',toolVersion:'1',arguments:{path:'a'},status:'pending'})]);
+  expect(legacy.metrics).toMatchObject({cachedInputTokens:60,uncachedInputTokens:40,cacheReuseRatio:.6,cacheStatus:'not_reported'});
+  expect((await api.agentRun('run-8')).status).toBe('unknown');
  });
 });
 
