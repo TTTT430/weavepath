@@ -1945,6 +1945,90 @@ html .prune-dialog > ul { max-height: min(38vh,320px); overflow: auto; padding-r
 html .editable-title { cursor: text; user-select: none; }
 html .editable-title:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 4px; border-radius: 3px; }
 
+/* Composer model control: one input surface, with a quiet Codex-style model
+   picker in its footer instead of another nested text box. */
+html .composer {
+  display: grid;
+  grid-template-columns: minmax(0,1fr);
+  align-items: stretch;
+  gap: 3px;
+}
+html .composer textarea { width: 100%; min-height: 42px; padding: 8px 9px 5px; }
+html .composer-toolbar { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; }
+html .composer-toolbar > .primary { height: 34px; min-width: 54px; padding: 0 13px; border-radius: 9px; }
+html .composer-model-picker { position: relative; min-width: 0; }
+html button.composer-model-trigger {
+  display: inline-flex;
+  max-width: min(320px,48vw);
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  color: var(--ui-muted);
+  background: transparent;
+  border-color: transparent;
+  border-radius: 7px;
+  box-shadow: none;
+}
+html button.composer-model-trigger > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html button.composer-model-trigger:not(:disabled):hover,
+html button.composer-model-trigger[aria-expanded="true"] { color: var(--ui-text); background: var(--ui-panel-muted); border-color: var(--ui-border); }
+html .composer-model-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 18;
+  display: grid;
+  width: min(340px,calc(100vw - 48px));
+  max-height: min(440px,55dvh);
+  overflow: hidden;
+  color: var(--ui-text);
+  background: var(--ui-panel-raised);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 11px;
+  box-shadow: 0 16px 44px rgba(15,23,42,.24);
+}
+html .composer-model-menu > header { display: flex; align-items: center; gap: 5px; padding: 9px 9px 7px 12px; border-bottom: 1px solid var(--ui-border); }
+html .composer-model-menu > header strong { flex: 1; font-size: 12px; }
+html .composer-model-menu > header button { width: 28px; height: 28px; border-color: transparent; background: transparent; }
+html .composer-model-search { display: block; margin: 8px 9px 3px; }
+html .composer-model-search > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+html .composer-model-search input { width: 100%; min-height: 34px; padding: 6px 9px; color: var(--ui-text); background: var(--ui-input); border: 1px solid var(--ui-border); border-radius: 7px; }
+html .composer-model-options { display: grid; gap: 2px; min-height: 0; overflow-y: auto; padding: 6px; overscroll-behavior: contain; }
+html .composer-model-options button { display: flex; min-width: 0; min-height: 34px; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px; text-align: left; background: transparent; border-color: transparent; border-radius: 7px; box-shadow: none; }
+html .composer-model-options button > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html .composer-model-options button:hover { background: var(--ui-panel-muted); border-color: transparent; }
+html .composer-model-options button.current { color: var(--ui-accent); background: var(--ui-accent-soft); }
+html .composer-model-options p { margin: 8px; color: var(--ui-subtle); font-size: 11px; }
+html .composer-model-state { display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 10px 12px; color: var(--ui-muted); font-size: 11px; }
+html .composer-model-state.is-error { color: var(--ui-danger); }
+html .composer-model-spinner { width: 14px; height: 14px; flex: 0 0 14px; border: 2px solid var(--ui-border-strong); border-top-color: var(--ui-accent); border-radius: 50%; animation: activity-rotate .8s linear infinite; }
+
+/* Agent runs are a two-pane workspace. The list and detail own their scroll
+   positions; scrolling a long result must not move the run selection list. */
+html .agent-runs {
+  display: flex;
+  width: min(1120px,calc(100vw - 36px));
+  height: min(820px,calc(100dvh - 36px));
+  max-height: calc(100dvh - 36px);
+  flex-direction: column;
+  overflow: hidden;
+}
+html .agent-runs > header,
+html .agent-runs > .agent-error { flex: 0 0 auto; }
+html .agent-runs-layout {
+  grid-template-columns: minmax(260px,.72fr) minmax(0,1.55fr);
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+html .run-list { min-height: 0; max-height: none; overflow-y: auto; padding-right: 4px; scrollbar-gutter: stable; overscroll-behavior: contain; }
+html .run-detail { height: 100%; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
+html .run-result { margin-top: 12px; padding-top: 2px; border-top: 1px solid var(--ui-border); }
+html .run-result > .markdown-message { color: var(--ui-text); font-family: inherit; font-size: 13px; line-height: 1.65; }
+html .run-result-heading { margin-bottom: 8px; }
+html .run-result-heading h4 { margin-block: 0; }
+
 @media (max-width: 1499px) {
   html .chat-shell { grid-template-columns: 224px minmax(0,1fr); }
   html .canvas-body { grid-template-columns: 210px minmax(0,1fr) 340px; }
@@ -2005,6 +2089,8 @@ html .editable-title:focus-visible { outline: 2px solid var(--ui-accent); outlin
   html .messages { padding: 16px 12px 10px; }
   html .message.user > div { max-width: 92%; }
   html .composer { width: calc(100% - 24px); }
+  html button.composer-model-trigger { max-width: 56vw; }
+  html .composer-model-menu { position: fixed; right: 12px; bottom: 78px; left: 12px; width: auto; }
   html .response-details-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   html .canvas-header { grid-template-columns: minmax(0,1fr) auto auto; }
   html .canvas-conversation-picker select { width: min(140px,38vw); }
@@ -2021,6 +2107,9 @@ html .editable-title:focus-visible { outline: 2px solid var(--ui-accent); outlin
   html .experiment-workspace { grid-template-columns: minmax(0,1fr); }
   html .artifact-preview,
   html .experiment-list { grid-column: auto; }
+  html .agent-runs-layout { grid-template-columns: minmax(0,1fr); overflow-y: auto; }
+  html .run-list { max-height: 28dvh; flex: 0 0 auto; }
+  html .run-detail { height: auto; min-height: 260px; overflow: visible; }
 }
 
 @media (hover: none) and (max-width: 760px) {

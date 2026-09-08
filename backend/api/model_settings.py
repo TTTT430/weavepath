@@ -183,6 +183,27 @@ class RuntimeModelSettings:
             self._credential_error = False
             return self.status()
 
+    def switch_model(self, model: str) -> dict[str, Any]:
+        """Change only the active model, preserving provider and secret state."""
+        selected = _model(model)
+        with self._lock:
+            if self._config is None:
+                raise ModelSettingsError(
+                    "aiNotConfigured", "AI provider is not configured", 409,
+                )
+            config = ModelConfig(
+                self._config.base_url, selected, self._config.timeout_seconds,
+                self._config.system_prompt, self._config.network_mode,
+            )
+            # Persist only when the existing non-secret settings are already
+            # local. The API key vault is intentionally untouched.
+            if self._persistence == "local":
+                self._write_non_secret(config)
+            self._config = config
+            if self._source != "local":
+                self._source = "runtime"
+            return self.status()
+
     def reset(self) -> dict[str, Any]:
         with self._lock:
             self._config, self._api_key, self._source, self._persistence = None, "", "none", "memory"

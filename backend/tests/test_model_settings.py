@@ -74,6 +74,39 @@ def test_unchecking_secure_key_persistence_clears_the_vault(tmp_path):
     assert runtime.status()["apiKeyPersisted"] is False
 
 
+def test_quick_model_switch_preserves_provider_key_network_and_persistence(tmp_path):
+    path = tmp_path / "settings.json"
+    credentials = FakeCredentialStore()
+    runtime = RuntimeModelSettings(path, env={}, credential_store=credentials)
+    runtime.configure(
+        base_url="https://example.test/v1", model="model-a", api_key="secret",
+        persistence="local", persist_api_key=True, network_mode="system",
+        system_prompt="stable policy",
+    )
+    status = runtime.switch_model("model-b")
+    assert status["model"] == "model-b"
+    assert status["baseUrl"] == "https://example.test/v1"
+    assert status["networkMode"] == "system"
+    assert status["apiKeyPersisted"] is True
+    assert status["secretPersistence"] == "secure-local"
+    assert credentials.secret == "secret"
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["model"] == "model-b"
+    assert persisted["systemPrompt"] == "stable policy"
+
+
+def test_quick_model_switch_endpoint_rejects_unconfigured_provider(tmp_path):
+    store = GraphStore(":memory:")
+    runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})
+    with TestClient(create_app(store, model_settings=runtime)) as client:
+        response = client.patch("/api/v1/ai/settings/model", json={"model": "model-b"})
+        assert response.status_code == 409
+        assert response.json() == {
+            "code": "aiNotConfigured", "error": "AI provider is not configured",
+        }
+    store.close()
+
+
 def test_secure_key_persistence_fails_closed_when_unavailable(tmp_path):
     runtime = RuntimeModelSettings(tmp_path / "settings.json", env={},
                                    credential_store=FakeCredentialStore(available=False))

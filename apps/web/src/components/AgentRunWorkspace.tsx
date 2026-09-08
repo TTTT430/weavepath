@@ -12,6 +12,7 @@ import {api,ApiError} from '../lib/api';
 import {useI18n} from '../lib/i18n';
 import {AppIcon} from './AppIcon';
 import {ActivityStatus} from './ActivityStatus';
+import {MarkdownMessage} from './MarkdownMessage';
 
 const EVENT_PAGE_SIZE=100;
 const lines=(value:string)=>value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
@@ -452,7 +453,7 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
 	      <h4>{t('executionTimeline')}</h4>
 	      {eventState.loading&&!events.length?<p className="timeline-empty" role="status">{t('timelineLoading')}</p>:!events.length?<p className="timeline-empty">{t('noEvents')}</p>:<ol className="run-events timeline">{events.map(event=>{const tool=eventTool(event),artifact=eventArtifact(event);return <li className={event.type.includes('failed')||event.type.includes('rejected')?'failed':event.type.includes('completed')||event.type.includes('approved')?'completed':''} key={event.sequence}><i aria-hidden="true">{eventIcon(event.type)}</i><div><strong>{eventName(event.type)}</strong>{event.createdAt&&<time>{new Date(event.createdAt).toLocaleTimeString(locale)}</time>}{tool&&<p className="event-tool">{t('tools')}: <b>{tool}</b></p>}{artifact.text&&<p className="event-artifact">{t('artifactsProduced')}: <b>{artifact.text}</b>{artifact.kind&&<small> · {artifact.kind}</small>}</p>}{artifact.diff&&<details className="event-diff"><summary>{t('diffPreview')}</summary><pre>{artifact.diff}</pre></details>}<details><summary>{t('viewEventData')}</summary><pre>{show(event.payload)}</pre></details></div></li>})}</ol>}
        {eventState.owner===key&&String(eventState.runId)===String(selected.runId)&&eventState.hasMore&&<button type="button" disabled={eventState.loading} onClick={()=>void loadMoreEvents()}>{t('loadMoreEvents')}</button>}
-	      {(selected.finalAnswer||selected.toolResults?.length||selected.finalMessageId)&&<><div className="run-result-heading"><h4>{t('result')}</h4>{selected.finalAnswer&&<button type="button" disabled={artifactBusy||savedArtifacts.has(String(selected.runId))} onClick={()=>void saveResultArtifact()}>{savedArtifacts.has(String(selected.runId))?t('savedAsArtifact'):t('saveAsArtifact')}</button>}</div><pre>{show(selected.finalAnswer||selected.toolResults?.length?selected.finalAnswer||selected.toolResults:{finalMessageId:selected.finalMessageId})}</pre></>}
+	      {(selected.finalAnswer||selected.toolResults?.length||selected.finalMessageId)&&<section className="run-result"><div className="run-result-heading"><h4>{t('result')}</h4>{selected.finalAnswer&&<button type="button" disabled={artifactBusy||savedArtifacts.has(String(selected.runId))} onClick={()=>void saveResultArtifact()}>{savedArtifacts.has(String(selected.runId))?t('savedAsArtifact'):t('saveAsArtifact')}</button>}</div>{selected.finalAnswer?<MarkdownMessage content={selected.finalAnswer}/>:<pre>{show(selected.toolResults?.length?selected.toolResults:{finalMessageId:selected.finalMessageId})}</pre>}</section>}
      </article>}
     </div>
    </section>

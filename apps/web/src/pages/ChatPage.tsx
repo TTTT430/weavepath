@@ -10,6 +10,7 @@ import{MarkdownMessage}from'../components/MarkdownMessage';
 import{AgentRunWorkspace}from'../components/AgentRunWorkspace';
 import{AppIcon}from'../components/AppIcon';
 import{ActivityStatus}from'../components/ActivityStatus';
+import{ComposerModelPicker}from'../components/ComposerModelPicker';
 import{notifyWorkflowChanged,type WorkflowChangedEvent}from'../lib/workflowEvents';
 
 type ReplyState='idle'|'thinking'|'error'|'cancelled';
@@ -648,7 +649,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    {stream}
    <form className="composer" onSubmit={event=>{event.preventDefault();void send()}}>
     <textarea value={draft} onChange={event=>setDraft(event.target.value)} placeholder={t('placeholder')} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();void send()}}}/>
-    <button className="primary" disabled={!draft.trim()||busy}>{t('send')}</button>
+    <div className="composer-toolbar">
+     <ComposerModelPicker status={aiStatus} disabled={replyState==='thinking'} onChanged={setAiStatus} onOpenSettings={()=>setSettingsOpen(true)}/>
+     <button className="primary" disabled={!draft.trim()||busy}>{t('send')}</button>
+    </div>
    </form>
   </section>
   {settingsOpen&&<ModelSettingsDialog onClose={()=>setSettingsOpen(false)} onSaved={refreshAI}/>}

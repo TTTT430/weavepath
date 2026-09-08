@@ -10,6 +10,19 @@ const response=(status:number,body:unknown)=>({
 afterEach(()=>vi.unstubAllGlobals());
 
 describe('agent runtime API contract',()=>{
+ it('uses dedicated non-secret endpoints for model discovery and quick switching',async()=>{
+  const fetchMock=vi.fn()
+   .mockResolvedValueOnce(response(200,{models:['model-a','model-b'],count:2}))
+   .mockResolvedValueOnce(response(200,{configured:true,provider:'openai-compatible',model:'model-b'}));
+  vi.stubGlobal('fetch',fetchMock);
+  expect(await api.aiModels()).toEqual({models:['model-a','model-b'],count:2});
+  expect((await api.switchAIModel('model-b')).model).toBe('model-b');
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/ai/models');
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/ai/settings/model');
+  expect(fetchMock.mock.calls[1][1]).toMatchObject({method:'PATCH'});
+  expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({model:'model-b'});
+ });
+
  it('keeps the persisted run id on an error response',async()=>{
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response(502,{code:'toolExecutionFailed',error:'failed',runId:'run-7'})));
   let caught:unknown;

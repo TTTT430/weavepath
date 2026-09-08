@@ -19,6 +19,8 @@ export const api={
  saveAISettings:(body:AISettingsInput)=>request<AISettings>('/ai/settings',{method:'PUT',body:JSON.stringify(body)}),
  resetAISettings:()=>request<AISettings>('/ai/settings',{method:'DELETE'}),
  validateAISettings:(body:AISettingsInput)=>request<AIValidation>('/ai/settings/validate',{method:'POST',body:JSON.stringify(body)}),
+ aiModels:()=>request<{models:string[];count:number}>('/ai/models'),
+ switchAIModel:(model:string)=>request<AISettings>('/ai/settings/model',{method:'PATCH',body:JSON.stringify({model})}),
  workflows:()=>request<{workflows:Graph[]}>('/workflows').then(x=>x.workflows.map(g=>({id:g.workflowId,name:g.name,activeInstanceId:g.activeInstanceId||undefined}))),
  createWorkflow:(body:{name?:string;rootTitle?:string;rootTopicId?:string})=>request<Graph>('/workflows',{method:'POST',body:JSON.stringify(body)}),
  graph:(w:string)=>request<Graph>(`/workflows/${enc(w)}/graph`),

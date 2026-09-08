@@ -316,6 +316,10 @@ class ModelSettingsValidationInput(ModelSettingsInput):
     model: str = Field("", max_length=200)
 
 
+class ModelSelectionInput(CamelModel):
+    model: str = Field(min_length=1, max_length=200)
+
+
 class ForkInput(CamelModel):
     title: str | None = Field(None, max_length=240)
     topic_id: str | None = Field(None, alias="topicId")
@@ -621,6 +625,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def discover_ai_models():
         models = settings.discover_models()
         return {"models": models, "count": len(models)}
+
+    @app.patch(prefix + "/ai/settings/model")
+    def switch_ai_model(body: ModelSelectionInput):
+        return settings.switch_model(body.model)
 
     @app.post(prefix + "/ai/settings/validate")
     def validate_ai_settings(body: ModelSettingsValidationInput):

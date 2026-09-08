@@ -64,4 +64,4 @@ POST /api/v1/runs/{runId}/approvals/{approvalId}/decision
 - 审批幂等、拒绝、取消晚响应、重试 lineage、重启恢复、revision 冲突和 Artifact 保留；
 - 工作区工具的显式根目录和路径安全。
 
-当前基线：后端 158 项、前端 131 项、Python compileall、TypeScript typecheck 和 production build 通过。
+当前基线：后端 160 项、前端 133 项、Python compileall、TypeScript typecheck 和 production build 通过。
