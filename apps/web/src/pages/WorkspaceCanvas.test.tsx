@@ -237,7 +237,7 @@ describe('native double canvas workspace',()=>{
   renderCanvas();await openLeafCanvas();
   expect(apiMock.graph).toHaveBeenCalledTimes(1);expect(apiMock.turns).toHaveBeenCalledTimes(1);
   fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'started',senderId:'chat-surface',sentAt:Date.now()}}));
-  expect(await screen.findByRole('status')).toHaveTextContent('正在思考');
+  expect(await screen.findByRole('status')).toHaveTextContent('正在连接模型');
   await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledTimes(2));
   expect(apiMock.graph).toHaveBeenCalledTimes(1);
   fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'completed',senderId:'chat-surface',sentAt:Date.now()}}));
@@ -250,10 +250,10 @@ describe('native double canvas workspace',()=>{
   renderCanvas();await openLeafCanvas();const sentAt=Date.now()+10;
   fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'started',requestId:'request-old',senderId:'chat-surface',sentAt}}));
   fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'started',requestId:'request-new',senderId:'chat-surface',sentAt:sentAt+1}}));
-  expect(await screen.findByRole('status')).toHaveTextContent('正在思考');
+  expect(await screen.findByRole('status')).toHaveTextContent('正在连接模型');
   fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'completed',requestId:'request-old',senderId:'chat-surface',sentAt:sentAt+2}}));
   await waitFor(()=>expect(apiMock.graph).toHaveBeenCalledTimes(2));
-  expect(screen.getByRole('status')).toHaveTextContent('正在思考');
+  expect(screen.getByRole('status')).toHaveTextContent('正在连接模型');
   fireEvent(window,new MessageEvent('message',{data:{type:'conversation-workflow-changed',workflowId:'wf',instanceId:'leaf',phase:'completed',requestId:'request-new',senderId:'chat-surface',sentAt:sentAt+3}}));
   await waitFor(()=>expect(screen.queryByRole('status')).not.toBeInTheDocument());
  });
@@ -266,7 +266,7 @@ describe('native double canvas workspace',()=>{
   apiMock.turns.mockImplementation(async(_workflowId:string,instanceId:string)=>instanceId==='root'?rootSnapshot:snapshot);
   renderCanvas();await openLeafCanvas();
   fireEvent.change(screen.getByLabelText('画布对话输入'),{target:{value:'留在大模型实验'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
-  expect(await screen.findByRole('status')).toHaveTextContent('正在思考');
+  expect(await screen.findByRole('status')).toHaveTextContent('正在连接模型');
   fireEvent.click(within(screen.getByRole('navigation',{name:'对话'})).getByRole('button',{name:'数据集'}));
   await waitFor(()=>expect(apiMock.turns).toHaveBeenCalledWith('wf','root'));
   expect(screen.queryByRole('status')).not.toBeInTheDocument();

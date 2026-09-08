@@ -68,7 +68,11 @@ def test_weavepath_model_environment_has_priority_over_legacy(tmp_path):
     status = runtime.status()
     assert status["baseUrl"] == "https://weavepath.test/v1"
     assert status["model"] == "new-model"
-    assert status["timeoutSeconds"] == 23
+    assert "timeoutSeconds" not in status
+    assert "connectTimeoutSeconds" not in status
+    timeout = runtime._client().request_timeout()
+    assert timeout.connect == 23
+    assert timeout.read is None
     assert status["systemPrompt"] == "new prompt"
     assert runtime._api_key == "new-key"
 

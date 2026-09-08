@@ -16,7 +16,7 @@ const presets={
 type Preset=keyof typeof presets;
 const DRAFT_KEY='weavepath.model-settings.draft.v1';
 const SESSION_SECRET_KEY='weavepath.model-settings.api-key.session.v1';
-type SettingsDraft={provider?:Preset;baseUrl?:string;model?:string;timeout?:number;persist?:boolean};
+type SettingsDraft={provider?:Preset;baseUrl?:string;model?:string;persist?:boolean};
 function readDraft():SettingsDraft{
  try{const value=JSON.parse(localStorage.getItem(DRAFT_KEY)||'null');return value&&typeof value==='object'?value:{}}
  catch{return {}}
@@ -25,12 +25,12 @@ function readSessionSecret(){try{return sessionStorage.getItem(SESSION_SECRET_KE
 
 export function ModelSettingsDialog({onClose,onSaved}:{onClose:()=>void;onSaved:()=>void}){
  const draft=useState(readDraft)[0];
- const{t,locale,setLocale}=useI18n();const[provider,setProvider]=useState<Preset>(draft.provider&&draft.provider in presets?draft.provider:'custom'),[baseUrl,setBaseUrl]=useState(draft.baseUrl||''),[model,setModel]=useState(draft.model||''),[apiKey,setApiKey]=useState(readSessionSecret),[timeout,setTimeoutValue]=useState(draft.timeout||60),[persist,setPersist]=useState(draft.persist??false),[hasKey,setHasKey]=useState(false),[models,setModels]=useState<string[]>([]),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[confirmReset,setConfirmReset]=useState(false),[loaded,setLoaded]=useState(false);
- useEffect(()=>{api.aiSettings().then(x=>{if(!draft.baseUrl)setBaseUrl(x.baseUrl||'');if(!draft.model)setModel(x.model||'');if(!draft.timeout)setTimeoutValue(x.timeoutSeconds);if(draft.persist===undefined)setPersist(x.persistence==='local');setHasKey(x.hasApiKey);setLoaded(true)}).catch(e=>{setNotice(e.message);setLoaded(true)})},[]);
- useEffect(()=>{if(!loaded)return;try{localStorage.setItem(DRAFT_KEY,JSON.stringify({provider,baseUrl,model,timeout,persist}))}catch{/* Draft persistence is best-effort. */}},[loaded,provider,baseUrl,model,timeout,persist]);
+ const{t,locale,setLocale}=useI18n();const[provider,setProvider]=useState<Preset>(draft.provider&&draft.provider in presets?draft.provider:'custom'),[baseUrl,setBaseUrl]=useState(draft.baseUrl||''),[model,setModel]=useState(draft.model||''),[apiKey,setApiKey]=useState(readSessionSecret),[persist,setPersist]=useState(draft.persist??false),[hasKey,setHasKey]=useState(false),[models,setModels]=useState<string[]>([]),[busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[confirmReset,setConfirmReset]=useState(false),[loaded,setLoaded]=useState(false);
+ useEffect(()=>{api.aiSettings().then(x=>{if(!draft.baseUrl)setBaseUrl(x.baseUrl||'');if(!draft.model)setModel(x.model||'');if(draft.persist===undefined)setPersist(x.persistence==='local');setHasKey(x.hasApiKey);setLoaded(true)}).catch(e=>{setNotice(e.message);setLoaded(true)})},[]);
+ useEffect(()=>{if(!loaded)return;try{localStorage.setItem(DRAFT_KEY,JSON.stringify({provider,baseUrl,model,persist}))}catch{/* Draft persistence is best-effort. */}},[loaded,provider,baseUrl,model,persist]);
  useEffect(()=>{try{if(apiKey)sessionStorage.setItem(SESSION_SECRET_KEY,apiKey);else sessionStorage.removeItem(SESSION_SECRET_KEY)}catch{/* Session secret persistence is best-effort. */}},[apiKey]);
  function choose(value:Preset){setProvider(value);const p=presets[value];if(value!=='custom'){setBaseUrl(p.url);setModel(p.model)}}
- function body():AISettingsInput{return{baseUrl:baseUrl.trim(),model:model.trim(),...(apiKey?{apiKey}:{}),timeoutSeconds:Number(timeout),persistence:persist?'local':'memory'}}
+ function body():AISettingsInput{return{baseUrl:baseUrl.trim(),model:model.trim(),...(apiKey?{apiKey}:{}),persistence:persist?'local':'memory'}}
  function discoveryError(error:unknown){if(error instanceof ApiError){const keys={modelDiscoveryTimeout:'modelDiscoveryTimeout',modelDiscoveryUnauthorized:'modelDiscoveryUnauthorized',modelDiscoveryUnsupported:'modelDiscoveryUnsupported',modelDiscoveryConnectionFailed:'modelDiscoveryConnectionFailed',modelDiscoveryInvalidResponse:'modelDiscoveryInvalidResponse'}as const;const key=error.code?keys[error.code as keyof typeof keys]:undefined;if(key)return t(key)}return error instanceof Error?error.message:String(error)}
  async function validate(){setBusy(true);setNotice('');try{const hasSelectedModel=!!model.trim();const x=await api.validateAISettings(body());setModels(x.models);setNotice(t(!hasSelectedModel||x.selectedModelAvailable?'connectionOk':'connectionOkModelMissing'))}catch(e){setNotice(`${t('connectionFailed')}: ${discoveryError(e)}`)}finally{setBusy(false)}}
  async function save(){setBusy(true);setNotice('');try{await api.saveAISettings(body());await onSaved();onClose()}catch(e){setNotice(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
@@ -44,7 +44,6 @@ export function ModelSettingsDialog({onClose,onSaved}:{onClose:()=>void;onSaved:
     <label className="settings-wide">{t('baseUrl')}<input value={baseUrl} onChange={e=>setBaseUrl(e.target.value)} placeholder="https://…/v1"/></label>
     <label className="settings-wide">{t('model')}<input list="available-models" value={model} onChange={e=>setModel(e.target.value)} placeholder={t('modelPlaceholder')}/><datalist id="available-models">{models.map(x=><option key={x} value={x}/>)}</datalist><small>{t('manualModelHint')}</small></label>
     <label className="settings-wide">{t('apiKey')}<input type="password" autoComplete="new-password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={hasKey?t('keyRetained'):t('keyOptional')}/><small>{t('keyMemoryHint')}</small></label>
-    <label>{t('timeout')}<input type="number" min="1" max="300" value={timeout} onChange={e=>setTimeoutValue(Number(e.target.value))}/></label>
     <label className="check settings-wide"><input type="checkbox" checked={persist} onChange={e=>setPersist(e.target.checked)}/><span>{t('persistNonSecret')}</span></label>
    </div>
    {notice&&<p className="settings-notice" role="status">{notice}</p>}

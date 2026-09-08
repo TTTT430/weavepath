@@ -13,6 +13,10 @@ export type AppIconName=
  |'details'
  |'canvas'
  |'play'
+ |'activity'
+ |'retry'
+ |'clock'
+ |'warning'
  |'settings'
  |'workflow';
 
@@ -38,6 +42,10 @@ export function AppIcon({name,size=16,className='app-icon'}:AppIconProps){
   :name==='details'?<><circle cx="10" cy="10" r="7"/><path d="M10 9v5"/><path d="M10 6.2h.01"/></>
   :name==='canvas'?<><rect x="3" y="3" width="14" height="14" rx="2"/><path d="M8 3v14M8 9h9"/></>
   :name==='play'?<path d="m7 4 9 6-9 6z" fill="currentColor" stroke="none"/>
+  :name==='activity'?<><path d="M3 10h3l1.6-4 3.2 8 1.7-4H17"/><circle cx="10" cy="10" r="7.5" opacity=".28"/></>
+  :name==='retry'?<><path d="M15.8 7A6.5 6.5 0 1 0 16 12"/><path d="M12.7 4.4 16 7l1.2-4"/></>
+  :name==='clock'?<><circle cx="10" cy="10" r="7"/><path d="M10 6v4.4l3 1.7"/></>
+  :name==='warning'?<><path d="M10 3 18 17H2z"/><path d="M10 7.2v4.5M10 14.5h.01"/></>
   :name==='settings'?<><circle cx="10" cy="10" r="2.7"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4"/></>
   :name==='workflow'?<><rect x="2.5" y="3" width="5" height="4" rx="1"/><rect x="12.5" y="13" width="5" height="4" rx="1"/><rect x="12.5" y="3" width="5" height="4" rx="1"/><path d="M7.5 5h5M5 7v8h7.5"/></>
   :<path d="m3.5 10.2 4 4L16.5 5"/>}

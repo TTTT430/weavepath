@@ -89,7 +89,7 @@ The public run summary/detail exposes `contextSha256`, `memoryRoute`, and `avail
 
 The production path uses the OpenAI-compatible provider already configured for WeavePath. The create request does not let a client select an arbitrary adapter or model.
 
-Only allowlisted non-credential model metadata is persisted: provider, model, base URL, timeout, system prompt, and optional adapter version. API keys, bearer tokens, request headers, environment variables, and arbitrary custom-adapter fields are excluded. Provider failures returned to clients and journals must remain redacted.
+Only allowlisted non-credential model metadata is persisted: provider, model, base URL, connection/write timeout, explicit `responseTimeout: "none"`, retry-attempt count, system prompt, and optional adapter version. API keys, bearer tokens, request headers, environment variables, and arbitrary custom-adapter fields are excluded. Provider failures returned to clients and journals must remain redacted.
 
 `ScriptedMockAgentAdapter` is a deterministic test fixture. It is not a model-settings option and must not be presented as a production provider.
 
@@ -199,7 +199,7 @@ Run detail and event reads use a global `runId`, without workflow or instance pa
 | same key and identical request after terminal failure | `201` with the original terminal failed run; no retry attempt is created |
 | same key and different request | `409 idempotencyConflict` |
 | provider not configured or unavailable | `503 aiUnavailable`; includes `runId` only if a run was created |
-| provider timeout | `504 aiTimeout` and terminal failed run with `runId` |
+| connection/transport failure after automatic retries | `503 aiConnectionFailed` and terminal failed run with `runId` |
 | invalid provider protocol | `502 modelProtocolError` and terminal failed run with `runId` |
 | unknown tool requested by model | `422 unknownTool` and terminal failed run with `runId` |
 | invalid tool arguments | `422 toolArgumentsInvalid` and terminal failed run with `runId` |

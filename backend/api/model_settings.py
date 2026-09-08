@@ -49,7 +49,8 @@ def validate_base_url(value: str) -> str:
 class ModelConfig:
     base_url: str
     model: str
-    timeout_seconds: float = 60.0
+    # Connection/write timeout only. Model response reads have no deadline.
+    timeout_seconds: float = 15.0
     system_prompt: str = ""
 
 
@@ -80,8 +81,9 @@ class RuntimeModelSettings:
             try:
                 self._config = ModelConfig(
                     validate_base_url(base), _model(model),
-                    _timeout(self._env.get("WEAVEPATH_LLM_TIMEOUT")
-                             or self._env.get("COTHINKER_LLM_TIMEOUT") or "60"),
+                    _timeout(self._env.get("WEAVEPATH_LLM_CONNECT_TIMEOUT")
+                             or self._env.get("WEAVEPATH_LLM_TIMEOUT")
+                             or self._env.get("COTHINKER_LLM_TIMEOUT") or "15"),
                     _prompt(self._env.get("WEAVEPATH_LLM_SYSTEM_PROMPT")
                             or self._env.get("COTHINKER_LLM_SYSTEM_PROMPT") or ""),
                 )
@@ -94,7 +96,8 @@ class RuntimeModelSettings:
             raw = json.loads(self.local_path.read_text(encoding="utf-8"))
             self._config = ModelConfig(
                 validate_base_url(raw["baseUrl"]), str(raw["model"]),
-                _timeout(raw.get("timeoutSeconds", 60)), str(raw.get("systemPrompt", "")),
+                _timeout(raw.get("connectTimeoutSeconds", raw.get("timeoutSeconds", 15))),
+                str(raw.get("systemPrompt", "")),
             )
             self._source, self._persistence = "local", "local"
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -110,7 +113,6 @@ class RuntimeModelSettings:
                 "provider": "openai-compatible",
                 "baseUrl": config.base_url if config else None,
                 "model": config.model if config else None,
-                "timeoutSeconds": config.timeout_seconds if config else 60.0,
                 "systemPrompt": config.system_prompt if config else "",
                 "hasApiKey": bool(self._api_key),
                 "source": self._source,
@@ -119,9 +121,10 @@ class RuntimeModelSettings:
             }
 
     def configure(self, *, base_url: str, model: str, api_key: str | None = None,
-                  timeout_seconds: float = 60.0, system_prompt: str = "",
+                  connect_timeout_seconds: float = 15.0, system_prompt: str = "",
                   persistence: Persistence = "memory", clear_api_key: bool = False) -> dict[str, Any]:
-        config = ModelConfig(validate_base_url(base_url), _model(model), _timeout(timeout_seconds), _prompt(system_prompt))
+        config = ModelConfig(validate_base_url(base_url), _model(model),
+                             _timeout(connect_timeout_seconds), _prompt(system_prompt))
         with self._lock:
             self._config = config
             if clear_api_key:
@@ -145,8 +148,8 @@ class RuntimeModelSettings:
         self.local_path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.local_path.with_suffix(self.local_path.suffix + ".tmp")
         value = {
-            "version": 1, "provider": "openai-compatible", "baseUrl": config.base_url,
-            "model": config.model, "timeoutSeconds": config.timeout_seconds,
+            "version": 2, "provider": "openai-compatible", "baseUrl": config.base_url,
+            "model": config.model, "connectTimeoutSeconds": config.timeout_seconds,
             "systemPrompt": config.system_prompt,
         }
         temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -174,6 +177,10 @@ class RuntimeModelSettings:
                cancel_event: Event | None = None) -> Iterator[str]:
         return self._client().stream(messages, cancel_event)
 
+    def stream_events(self, messages: list[dict[str, Any]],
+                      cancel_event: Event | None = None) -> Iterator[dict[str, Any]]:
+        return self._client().stream_events(messages, cancel_event)
+
     def discover_models(self, draft: ModelConfig | None = None, api_key: str | None = None) -> list[str]:
         if draft is None:
             client = self._client()
@@ -189,7 +196,8 @@ class RuntimeModelSettings:
         if client.api_key:
             headers["Authorization"] = f"Bearer {client.api_key}"
         try:
-            with httpx.Client(timeout=min(client.timeout_seconds, 30.0)) as http:
+            discovery_timeout = min(client.timeout_seconds, 30.0)
+            with httpx.Client(timeout=httpx.Timeout(discovery_timeout)) as http:
                 response = http.get(client.base_url.rstrip("/") + "/models", headers=headers)
                 response.raise_for_status()
                 data = response.json()
@@ -235,11 +243,12 @@ class RuntimeModelSettings:
         return models
 
     def validate_connection(self, *, base_url: str, model: str, api_key: str | None = None,
-                            timeout_seconds: float = 60.0, system_prompt: str = "") -> dict[str, Any]:
+                            connect_timeout_seconds: float = 15.0, system_prompt: str = "") -> dict[str, Any]:
         selected = model.strip()
         if len(selected) > 200:
             raise ValueError("model must be at most 200 characters")
-        draft = ModelConfig(validate_base_url(base_url), selected, _timeout(timeout_seconds), _prompt(system_prompt))
+        draft = ModelConfig(validate_base_url(base_url), selected,
+                            _timeout(connect_timeout_seconds), _prompt(system_prompt))
         models = self.discover_models(draft, api_key)
         return {"ok": True, "modelCount": len(models), "selectedModelAvailable": bool(selected) and selected in models,
                 "models": models}
@@ -249,9 +258,9 @@ def _timeout(value: Any) -> float:
     try:
         result = float(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("timeoutSeconds must be a number") from exc
-    if not 1 <= result <= 300:
-        raise ValueError("timeoutSeconds must be between 1 and 300")
+        raise ValueError("connectTimeoutSeconds must be a number") from exc
+    if not 1 <= result <= 60:
+        raise ValueError("connectTimeoutSeconds must be between 1 and 60")
     return result
 
 

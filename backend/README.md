@@ -53,13 +53,17 @@ memory version.
 
 The optional AI endpoint uses an OpenAI-compatible `/v1/chat/completions`
 provider. Set `WEAVEPATH_LLM_BASE_URL` and `WEAVEPATH_LLM_MODEL`; optionally set
-`WEAVEPATH_LLM_API_KEY`, `WEAVEPATH_LLM_TIMEOUT`, and
+`WEAVEPATH_LLM_API_KEY`, `WEAVEPATH_LLM_CONNECT_TIMEOUT`, and
 `WEAVEPATH_LLM_SYSTEM_PROMPT`. The former `COTHINKER_LLM_*` names remain supported
 as lower-priority compatibility aliases, and `OPENAI_API_KEY` remains the final
 API-key fallback. The chat route builds context
 from the selected conversation instance and its current parent route, excluding
 sibling routes. Without configuration, `/api/v1/ai/status`
 reports record-only mode and the API never fabricates an assistant message.
+The timeout applies only to connection/write setup; response reads have no
+fixed generation deadline. Retryable connection and transport failures are
+retried up to three times. Streaming retries clear any uncommitted partial
+draft before restarting, so duplicate partial text is not persisted.
 
 Runtime model settings are available at `/api/v1/ai/settings`. API keys are
 write-only, retained only in process memory (or read from environment), and are

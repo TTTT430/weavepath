@@ -3,7 +3,7 @@ const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number){super(message);this.name='ApiError'}
 }
-export type ChatStreamEvent={requestId?:string;userMessage?:Message;assistantMessage?:Message;delta?:string;code?:string;error?:string;replayed?:boolean}
+export type ChatStreamEvent={requestId?:string;userMessage?:Message;assistantMessage?:Message;delta?:string;code?:string;error?:string;replayed?:boolean;phase?:'connecting'|'waiting'|'receiving'|'reconnecting';attempt?:number;maxAttempts?:number;delayMs?:number}
 async function request<T>(path:string,init?:RequestInit):Promise<T>{const response=await fetch(BASE+path,{...init,headers:{Accept:'application/json',...(init?.body?{'Content-Type':'application/json'}:{}),...init?.headers}});const data=await response.json().catch(()=>({}))as ApiErrorPayload;if(!response.ok)throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code,data.runId);return data as T}
 const enc=encodeURIComponent;
 function normalizeTools(value:unknown):AgentToolSpec[]|undefined{return Array.isArray(value)?value.flatMap(item=>{if(!item||typeof item!=='object')return[];const x=item as Record<string,unknown>;return typeof x.name==='string'&&typeof x.version==='string'?[{name:x.name,version:x.version,...(typeof x.description==='string'?{description:x.description}:{})}]:[]}):undefined}

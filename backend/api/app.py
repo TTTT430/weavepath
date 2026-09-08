@@ -302,7 +302,7 @@ class ModelSettingsInput(CamelModel):
     base_url: str = Field(alias="baseUrl", min_length=1, max_length=2048)
     model: str = Field(min_length=1, max_length=200)
     api_key: SecretStr | None = Field(None, alias="apiKey")
-    timeout_seconds: float = Field(60.0, alias="timeoutSeconds", ge=1, le=300)
+    connect_timeout_seconds: float = Field(15.0, alias="connectTimeoutSeconds", ge=1, le=60)
     system_prompt: str = Field("", alias="systemPrompt", max_length=20_000)
     persistence: Literal["memory", "local"] = "memory"
     clear_api_key: bool = Field(False, alias="clearApiKey")
@@ -555,7 +555,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         return settings.configure(
             base_url=body.base_url, model=body.model,
             api_key=body.api_key.get_secret_value() if body.api_key is not None else None,
-            timeout_seconds=body.timeout_seconds, system_prompt=body.system_prompt,
+            connect_timeout_seconds=body.connect_timeout_seconds, system_prompt=body.system_prompt,
             persistence=body.persistence, clear_api_key=body.clear_api_key,
         )
 
@@ -573,7 +573,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         return settings.validate_connection(
             base_url=body.base_url, model=body.model,
             api_key=body.api_key.get_secret_value() if body.api_key is not None else None,
-            timeout_seconds=body.timeout_seconds, system_prompt=body.system_prompt,
+            connect_timeout_seconds=body.connect_timeout_seconds, system_prompt=body.system_prompt,
         )
 
     @app.post(prefix + "/workflows", status_code=201)
@@ -716,14 +716,28 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 yield _sse("message.started", {
                     "requestId": key, "userMessage": user_message,
                 })
-                chunks = llm.stream(context, event) if hasattr(llm, "stream") else iter([llm.complete(context)])
                 parts: list[str] = []
-                for chunk in chunks:
+                if hasattr(llm, "stream_events"):
+                    provider_events = llm.stream_events(context, event)
+                else:
+                    chunks = llm.stream(context, event) if hasattr(llm, "stream") else iter([llm.complete(context)])
+                    provider_events = ({"type": "delta", "content": chunk} for chunk in chunks)
+                for provider_event in provider_events:
                     if event.is_set():
                         _chat_finish(workflow_id, instance_id, key, signature, None, "cancelled", "chatCancelled")
                         yield _sse("message.cancelled", {"requestId": key})
                         return
-                    if not isinstance(chunk, str) or not chunk:
+                    if not isinstance(provider_event, dict):
+                        continue
+                    if provider_event.get("type") == "status":
+                        yield _sse("connection.status", {"requestId": key, **provider_event})
+                        continue
+                    if provider_event.get("type") == "reset":
+                        parts.clear()
+                        yield _sse("message.reset", {"requestId": key})
+                        continue
+                    chunk = provider_event.get("content")
+                    if provider_event.get("type") != "delta" or not isinstance(chunk, str) or not chunk:
                         continue
                     parts.append(chunk)
                     yield _sse("message.delta", {"requestId": key, "delta": chunk})

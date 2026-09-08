@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from time import sleep
 from typing import Any, Callable, Protocol
 
 import httpx
 
-from api.llm import LLMUnavailable, OpenAICompatibleLLM
+from api.llm import (CONNECT_RETRY_ATTEMPTS, CONNECT_RETRY_DELAYS,
+                     LLMUnavailable, OpenAICompatibleLLM)
 
 
 def _reject_non_finite_json(value: str) -> None:
@@ -153,8 +155,9 @@ class OpenAICompatibleAgentAdapter:
     def snapshot(self) -> dict[str, Any]:
         client = self.client_factory()
         return {"provider": "openai-compatible", "baseUrl": client.base_url, "model": client.model,
-                "timeoutSeconds": client.timeout_seconds, "systemPrompt": client.system_prompt,
-                "adapterVersion": "1.0.0"}
+                "connectTimeoutSeconds": client.timeout_seconds, "responseTimeout": "none",
+                "connectionRetryAttempts": CONNECT_RETRY_ATTEMPTS,
+                "systemPrompt": client.system_prompt, "adapterVersion": "1.1.0"}
 
     def next(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelTurn:
         client = self.client_factory()
@@ -183,20 +186,32 @@ class OpenAICompatibleAgentAdapter:
                           "parameters": t["schema"]}} for t in tools]
         normalized_usage: dict[str, int | str | None] | None = None
         try:
-            with httpx.Client(timeout=client.timeout_seconds) as http:
-                response = http.post(client.base_url.rstrip("/") + "/chat/completions", headers=headers,
-                                     json={"model": client.model, "messages": payload_messages,
-                                           "tools": payload_tools, "parallel_tool_calls": False})
-                response.raise_for_status()
-                response_body = response.json()
-                if not isinstance(response_body, dict):
-                    raise TypeError("model response must be an object")
-                normalized_usage = _usage(response_body)
-                choice = response_body["choices"][0]
-                if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
-                    raise ValueError("model returned an invalid choice")
-                message = choice["message"]
-                finish_reason = choice.get("finish_reason")
+            response_body: dict[str, Any] | None = None
+            for attempt in range(1, CONNECT_RETRY_ATTEMPTS + 1):
+                try:
+                    with httpx.Client(timeout=client.request_timeout()) as http:
+                        response = http.post(client.base_url.rstrip("/") + "/chat/completions", headers=headers,
+                                             json={"model": client.model, "messages": payload_messages,
+                                                   "tools": payload_tools, "parallel_tool_calls": False})
+                        response.raise_for_status()
+                        value = response.json()
+                        if not isinstance(value, dict):
+                            raise TypeError("model response must be an object")
+                        response_body = value
+                    break
+                except (httpx.HTTPError, OSError) as exc:
+                    if client._retryable(exc) and attempt < CONNECT_RETRY_ATTEMPTS:
+                        sleep(CONNECT_RETRY_DELAYS[attempt - 1])
+                        continue
+                    raise client._transport_error(exc) from exc
+            if response_body is None:
+                raise ValueError("model response must be an object")
+            normalized_usage = _usage(response_body)
+            choice = response_body["choices"][0]
+            if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+                raise ValueError("model returned an invalid choice")
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason")
             if finish_reason in {"length", "content_filter"}:
                 raise ValueError("model response was truncated or filtered")
             calls = message.get("tool_calls")
@@ -227,8 +242,8 @@ class OpenAICompatibleAgentAdapter:
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("empty model turn")
             return ModelTurn(final_answer=content.strip(), usage=normalized_usage)
-        except httpx.TimeoutException as exc:
-            raise LLMUnavailable("AI provider request timed out", code="aiTimeout", status_code=504) from exc
+        except LLMUnavailable:
+            raise
         except httpx.HTTPError as exc:
             raise LLMUnavailable("AI provider is unavailable") from exc
         except ModelProtocolError:

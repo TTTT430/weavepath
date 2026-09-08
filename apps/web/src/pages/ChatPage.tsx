@@ -9,11 +9,14 @@ import{ModelSettingsDialog}from'../components/ModelSettingsDialog';
 import{MarkdownMessage}from'../components/MarkdownMessage';
 import{AgentRunWorkspace}from'../components/AgentRunWorkspace';
 import{AppIcon}from'../components/AppIcon';
+import{ActivityStatus}from'../components/ActivityStatus';
 import{notifyWorkflowChanged,type WorkflowChangedEvent}from'../lib/workflowEvents';
 
 type ReplyState='idle'|'thinking'|'error'|'cancelled';
+type ReplyPhase='connecting'|'waiting'|'receiving'|'reconnecting';
 interface OwnedSnapshot extends MessageSnapshot {owner:string}
-interface OwnedReply {owner:string;state:ReplyState;error:string}
+interface ReplyRetryTarget {messageId?:Message['id'];content?:string}
+interface OwnedReply {owner:string;state:ReplyState;error:string;retry?:ReplyRetryTarget;phase?:ReplyPhase;attempt?:number;startedAt?:number}
 interface OwnedMessages {owner:string;items:Message[]}
 interface LifecycleRequest {requestId:string;startedAt:number}
 const PINNED_WORKFLOWS_KEY='weavepath.pinned-workflows.v1';
@@ -23,6 +26,11 @@ function loadPinnedWorkflowIds(){
   const value=JSON.parse(localStorage.getItem(PINNED_WORKFLOWS_KEY)||'[]');
   return Array.isArray(value)?value.filter((id):id is string=>typeof id==='string'):[];
  }catch{return[]}
+}
+
+function elapsedLabel(milliseconds:number){
+ const seconds=Math.max(0,Math.floor(milliseconds/1000)),minutes=Math.floor(seconds/60),remaining=seconds%60;
+ return minutes?`${minutes}:${String(remaining).padStart(2,'0')}`:`${seconds}s`;
 }
 
 export interface ChatPageProps{
@@ -53,6 +61,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const[workflowNameDraft,setWorkflowNameDraft]=useState('');
  const[aiStatus,setAiStatus]=useState<AIStatus|null>(null);
  const[reply,setReply]=useState<OwnedReply>({owner:'',state:'idle',error:''});
+ const[replyClock,setReplyClock]=useState(Date.now());
  const[streamingText,setStreamingText]=useState('');
  const[editingId,setEditingId]=useState('');
  const[editDraft,setEditDraft]=useState('');
@@ -69,7 +78,6 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const surfaceId=useRef(crypto.randomUUID());
  const mountedAt=useRef(Date.now());
  const cancelledRequests=useRef<Set<string>>(new Set());
- const failedReply=useRef<{owner:string;content:string}|null>(null);
  const processedActivationRevision=useRef(0);
  const active=useMemo(()=>graph?.nodes.find(node=>node.id===graph.activeInstanceId),[graph]);
  const activeRouteId=graph?.activeRouteInstanceId||graph?.activeInstanceId||'';
@@ -87,6 +95,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const memoryLoading=memoryLoadingOwner===owner;
  const replyState=reply.owner===owner?reply.state:'idle';
  const replyError=reply.owner===owner?reply.error:'';
+ const replyPhase=reply.owner===owner?reply.phase:undefined;
+ const replyStartedAt=reply.owner===owner?reply.startedAt:undefined;
  const busy=workflowBusy||pendingOwners.has(owner);
  const canStop=replyState==='thinking'&&streamRequests.current.has(owner)&&typeof api.cancelChat==='function';
  const orderedWorkflows=useMemo(()=>{
@@ -223,8 +233,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    if(current&&eventTime<current.startedAt)return;
    lifecycleRequests.current.set(targetOwner,{requestId,startedAt:eventTime});
    if(targetInstance!==activeRouteIdRef.current)return;
-   setReply({owner:targetOwner,state:'thinking',error:''});
-   if(change.content)failedReply.current={owner:targetOwner,content:change.content};
+   setReply({owner:targetOwner,state:'thinking',error:'',retry:change.content?{content:change.content}:undefined,phase:'connecting',attempt:1,startedAt:eventTime});
    void refreshRouteMessages(workflowId,targetInstance,0,true);
    return;
   }
@@ -236,12 +245,11 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   // This prevents request A from clearing request B on the same route.
   if(!matches||targetInstance!==activeRouteIdRef.current)return;
   if(change.phase==='completed'){
-   failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'idle',error:''});
+   setStreamingText('');setReply({owner:targetOwner,state:'idle',error:''});
   }else if(change.phase==='failed'){
-   if(change.content)failedReply.current={owner:targetOwner,content:change.content};
-   setReply({owner:targetOwner,state:'error',error:change.error||t('aiGenericError')});
+   setReply(current=>({owner:targetOwner,state:'error',error:change.error||t('aiGenericError'),retry:change.content?{content:change.content}:current.owner===targetOwner?current.retry:undefined}));
   }else if(change.phase==='cancelled'){
-   failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'cancelled',error:''});
+   setStreamingText('');setReply({owner:targetOwner,state:'cancelled',error:''});
   }
  },[loadGraph,loadWorkflows,refreshRouteMessages,t,workflowId]);
 
@@ -267,9 +275,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   setMemoryOpenOwner('');
   setMemoryLoadingOwner('');
   const requestPending=!!owner&&(sendLocks.current.has(owner)||lifecycleRequests.current.has(owner));
-  setReply({owner,state:requestPending?'thinking':'idle',error:''});
+  setReply(current=>requestPending&&current.owner===owner&&current.state==='thinking'?current:{owner,state:requestPending?'thinking':'idle',error:'',...(requestPending?{phase:'connecting' as const,attempt:1,startedAt:Date.now()}: {})});
   setStreamingText('');
-  failedReply.current=null;
   setEditingId('');
   setEditDraft('');
   setCopiedId('');
@@ -294,6 +301,12 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   streamRequests.current.clear();
  },[]);
  useEffect(()=>{const box=messagesRef.current;if(box)box.scrollTop=box.scrollHeight},[messages,replyState]);
+ useEffect(()=>{
+  if(replyState!=='thinking')return;
+  setReplyClock(Date.now());
+  const timer=window.setInterval(()=>setReplyClock(Date.now()),1000);
+  return()=>window.clearInterval(timer);
+ },[replyState,replyStartedAt]);
  useEffect(()=>{onWorkspaceChange?.({workflowId,graph})},[workflowId,graph,onWorkspaceChange]);
  useEffect(()=>{
   const channel=new BroadcastChannel('conversation-workflow');
@@ -381,6 +394,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   if(caught instanceof ApiError){
    switch(caught.code){
     case'aiTimeout':return t('aiTimeout');
+    case'aiConnectionFailed':return t('aiConnectionFailed');
     case'aiUnavailable':return t('aiUnavailable');
     case'aiEmptyResponse':return t('aiEmptyResponse');
     case'validationError':return t('validationError');
@@ -403,7 +417,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   if(!lockRoute(targetOwner))return;
   nextSnapshotGeneration(targetOwner);
   setEditingId('');
-  setReply({owner:targetOwner,state:aiStatus?.configured?'thinking':'idle',error:''});
+  const retry={messageId:message.id,content};
+  setReply({owner:targetOwner,state:aiStatus?.configured?'thinking':'idle',error:'',retry,phase:'reconnecting',attempt:1,startedAt:Date.now()});
   try{
    const value=await api.regenerate(workflow,instance,message.id,content,expected);
    const generation=nextSnapshotGeneration(targetOwner);
@@ -411,16 +426,17 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'idle',error:''});
   }catch(caught){
    await refreshRouteMessages(workflow,instance,expected,true);
-   if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'error',error:aiError(caught)});
+   if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'error',error:aiError(caught),retry});
  }finally{unlockRoute(targetOwner)}
  }
 
  async function retryAnswer(){
-  const failed=failedReply.current,workflow=graph?.workflowId,instance=activeRouteId;
-  if(!failed||failed.owner!==owner||!workflow||!instance)return;
+  const workflow=graph?.workflowId,instance=activeRouteId;
+  if(reply.owner!==owner||reply.state!=='error'||!workflow||!instance)return;
   const targetOwner=`${workflow}:${instance}`;
   if(!lockRoute(targetOwner))return;
-  setReply({owner:targetOwner,state:'thinking',error:''});setStreamingText('');
+  let retry=reply.retry;
+  setReply({owner:targetOwner,state:'thinking',error:'',retry,phase:'reconnecting',attempt:1,startedAt:Date.now()});setStreamingText('');
   try{
    // Refresh first: a failed stream may have durably appended the user
    // message after the optimistic snapshot was rendered. Using the stale
@@ -429,15 +445,19 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    const refreshedCurrent=await refreshRouteMessages(workflow,instance,0,true);
    if(!refreshedCurrent)throw new ApiError(t('aiGenericError'),409,'conflict');
    const refreshed=snapshotRef.current;
-   const latest=[...refreshed.messages].reverse().find(item=>item.role==='user'&&!item.inherited&&item.content===failed.content);
-   if(!latest)throw new ApiError(t('aiGenericError'),409,'conflict');
+   const localUsers=refreshed.messages.filter(item=>item.role==='user'&&!item.inherited);
+   const latest=(retry?.messageId!==undefined?localUsers.find(item=>String(item.id)===String(retry?.messageId)):undefined)
+    ||(retry?.content?([...localUsers].reverse().find(item=>item.content===retry?.content)):undefined)
+    ||localUsers.at(-1);
+   const content=retry?.content?.trim()||latest?.content.trim();
+   if(!latest||!content)throw new ApiError(t('aiGenericError'),409,'conflict');
+   retry={messageId:latest.id,content};
    const expected=refreshed.contentRevision;
-   const value=await api.regenerate(workflow,instance,latest.id,failed.content,expected);
+   const value=await api.regenerate(workflow,instance,latest.id,content,expected);
    const generation=nextSnapshotGeneration(targetOwner);applySnapshot(targetOwner,value,generation,expected,true);
-   failedReply.current=null;
    if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'idle',error:''});
   }catch(caught){
-   if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'error',error:aiError(caught)});
+   if(activeKey.current===targetOwner)setReply({owner:targetOwner,state:'error',error:aiError(caught),retry});
   }finally{unlockRoute(targetOwner)}
  }
 
@@ -463,7 +483,6 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    controller.abort();
    if(activeKey.current===targetOwner){
     setStreamingText('');
-    failedReply.current=null;
     setReply({owner:targetOwner,state:'cancelled',error:''});
    }
    notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'cancelled',requestId});
@@ -485,9 +504,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   nextSnapshotGeneration(targetOwner);
   setDraft('');
   setError('');
-  setReply({owner:targetOwner,state:aiStatus?.configured?'thinking':'idle',error:''});
+  setReply({owner:targetOwner,state:aiStatus?.configured?'thinking':'idle',error:'',phase:'connecting',attempt:1,startedAt:Date.now()});
   setStreamingText('');
-  failedReply.current=null;
   const current=snapshotRef.current;
   const base=current.owner===targetOwner?current:{owner:targetOwner,messages:[],contentRevision:active?.contentRevision||0};
   const optimistic:OwnedSnapshot={...base,messages:[...base.messages,{id:crypto.randomUUID(),role:'user',content:text,inherited:false}]};
@@ -506,8 +524,16 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
      streamControllers.current.set(targetOwner,controller);
      let terminal:'completed'|'failed'|'cancelled'|null=null;let streamError:ApiError|null=null;
      await api.chatStream(workflow,instance,text,requestId,(event,data)=>{
+      if(event==='connection.status'&&data.phase){
+       if(activeKey.current===targetOwner)setReply(current=>current.owner===targetOwner&&current.state==='thinking'?{...current,phase:data.phase,attempt:data.attempt}:current);
+       return;
+      }
+      if(event==='message.reset'){
+       if(activeKey.current===targetOwner)setStreamingText('');
+       return;
+      }
       if(event==='message.delta'){
-       if(activeKey.current===targetOwner)setStreamingText(current=>current+(data.delta||''));
+       if(activeKey.current===targetOwner){setReply(current=>current.owner===targetOwner&&current.state==='thinking'?{...current,phase:'receiving'}:current);setStreamingText(current=>current+(data.delta||''));}
        return;
       }
       if(event==='message.completed')terminal='completed';
@@ -518,7 +544,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
      if(terminal==='cancelled'||locallyCancelled){
       cancelledRequests.current.delete(requestId);
       await refreshRouteMessages(workflow,instance,base.contentRevision,true);
-      if(activeKey.current===targetOwner){failedReply.current=null;setStreamingText('');setReply({owner:targetOwner,state:'cancelled',error:''})}
+      if(activeKey.current===targetOwner){setStreamingText('');setReply({owner:targetOwner,state:'cancelled',error:''})}
       if(!locallyCancelled)notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'cancelled',requestId});
       return;
      }
@@ -550,7 +576,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    await refreshRouteMessages(workflow,instance,base.contentRevision,true);
    const wasCancelled=cancelledRequests.current.delete(requestId);
    const message=aiError(caught);
-   if(activeKey.current===targetOwner&&!wasCancelled){failedReply.current={owner:targetOwner,content:text};setStreamingText('');setReply({owner:targetOwner,state:'error',error:message});}
+   if(activeKey.current===targetOwner&&!wasCancelled){setStreamingText('');setReply({owner:targetOwner,state:'error',error:message,retry:{content:text}});}
    if(!wasCancelled)notifyPeerSurfaces({type:'conversation-workflow-changed',workflowId:workflow,instanceId:instance,phase:'failed',requestId,content:text,error:message});
   }finally{
    if(streamRequests.current.get(targetOwner)===requestId){
@@ -577,7 +603,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   return <article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<MarkdownMessage content={message.content}/>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions" aria-label={t('messageActions')}><button type="button" className="message-action-button" aria-label={t('editQuestion')} title={t('editQuestion')} onClick={()=>beginEdit(message)}><AppIcon name="edit" className="message-action-icon"/></button><button type="button" className={`message-action-button${copied?' is-copied':''}`} aria-label={copied?t('copied'):t('copyMessage')} title={copied?t('copied'):t('copyMessage')} onClick={()=>void copyMessage(message)}><AppIcon name={copied?'check':'copy'} className="message-action-icon"/></button></div>}</>}</div></article>;
  };
  const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><AppIcon name={memoryOpen?'chevronDown':'chevronRight'}/><span>{t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
- const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking" aria-live="polite"><div>{streamingText?<MarkdownMessage content={streamingText}/>:<><span>{t('thinking')}</span><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span></>}{canStop&&<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button>}</div></article>}{replyState==='error'&&<article className="message system reply-error" role="alert"><div>{replyError}<button type="button" onClick={()=>void retryAnswer()} disabled={busy}>{t('retryAnswer')}</button></div></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled" role="status"><div>{t('cancelled')}</div></article>}</div>;
+ const progressText=replyPhase==='connecting'?t('connecting'):replyPhase==='waiting'?t('waitingForModel'):replyPhase==='receiving'?t('receivingResponse'):replyPhase==='reconnecting'?`${t('reconnecting')}${reply.attempt&&reply.attempt>1?` (${reply.attempt}/3)`:''}`:t('thinking');
+ const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking"><div>{streamingText&&<MarkdownMessage content={streamingText}/>}<ActivityStatus label={progressText} detail={`${t('elapsed')} ${elapsedLabel(replyClock-(replyStartedAt||replyClock))}`} phase={replyPhase}>{canStop&&<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button>}</ActivityStatus></div></article>}{replyState==='error'&&<article className="message system reply-error"><ActivityStatus label={replyError} tone="error"><button type="button" onClick={()=>void retryAnswer()} disabled={busy}><AppIcon name="retry" size={14}/><span>{t('retryAnswer')}</span></button></ActivityStatus></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled"><ActivityStatus label={t('cancelled')} tone="muted" compact/></article>}</div>;
 
  return <main className="chat-shell">
   <aside className="sidebar">

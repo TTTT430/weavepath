@@ -35,6 +35,7 @@ _MODEL_SNAPSHOT_FIELDS = {
 
 _PROVIDER_ERRORS = {
     "aiTimeout": ("Agent provider request timed out", 504),
+    "aiConnectionFailed": ("Agent provider connection failed after automatic retries", 503),
     "aiEmptyResponse": ("Agent provider returned an empty response", 502),
     "aiUnavailable": ("Agent provider is unavailable", 503),
 }
@@ -63,12 +64,20 @@ def _safe_model_snapshot(value: Any) -> dict[str, Any]:
                     or parsed.username or parsed.password or parsed.query or parsed.fragment):
                 raise AgentRunError("modelProtocolError", "Model snapshot is invalid", 502)
         result[key] = item
-    timeout = value.get("timeoutSeconds")
+    timeout = value.get("connectTimeoutSeconds")
     if timeout is not None:
         if (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
-                or not math.isfinite(timeout) or not 1 <= timeout <= 300):
+                or not math.isfinite(timeout) or not 1 <= timeout <= 60):
             raise AgentRunError("modelProtocolError", "Model snapshot is invalid", 502)
-        result["timeoutSeconds"] = float(timeout)
+        result["connectTimeoutSeconds"] = float(timeout)
+    response_timeout = value.get("responseTimeout")
+    if response_timeout == "none":
+        result["responseTimeout"] = "none"
+    retries = value.get("connectionRetryAttempts")
+    if retries is not None:
+        if not isinstance(retries, int) or isinstance(retries, bool) or not 1 <= retries <= 10:
+            raise AgentRunError("modelProtocolError", "Model snapshot is invalid", 502)
+        result["connectionRetryAttempts"] = retries
     return result
 
 

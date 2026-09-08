@@ -14,8 +14,8 @@ export interface Route {id:string;topicId:string;title:string;memoryRoute:string
 export interface PrunePlan {graphRevision:number;targetInstanceId?:string;nodes:Array<{id:string;title?:string}>;rootRemoval?:boolean}
 export interface ApiErrorPayload {message?:string;error?:string;code?:string;runId?:string|number}
 export interface AIStatus {configured:boolean;provider:string;model:string|null;reason?:string|null}
-export interface AISettings extends AIStatus {baseUrl:string|null;timeoutSeconds:number;systemPrompt:string;hasApiKey:boolean;source:string;persistence:'memory'|'local'}
-export interface AISettingsInput {baseUrl:string;model:string;apiKey?:string;timeoutSeconds:number;systemPrompt?:string;persistence:'memory'|'local';clearApiKey?:boolean}
+export interface AISettings extends AIStatus {baseUrl:string|null;systemPrompt:string;hasApiKey:boolean;source:string;persistence:'memory'|'local'}
+export interface AISettingsInput {baseUrl:string;model:string;apiKey?:string;systemPrompt?:string;persistence:'memory'|'local';clearApiKey?:boolean}
 export interface AIValidation {ok:boolean;modelCount:number;selectedModelAvailable:boolean;models:string[]}
 export type AgentRunStatus='queued'|'running'|'awaiting_approval'|'cancelling'|'cancelled'|'completed'|'failed'|'interrupted'|'unknown';
 export interface AgentToolSpec {name:string;version:string;description?:string}

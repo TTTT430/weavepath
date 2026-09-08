@@ -18,7 +18,7 @@ WeavePath 保存完成 Agent 工作路线所需的最小数据。图元数据由
 | Model step usage | 全局 SQLite | 是 | 只持久化 allowlist token/cache 字段；provider 未报告时保持不可用，不保存未知原始 usage 对象 |
 | Tool call 参数与 tool result | 全局 SQLite | 是 | `safe_calculator` 无副作用；`propose_patch` 审批后只生成 Artifact；可选工作区读取工具必须显式配置根目录 |
 | Agent final answer | 全局 SQLite | 是 | 同时写入节点 assistant message；run 内另存不可变副本，后续重新生成聊天不改写它 |
-| Agent model snapshot | 全局 SQLite | 是 | 仅 allowlist 的 provider/model/base URL/timeout/system prompt 等非凭据字段 |
+| Agent model snapshot | 全局 SQLite | 是 | 仅 allowlist 的 provider/model/base URL/建连超时/无响应时限/重试次数/system prompt 等非凭据字段 |
 | 临时任务摘要 | 宿主或派生缓存 | 可选 | 不能混入兄弟路线记忆 |
 | 项目文件、数据集、实验输出 | 项目文件系统 | 否 | 数据库仅存路径、hash、版本、provenance |
 | API key、OAuth token | 当前进程内存；部署时可来自环境变量；未来系统凭据库 | 否 | 禁止回显，禁止写 SQLite、工作流或 `model-settings.json` |
