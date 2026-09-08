@@ -12,9 +12,10 @@ from graph_core import GraphStore
 class FakeClient:
     behavior = "timeout"
     calls = 0
+    routes = []
 
-    def __init__(self, **_kwargs):
-        pass
+    def __init__(self, **kwargs):
+        type(self).routes.append(kwargs.get("trust_env"))
 
     def __enter__(self):
         return self
@@ -57,9 +58,10 @@ class FakeStreamResponse:
 
 class ReconnectingStreamClient:
     calls = 0
+    routes = []
 
-    def __init__(self, **_kwargs):
-        pass
+    def __init__(self, **kwargs):
+        type(self).routes.append(kwargs.get("trust_env"))
 
     def __enter__(self):
         return self
@@ -172,6 +174,7 @@ def test_build_llm_prefers_weavepath_environment_and_keeps_legacy_fallback(monke
 
 def test_stream_reports_connection_phases_and_reconnects_before_content(monkeypatch):
     ReconnectingStreamClient.calls = 0
+    ReconnectingStreamClient.routes = []
     monkeypatch.setattr("api.llm.httpx.Client", ReconnectingStreamClient)
     monkeypatch.setattr("api.llm.CONNECT_RETRY_DELAYS", (0.0, 0.0))
     client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a")
@@ -181,10 +184,12 @@ def test_stream_reports_connection_phases_and_reconnects_before_content(monkeypa
     ]
     assert [event["content"] for event in events if event["type"] == "delta"] == ["ok"]
     assert ReconnectingStreamClient.calls == 2
+    assert ReconnectingStreamClient.routes == [False, True]
 
 
 def test_stream_resets_partial_draft_before_reconnecting(monkeypatch):
     PartialThenReconnectingClient.calls = 0
+    PartialThenReconnectingClient.routes = []
     monkeypatch.setattr("api.llm.httpx.Client", PartialThenReconnectingClient)
     monkeypatch.setattr("api.llm.CONNECT_RETRY_DELAYS", (0.0, 0.0))
     client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a")
@@ -195,6 +200,9 @@ def test_stream_resets_partial_draft_before_reconnecting(monkeypatch):
     reset_index = next(index for index, event in enumerate(events) if event["type"] == "reset")
     assert events[reset_index + 1]["phase"] == "reconnecting"
     assert PartialThenReconnectingClient.calls == 2
+    # A response stream was already established, so retry on the same route;
+    # automatic proxy fallback is reserved for connection establishment.
+    assert PartialThenReconnectingClient.routes == [False, False]
 
 
 def test_stream_requests_and_normalizes_provider_cache_usage(monkeypatch):
@@ -235,6 +243,7 @@ def test_chat_has_stable_safe_llm_error_protocol(
 ):
     FakeClient.behavior = behavior
     FakeClient.calls = 0
+    FakeClient.routes = []
     monkeypatch.setattr("api.llm.httpx.Client", FakeClient)
     store = GraphStore(":memory:")
     llm = OpenAICompatibleLLM(
@@ -263,6 +272,8 @@ def test_chat_has_stable_safe_llm_error_protocol(
             ("user", "question")
         ]
         assert FakeClient.calls == (3 if behavior == "timeout" else 1)
+        if behavior == "timeout":
+            assert FakeClient.routes == [False, False, False]
     store.close()
 
 

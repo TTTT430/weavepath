@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from agent_runtime.adapters import AgentModelPort
@@ -31,6 +31,7 @@ _MODEL_SNAPSHOT_FIELDS = {
     "baseUrl": 2_048,
     "systemPrompt": 20_000,
     "adapterVersion": 200,
+    "networkMode": 20,
 }
 
 _PROVIDER_ERRORS = {
@@ -63,6 +64,8 @@ def _safe_model_snapshot(value: Any) -> dict[str, Any]:
             if (parsed.scheme not in {"http", "https"} or not parsed.hostname
                     or parsed.username or parsed.password or parsed.query or parsed.fragment):
                 raise AgentRunError("modelProtocolError", "Model snapshot is invalid", 502)
+        if key == "networkMode" and item not in {"auto", "system", "direct"}:
+            raise AgentRunError("modelProtocolError", "Model snapshot is invalid", 502)
         result[key] = item
     timeout = value.get("connectTimeoutSeconds")
     if timeout is not None:
@@ -155,10 +158,20 @@ class AgentRuntimeService:
         with self._claim(claim_key):
             return self._execute_claimed(workflow_id, instance_id, request)
 
+    def enqueue(self, workflow_id: str, instance_id: str, request: dict[str, Any],
+                submit: Callable[[str], None]) -> dict[str, Any]:
+        """Freeze and persist a run, then hand only its durable id to a worker."""
+        claim_key = (workflow_id, instance_id, request["idempotencyKey"])
+        with self._claim(claim_key):
+            return self._execute_claimed(
+                workflow_id, instance_id, request, background_submit=submit,
+            )
+
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self.repository.request_cancel(run_id)
 
-    def retry(self, run_id: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+    def retry(self, run_id: str, options: dict[str, Any] | None = None,
+              submit: Callable[[str], None] | None = None) -> dict[str, Any]:
         source = self.repository.get(run_id, details=False)
         if source["status"] not in {"completed", "failed", "cancelled", "interrupted"}:
             raise AgentRunError("runNotRetryable", "Agent run is not in a retryable state", 409, run_id)
@@ -173,7 +186,55 @@ class AgentRuntimeService:
         key = (source["workflowId"], source["instanceId"], request["idempotencyKey"])
         with self._claim(key):
             return self._execute_claimed(source["workflowId"], source["instanceId"], request,
-                                         parent_run_id=run_id)
+                                         parent_run_id=run_id, background_submit=submit)
+
+    def resume_queued(self, run_id: str) -> dict[str, Any]:
+        """Execute one durable queued run after verifying its frozen inputs.
+
+        Queued runs are safe to resume after a process restart because no model
+        or tool step has started yet. Running calls remain interrupt-only: their
+        upstream completion and side-effect boundary cannot be inferred safely.
+        """
+        payload = self.repository.execution_payload(run_id)
+        if payload["status"] != "queued":
+            return self.repository.get(run_id)
+        context = payload["context"]
+        request = payload["request"]
+        try:
+            bound_model = self.model.bind()
+            current_snapshot = _safe_model_snapshot(bound_model.snapshot())
+            if current_snapshot != payload["modelSnapshot"]:
+                raise AgentRunError(
+                    "modelConfigurationChanged",
+                    "Model configuration changed before the queued run started", 409, run_id,
+                )
+            assembled = assemble_agent_context(
+                route_messages=context["messages"],
+                accepted_knowledge=context.get("acceptedKnowledge", []),
+                request=request,
+                tools=context["availableTools"],
+                provider_system_prompt=current_snapshot.get("systemPrompt", ""),
+            )
+            if (assembled.prompt_layout_version != context.get("promptLayoutVersion")
+                    or assembled.stable_prefix_sha256 != context.get("stablePrefixSha256")
+                    or assembled.request_sha256 != context.get("modelRequestSha256")):
+                raise AgentRunError(
+                    "runContextIntegrityFailed", "Queued run context could not be verified",
+                    409, run_id,
+                )
+            return self._run_created(
+                run_id, bound_model, list(assembled.messages), assembled.tools,
+            )
+        except AgentRunError as exc:
+            self.repository.fail(run_id, exc.code)
+            raise
+        except LLMUnavailable as exc:
+            failure = _stable_provider_error(exc, run_id)
+            self.repository.fail(run_id, failure.code)
+            raise failure from exc
+        except Exception as exc:
+            self.repository.fail(run_id, "aiUnavailable")
+            raise AgentRunError("aiUnavailable", "Agent provider is unavailable", 503, run_id) from exc
 
     def decide_approval(self, run_id: str, approval_id: str, decision: str) -> dict[str, Any]:
         approval_key = ("approval", run_id, approval_id)
@@ -300,12 +361,15 @@ class AgentRuntimeService:
         return self._finish_cancel_if_requested(run_id)
 
     def _execute_claimed(self, workflow_id: str, instance_id: str,
-                         request: dict[str, Any], parent_run_id: str | None = None) -> dict[str, Any]:
+                         request: dict[str, Any], parent_run_id: str | None = None,
+                         background_submit: Callable[[str], None] | None = None) -> dict[str, Any]:
         try:
             existing = self.repository.find_idempotent(workflow_id, instance_id, request)
         except Conflict as exc:
             raise AgentRunError("idempotencyConflict", str(exc), 409) from exc
         if existing is not None:
+            if background_submit is not None:
+                return existing
             if existing["status"] == "awaiting_approval":
                 return existing
             if existing["status"] in {"queued", "running", "cancelling"}:
@@ -385,8 +449,18 @@ class AgentRuntimeService:
                 code = "runRevisionConflict"
             raise AgentRunError(code, str(exc), 409) from exc
         if not created:
+            if background_submit is not None:
+                return run
             return self.repository.wait_terminal(run["runId"])
         run_id = run["runId"]
+        if background_submit is not None:
+            background_submit(run_id)
+            return self.repository.get(run_id)
+        return self._run_created(run_id, bound_model, list(prompt_messages), tool_specs)
+
+    def _run_created(self, run_id: str, bound_model: Any,
+                     prompt_messages: list[dict[str, Any]],
+                     tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
         try:
             self.repository.start(run_id)
             messages = list(prompt_messages)

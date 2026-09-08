@@ -85,7 +85,8 @@ class OpenAICompatibleAgentAdapter:
         return {"provider": "openai-compatible", "baseUrl": client.base_url, "model": client.model,
                 "connectTimeoutSeconds": client.timeout_seconds, "responseTimeout": "none",
                 "connectionRetryAttempts": CONNECT_RETRY_ATTEMPTS,
-                "systemPrompt": client.system_prompt, "adapterVersion": "1.1.0"}
+                "networkMode": client.network_mode,
+                "systemPrompt": client.system_prompt, "adapterVersion": "1.2.0"}
 
     def next(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelTurn:
         client = self.client_factory()
@@ -116,8 +117,9 @@ class OpenAICompatibleAgentAdapter:
         try:
             response_body: dict[str, Any] | None = None
             for attempt in range(1, CONNECT_RETRY_ATTEMPTS + 1):
+                trust_env, _ = client.network_route(attempt)
                 try:
-                    with httpx.Client(timeout=client.request_timeout()) as http:
+                    with httpx.Client(timeout=client.request_timeout(), trust_env=trust_env) as http:
                         response = http.post(client.base_url.rstrip("/") + "/chat/completions", headers=headers,
                                              json={"model": client.model, "messages": payload_messages,
                                                    "tools": payload_tools, "parallel_tool_calls": False})

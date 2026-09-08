@@ -18,15 +18,15 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 - `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
 - 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
 
-当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，每张卡片根据该节点最近一轮本地问答生成轻量概览，双击节点进入该对话内部的 Turn Tree。概览不调用模型、不混入父节点或兄弟路线，并随消息更新。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 149 项通过，并完成 compileall；前端 129 项测试、typecheck 和 production build 通过。`/graph` 只保留为兼容入口。
+当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，每张卡片根据该节点最近一轮本地问答生成轻量概览，双击节点进入该对话内部的 Turn Tree。概览不调用模型、不混入父节点或兄弟路线，并随消息更新。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 158 项通过，并完成 compileall；前端 131 项测试、typecheck 和 production build 通过。`/graph` 只保留为兼容入口。
 
-第一版 OpenAI-compatible AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。聊天请求已支持 SSE 逐 token 输出、停止生成、失败回答独立重试和幂等键；连接中、等待模型、接收回答和自动重连以统一活动状态组件显示，并持续显示已处理时长。生成阶段没有固定回答时限，建立连接或传输中断会自动尝试三次；流中断时先清除未持久化的半截草稿再重建请求，只有完整回答才写入 assistant 消息。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
+第一版 OpenAI-compatible AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。聊天请求已支持 SSE 逐 token 输出、停止生成、失败回答独立重试和幂等键；连接中、等待模型、接收回答和自动重连以统一活动状态组件显示，并持续显示已处理时长。生成阶段没有固定回答时限，建立连接或传输中断会自动尝试三次；流中断时先清除未持久化的半截草稿再重建请求，只有完整回答才写入 assistant 消息。模型设置可显式选择自动、系统代理或直连；自动模式先直连，只在连接无法建立时尝试系统代理，并把每条路线的结果与耗时结构化显示。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
 
 ### Agent Runtime v2 P0（本机自动化预览）
 
 仓库已在 Route-to-Agent Run v1 的基础上完成 Runtime v2 的本轮 P0：用户确认 execution brief 后，运行时按 `System Policy → 稳定排序 Tools → 当前 A→B→C 路线消息 → accepted knowledge → 当前请求` 装配模型输入。路线消息每次启动运行时都从父链动态读取，checkpoint 只保留审计快照；因此 C 会读取最新 A-B-C，而 A-B-C 与 A-B-E 只共享 A-B，兄弟内容不会串线。模型输入通过白名单投影排除 run ID、时间戳、幂等键和 UI 状态。应用不自建 KV cache，只为供应商 prompt cache 保持确定性前缀，并逐 model step 记录 OpenAI/DeepSeek 实际返回的 cached token；供应商未报告时界面明确显示“不可用”。
 
-Runtime v2 还加入持久化取消、重试 lineage、`awaiting_approval` 审批状态和安全工具边界。`safe_calculator` 无副作用；`propose_patch` 必须经用户批准，批准后只生成可审查的版本化 Artifact，不修改工作区文件；`read_file` 与 `workspace_search` 仅在显式配置 `WEAVEPATH_WORKSPACE_ROOT` 时开放。界面可查看审批、事件、Artifact、缓存复用率与数据覆盖率。完整合同、限制和测试路径见 [Runtime v2 P0](docs/runtime-v2-p0.md) 与 [Prompt cache / KV cache 策略](docs/prompt-cache-observability.md)。
+Runtime v2 还加入持久化取消、重试 lineage、`awaiting_approval` 审批状态和安全工具边界。正式本机 app 使用单进程后台队列：创建 run 后 HTTP 立即返回，关闭面板或刷新页面不影响运行；进程重启会恢复尚未开始模型调用的 `queued` run、保留等待审批的 run，并将取消中的 run 收敛为已取消。已进入未知供应商调用边界的 `running` run 仍安全标记为中断，避免推测其结果或重复副作用。`safe_calculator` 无副作用；`propose_patch` 必须经用户批准，批准后只生成可审查的版本化 Artifact，不修改工作区文件；`read_file` 与 `workspace_search` 仅在显式配置 `WEAVEPATH_WORKSPACE_ROOT` 时开放。界面可查看审批、事件、Artifact、缓存复用率与数据覆盖率。完整合同、限制和测试路径见 [Runtime v2 P0](docs/runtime-v2-p0.md) 与 [Prompt cache / KV cache 策略](docs/prompt-cache-observability.md)。
 
 该 preview 当前是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。官方 app factory 已用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；跨进程 run owner/lease 仍属于后续运行时硬化范围。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
 
@@ -206,9 +206,10 @@ npm run dev
 2. 选择 OpenAI、DeepSeek、LM Studio、Ollama 或“自定义 / OpenAI 兼容”。
 3. 填写 API 密钥；LM Studio、Ollama 等本地服务通常可以留空。
 4. 点击“测试并获取模型”。本地预设允许先不填模型名，获取列表后再选择；不支持 `/models` 的兼容服务也可以手动填写模型名并直接保存。
-5. 可勾选“在本机保存非敏感设置”，然后点击“保存”。
+5. 选择“自动 / 系统代理 / 直连”；一般使用“自动”。连接测试会列出实际尝试过的路线、结果和耗时。
+6. 可勾选“在本机保存非敏感设置”；如需重启后继续使用密钥，再显式勾选“为当前 Windows 账户安全保存 API 密钥”，然后点击“保存”。
 
-基础地址和模型名可以持久化到应用数据目录的 `model-settings.json`；API 密钥只保留在当前后端进程内存，接口不会回显，也不会写入数据库、工作流或设置文件。后端重启后，需要重新输入密钥，或使用下面的环境变量兜底。
+基础地址、模型名和网络方式可以持久化到应用数据目录的 `model-settings.json`。API 密钥从不写入 JSON、SQLite、工作流、日志或 API 响应；默认只保留在当前后端进程内存。用户显式启用安全保存后，密钥由 Windows 当前用户 DPAPI 加密到独立凭据文件，只有同一 Windows 账户可以解密。也可以使用下面的环境变量兜底。
 
 出于安全限制，远程服务必须使用 HTTPS；HTTP 只允许 `localhost`、`127.0.0.1` 或 `::1`。
 
@@ -221,6 +222,7 @@ $env:WEAVEPATH_LLM_BASE_URL = "http://127.0.0.1:1234/v1"
 $env:WEAVEPATH_LLM_MODEL = "模型名称"
 $env:WEAVEPATH_LLM_API_KEY = "可选；本地服务通常不需要"
 $env:WEAVEPATH_LLM_CONNECT_TIMEOUT = "15" # 可选；只限制建连/写入，不限制模型生成时长
+$env:WEAVEPATH_LLM_NETWORK_MODE = "auto" # auto / system / direct
 .\scripts\dev.ps1
 ```
 

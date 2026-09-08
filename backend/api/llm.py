@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from collections.abc import Iterator
 from threading import Event
 from time import sleep
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 
@@ -14,6 +14,7 @@ import httpx
 CONNECT_RETRY_ATTEMPTS = 3
 CONNECT_RETRY_DELAYS = (0.25, 1.0)
 RETRYABLE_PROVIDER_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+NetworkMode = Literal["auto", "system", "direct"]
 
 
 def normalize_provider_usage(response_body: dict[str, Any]) -> dict[str, int | str | None] | None:
@@ -148,10 +149,30 @@ class OpenAICompatibleLLM:
     # Once the provider accepts the request, reads may continue indefinitely
     # until completion or explicit cancellation.
     timeout_seconds: float = 15.0
+    # auto tries a direct socket first, then the operating-system/process proxy
+    # environment only when the connection itself fails. HTTP responses are
+    # authoritative and are never replayed through a different network path.
+    network_mode: NetworkMode = "auto"
 
     def request_timeout(self) -> httpx.Timeout:
         timeout = max(1.0, min(float(self.timeout_seconds), 60.0))
         return httpx.Timeout(connect=timeout, read=None, write=max(timeout, 30.0), pool=timeout)
+
+    def network_route(self, attempt: int) -> tuple[bool, str]:
+        if self.network_mode == "direct":
+            return False, "direct"
+        if self.network_mode == "system":
+            return True, "system"
+        # Automatic mode begins directly and stays on the system route after a
+        # confirmed connection-establishment failure. Callers decide whether
+        # an error is early enough to advance from attempt 1 to attempt 2.
+        trust_env = attempt > 1
+        return trust_env, "system" if trust_env else "direct"
+
+    @staticmethod
+    def _connection_establishment_failed(exc: BaseException) -> bool:
+        return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout,
+                                httpx.ProxyError))
 
     def _headers(self, accept: str) -> dict[str, str]:
         headers = {"Accept": accept, "Content-Type": "application/json"}
@@ -192,9 +213,11 @@ class OpenAICompatibleLLM:
         )
         headers = self._headers("application/json")
         data: dict[str, Any] | None = None
+        route_attempt = 1
         for attempt in range(1, CONNECT_RETRY_ATTEMPTS + 1):
+            trust_env, _ = self.network_route(route_attempt)
             try:
-                with httpx.Client(timeout=self.request_timeout()) as client:
+                with httpx.Client(timeout=self.request_timeout(), trust_env=trust_env) as client:
                     response = client.post(
                         self.base_url.rstrip("/") + "/chat/completions",
                         headers=headers,
@@ -208,6 +231,9 @@ class OpenAICompatibleLLM:
                 break
             except (httpx.HTTPError, OSError) as exc:
                 if self._retryable(exc) and attempt < CONNECT_RETRY_ATTEMPTS:
+                    if (self.network_mode == "auto" and route_attempt == 1
+                            and self._connection_establishment_failed(exc)):
+                        route_attempt = 2
                     sleep(CONNECT_RETRY_DELAYS[attempt - 1])
                     continue
                 raise self._transport_error(exc) from exc
@@ -252,16 +278,18 @@ class OpenAICompatibleLLM:
         )
         headers = self._headers("text/event-stream")
         attempt = 1
+        route_attempt = 1
         include_usage = True
         while attempt <= CONNECT_RETRY_ATTEMPTS:
             if cancel_event is not None and cancel_event.is_set():
                 return
+            trust_env, network_route = self.network_route(route_attempt)
             if attempt == 1:
                 yield {"type": "status", "phase": "connecting", "attempt": attempt,
-                       "maxAttempts": CONNECT_RETRY_ATTEMPTS}
+                       "maxAttempts": CONNECT_RETRY_ATTEMPTS, "networkRoute": network_route}
             received_content = False
             try:
-                with httpx.Client(timeout=self.request_timeout()) as client:
+                with httpx.Client(timeout=self.request_timeout(), trust_env=trust_env) as client:
                     with client.stream(
                         "POST",
                         self.base_url.rstrip("/") + "/chat/completions",
@@ -276,7 +304,8 @@ class OpenAICompatibleLLM:
                     ) as response:
                         response.raise_for_status()
                         yield {"type": "status", "phase": "waiting", "attempt": attempt,
-                               "maxAttempts": CONNECT_RETRY_ATTEMPTS}
+                               "maxAttempts": CONNECT_RETRY_ATTEMPTS,
+                               "networkRoute": network_route}
                         for raw_line in response.iter_lines():
                             if cancel_event is not None and cancel_event.is_set():
                                 return
@@ -309,7 +338,8 @@ class OpenAICompatibleLLM:
                             if isinstance(content, str) and content:
                                 if not received_content:
                                     yield {"type": "status", "phase": "receiving", "attempt": attempt,
-                                           "maxAttempts": CONNECT_RETRY_ATTEMPTS}
+                                           "maxAttempts": CONNECT_RETRY_ATTEMPTS,
+                                           "networkRoute": network_route}
                                 received_content = True
                                 yield {"type": "delta", "content": content}
                 return
@@ -330,8 +360,12 @@ class OpenAICompatibleLLM:
                     # then safely restart the request from the same context.
                     if received_content:
                         yield {"type": "reset"}
+                    if (self.network_mode == "auto" and route_attempt == 1
+                            and self._connection_establishment_failed(exc)):
+                        route_attempt = 2
                     yield {"type": "status", "phase": "reconnecting", "attempt": attempt + 1,
-                           "maxAttempts": CONNECT_RETRY_ATTEMPTS, "delayMs": round(delay * 1000)}
+                           "maxAttempts": CONNECT_RETRY_ATTEMPTS, "delayMs": round(delay * 1000),
+                           "networkRoute": self.network_route(route_attempt)[1]}
                     if cancel_event is not None:
                         if cancel_event.wait(delay):
                             return
@@ -368,4 +402,7 @@ def build_llm_from_env() -> LLMClient:
                        or os.getenv("COTHINKER_LLM_SYSTEM_PROMPT") or "").strip()
         or OpenAICompatibleLLM.__dataclass_fields__["system_prompt"].default,
         timeout_seconds=max(1.0, timeout),
+        network_mode=(os.getenv("WEAVEPATH_LLM_NETWORK_MODE", "auto").strip().lower()
+                      if os.getenv("WEAVEPATH_LLM_NETWORK_MODE", "auto").strip().lower()
+                      in {"auto", "system", "direct"} else "auto"),
     )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -33,6 +34,64 @@ def workflow(client: TestClient) -> tuple[str, int]:
         "name": "Agent", "rootTitle": "A", "rootInstanceId": "A"
     }).json()
     return graph["workflowId"], graph["nodes"][0]["contentRevision"]
+
+
+def test_background_run_returns_immediately_and_survives_browser_request_lifetime():
+    store = GraphStore(":memory:")
+    started, release = threading.Event(), threading.Event()
+
+    def block_model(_: int) -> None:
+        started.set()
+        assert release.wait(2)
+
+    model = ScriptedMockAgentAdapter([ModelTurn(final_answer="background result")], block_model)
+    app = create_app(store, agent_model=model, background_agent_runs=True)
+    with TestClient(app) as client:
+        wf, revision = workflow(client)
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision),
+        )
+        assert response.status_code == 201
+        run = response.json()
+        assert run["status"] in {"queued", "running"}
+        assert started.wait(1)
+        assert client.get(f"/api/v1/runs/{run['runId']}").json()["status"] == "running"
+        release.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            completed = client.get(f"/api/v1/runs/{run['runId']}").json()
+            if completed["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert completed["status"] == "completed"
+        assert completed["finalAnswer"] == "background result"
+    store.close()
+
+
+def test_process_startup_resumes_a_durable_queued_run_before_any_model_call():
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    wf = graph["workflowId"]
+    model = ScriptedMockAgentAdapter([ModelTurn(final_answer="resumed result")])
+    staging = create_app(store, agent_model=model, background_agent_runs=False)
+    queued = staging.state.agent_runtime.enqueue(
+        wf, "A", request(0, "queued-before-restart"), lambda _run_id: None,
+    )
+    assert queued["status"] == "queued"
+
+    restarted = create_app(store, agent_model=model, background_agent_runs=True)
+    with TestClient(restarted) as client:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            completed = client.get(f"/api/v1/runs/{queued['runId']}").json()
+            if completed["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert completed["status"] == "completed"
+        assert completed["finalAnswer"] == "resumed result"
+        events = client.get(f"/api/v1/runs/{queued['runId']}/events").json()["events"]
+        assert [event["type"] for event in events].count("run.started") == 1
+    store.close()
 
 
 def test_happy_tool_run_persists_steps_events_and_final_message():
@@ -646,7 +705,7 @@ def test_openai_adapter_disables_parallel_calls_and_accepts_one_complete_tool_ca
 
     monkeypatch.setattr(
         "agent_runtime.adapters.httpx.Client",
-        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+        lambda timeout, **_kwargs: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
     )
     adapter = OpenAICompatibleAgentAdapter(lambda: OpenAICompatibleLLM(
         base_url="https://provider.test/v1", model="test-model"
@@ -677,7 +736,7 @@ def test_openai_adapter_rejects_truncated_filtered_or_ambiguous_turns(monkeypatc
     original_client = httpx.Client
     monkeypatch.setattr(
         "agent_runtime.adapters.httpx.Client",
-        lambda timeout: original_client(
+        lambda timeout, **_kwargs: original_client(
             timeout=timeout,
             transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"choices": [choice]})),
         ),
@@ -1560,7 +1619,7 @@ def test_openai_adapter_does_not_duplicate_builder_system_policy(monkeypatch):
 
     monkeypatch.setattr(
         "agent_runtime.adapters.httpx.Client",
-        lambda timeout: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
+        lambda timeout, **_kwargs: original_client(timeout=timeout, transport=httpx.MockTransport(handler)),
     )
     adapter = OpenAICompatibleAgentAdapter(lambda: OpenAICompatibleLLM(
         base_url="https://provider.test/v1", model="m", system_prompt="host rule",
@@ -1591,7 +1650,7 @@ def test_protocol_failure_still_journals_provider_cache_usage(monkeypatch):
 
     monkeypatch.setattr(
         "agent_runtime.adapters.httpx.Client",
-        lambda timeout: original_client(
+        lambda timeout, **_kwargs: original_client(
             timeout=timeout, transport=httpx.MockTransport(handler)
         ),
     )

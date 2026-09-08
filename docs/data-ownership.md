@@ -22,7 +22,7 @@ WeavePath 保存完成 Agent 工作路线所需的最小数据。图元数据由
 | Agent model snapshot | 全局 SQLite | 是 | 仅 allowlist 的 provider/model/base URL/建连超时/无响应时限/重试次数/system prompt 等非凭据字段 |
 | 临时任务摘要 | 宿主或派生缓存 | 可选 | 不能混入兄弟路线记忆 |
 | 项目文件、数据集、实验输出 | 项目文件系统 | 否 | 数据库仅存路径、hash、版本、provenance |
-| API key、OAuth token | 当前进程内存；部署时可来自环境变量；未来系统凭据库 | 否 | 禁止回显，禁止写 SQLite、工作流或 `model-settings.json` |
+| API key、OAuth token | 默认当前进程内存；可来自环境变量；用户显式同意时由 Windows 当前用户 DPAPI 加密到独立凭据文件 | 仅显式选择时 | 禁止回显，禁止写 SQLite、工作流、日志或 `model-settings.json`；加密文件不能被其他 Windows 账户解密 |
 | UI selection、zoom、打开面板 | 当前 surface | 否 | 不是图领域状态 |
 | 语言、主题等偏好 | settings | 是 | 不得翻译用户的对话名称 |
 

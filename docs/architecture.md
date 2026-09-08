@@ -172,16 +172,16 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 
 ## Route-to-Agent Run v1 本机预览
 
-当前物理包是 `backend/agent_runtime/`，通过 `backend/api/app.py` 暴露同步 HTTP 入口。该窄切片已完成本机自动化与浏览器 E2E 验证，但它不是完整的长期 Agent Runtime，也没有生产部署保证。
+当前物理包是 `backend/agent_runtime/`，通过 `backend/api/app.py` 暴露持久化 HTTP 入口。正式本机 app 将运行交给单进程后台 dispatcher；测试仍可显式使用同步执行器做确定性合同验证。该窄切片不是完整的长期 Agent Runtime，也没有生产部署保证。
 
 - 一个 run 绑定一个 `workflow_id + instance_id + input_content_revision`。
 - frozen context 保存该具体路线的 `memoryRoute`、当次 `availableTools`、有效消息和 execution brief；兄弟路线不参与组装。
 - 模型元数据通过 allowlist 后持久化，API key/token 不进入 model snapshot。
 - 生产路径使用用户已配置的 OpenAI-compatible provider；`ScriptedMockAgentAdapter` 只通过测试注入。
 - 当前唯一工具是 `safe_calculator` / `1.0.0`，无 shell、文件系统或网络能力。
-- 同步请求最多执行有限轮 model/tool loop；无后台队列、SSE、取消或 resume。
+- 后台 worker 最多执行有限轮 model/tool loop；run 状态、取消、审批、重试和事件由 SQLite 持久化，界面轮询权威状态。
 - completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
-- 启动时遗留的 `queued` / `running` run 转为 `interrupted`，不会自动继续执行。
+- 启动时遗留且尚未调用模型的 `queued` run 会校验冻结 context 与模型配置后恢复；`running` run 因上游结果未知而转为 `interrupted`，`awaiting_approval` 保留，`cancelling` 收敛为 `cancelled`。
 
 schema v3 引入且在当前 schema v7 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线；schema v7 增加 `title_is_generated`，让自动标题和用户标题在重启后仍可可靠区分。旧数据迁移时统一视为用户标题，避免升级覆盖历史名称。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 

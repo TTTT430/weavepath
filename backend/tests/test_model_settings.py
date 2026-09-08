@@ -11,6 +11,23 @@ from api.model_settings import ModelConfig, ModelSettingsError, RuntimeModelSett
 from graph_core import GraphStore
 
 
+class FakeCredentialStore:
+    def __init__(self, *, available: bool = True):
+        self.available = available
+        self.secret = ""
+
+    def load(self) -> str:
+        return self.secret
+
+    def save(self, secret: str) -> None:
+        if not self.available:
+            raise RuntimeError("unavailable")
+        self.secret = secret
+
+    def clear(self) -> None:
+        self.secret = ""
+
+
 def test_secret_is_write_only_and_never_persisted(tmp_path):
     path = tmp_path / "model-settings.json"
     runtime = RuntimeModelSettings(path, env={})
@@ -25,6 +42,44 @@ def test_secret_is_write_only_and_never_persisted(tmp_path):
     reloaded = RuntimeModelSettings(path, env={})
     assert reloaded.status()["hasApiKey"] is False
     assert reloaded.status()["model"] == "model-a"
+
+
+def test_opt_in_secure_key_survives_restart_without_plaintext_json(tmp_path):
+    path = tmp_path / "model-settings.json"
+    credentials = FakeCredentialStore()
+    runtime = RuntimeModelSettings(path, env={}, credential_store=credentials)
+    status = runtime.configure(
+        base_url="https://example.test/v1", model="model-a", api_key="super-secret",
+        persistence="local", persist_api_key=True, network_mode="direct",
+    )
+    assert status["apiKeyPersisted"] is True
+    assert status["secretPersistence"] == "secure-local"
+    assert "super-secret" not in path.read_text(encoding="utf-8")
+    assert json.loads(path.read_text(encoding="utf-8"))["networkMode"] == "direct"
+    reloaded = RuntimeModelSettings(path, env={}, credential_store=credentials)
+    assert reloaded.status()["hasApiKey"] is True
+    assert reloaded.status()["apiKeyPersisted"] is True
+    assert reloaded._api_key == "super-secret"
+
+
+def test_unchecking_secure_key_persistence_clears_the_vault(tmp_path):
+    credentials = FakeCredentialStore()
+    runtime = RuntimeModelSettings(tmp_path / "settings.json", env={}, credential_store=credentials)
+    runtime.configure(base_url="https://example.test/v1", model="a", api_key="secret",
+                      persistence="local", persist_api_key=True)
+    runtime.configure(base_url="https://example.test/v1", model="a",
+                      persistence="local", persist_api_key=False)
+    assert credentials.secret == ""
+    assert runtime.status()["hasApiKey"] is True
+    assert runtime.status()["apiKeyPersisted"] is False
+
+
+def test_secure_key_persistence_fails_closed_when_unavailable(tmp_path):
+    runtime = RuntimeModelSettings(tmp_path / "settings.json", env={},
+                                   credential_store=FakeCredentialStore(available=False))
+    with pytest.raises(ValueError, match="unavailable"):
+        runtime.configure(base_url="https://example.test/v1", model="a", api_key="secret",
+                          persistence="local", persist_api_key=True)
 
 
 def test_omitted_or_empty_key_keeps_existing_and_clear_is_explicit(tmp_path):
@@ -107,9 +162,9 @@ def test_api_non_secret_readback_and_draft_validation_does_not_persist(tmp_path,
     def fake_discover(draft: ModelConfig | None = None, api_key: str | None = None):
         captured["draft"] = draft
         captured["apiKey"] = api_key
-        return ["draft-model", "other"]
+        return ["draft-model", "other"], {"requestedMode": "auto", "routeUsed": "direct", "attempts": []}
 
-    monkeypatch.setattr(runtime, "discover_models", fake_discover)
+    monkeypatch.setattr(runtime, "_discover_models", fake_discover)
     with TestClient(create_app(store, model_settings=runtime)) as client:
         put = client.put("/api/v1/ai/settings", json={
             "baseUrl": "https://saved.test/v1", "model": "saved", "apiKey": "secret"
@@ -129,7 +184,9 @@ def test_api_non_secret_readback_and_draft_validation_does_not_persist(tmp_path,
 def test_draft_validation_can_discover_models_before_selection(tmp_path, monkeypatch):
     store = GraphStore(":memory:")
     runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})
-    monkeypatch.setattr(runtime, "discover_models", lambda draft=None, api_key=None: ["alpha", "beta"])
+    monkeypatch.setattr(runtime, "_discover_models", lambda draft=None, api_key=None: (
+        ["alpha", "beta"], {"requestedMode": "auto", "routeUsed": "direct", "attempts": []}
+    ))
     with TestClient(create_app(store, model_settings=runtime)) as client:
         probe = client.post("/api/v1/ai/settings/validate", json={
             "baseUrl": "http://127.0.0.1:1234/v1", "model": ""
@@ -140,6 +197,7 @@ def test_draft_validation_can_discover_models_before_selection(tmp_path, monkeyp
             "modelCount": 2,
             "selectedModelAvailable": False,
             "models": ["alpha", "beta"],
+            "diagnostics": {"requestedMode": "auto", "routeUsed": "direct", "attempts": []},
         }
         save = client.put("/api/v1/ai/settings", json={
             "baseUrl": "http://127.0.0.1:1234/v1", "model": ""
@@ -153,7 +211,7 @@ def test_discovery_error_has_stable_code_and_no_upstream_body(tmp_path, monkeypa
     runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})
     def fail(*_args, **_kwargs):
         raise ModelSettingsError("modelDiscoveryFailed", "Unable to connect to the model provider")
-    monkeypatch.setattr(runtime, "discover_models", fail)
+    monkeypatch.setattr(runtime, "_discover_models", fail)
     with TestClient(create_app(store, model_settings=runtime)) as client:
         response = client.post("/api/v1/ai/settings/validate", json={
             "baseUrl": "https://provider.test/v1", "model": "m", "apiKey": "never-leak"
@@ -182,9 +240,92 @@ def test_openai_compatible_model_discovery_parses_and_sorts_ids(tmp_path, monkey
 
     monkeypatch.setattr("api.model_settings.httpx.Client", FakeClient)
     assert runtime.discover_models() == ["a", "b"]
-    assert runtime.validate_connection(base_url="https://provider.test/v1", model="b") == {
-        "ok": True, "modelCount": 2, "selectedModelAvailable": True, "models": ["a", "b"]
+    validation = runtime.validate_connection(base_url="https://provider.test/v1", model="b")
+    assert {key: validation[key] for key in ("ok", "modelCount", "selectedModelAvailable", "models")} == {
+        "ok": True, "modelCount": 2, "selectedModelAvailable": True, "models": ["a", "b"],
     }
+    assert validation["diagnostics"]["requestedMode"] == "auto"
+    assert validation["diagnostics"]["routeUsed"] == "direct"
+    assert validation["diagnostics"]["attempts"][0]["outcome"] == "connected"
+
+
+def test_auto_network_mode_falls_back_from_direct_to_system_proxy(tmp_path, monkeypatch):
+    runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})
+    routes: list[bool] = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.trust_env = kwargs["trust_env"]
+            routes.append(self.trust_env)
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def get(self, url, headers):
+            del headers
+            request = httpx.Request("GET", url)
+            if not self.trust_env:
+                raise httpx.ConnectError("direct route failed", request=request)
+            return httpx.Response(200, json={"data": [{"id": "model-a"}]}, request=request)
+
+    monkeypatch.setattr("api.model_settings.httpx.Client", FakeClient)
+    result = runtime.validate_connection(
+        base_url="https://provider.test/v1", model="model-a", network_mode="auto",
+    )
+    assert routes == [False, True]
+    assert result["diagnostics"]["routeUsed"] == "system"
+    assert [attempt["route"] for attempt in result["diagnostics"]["attempts"]] == ["direct", "system"]
+
+
+def test_auto_network_mode_does_not_change_route_after_read_timeout(tmp_path, monkeypatch):
+    routes = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            routes.append(kwargs["trust_env"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, url, **_kwargs):
+            raise httpx.ReadTimeout("provider stalled", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr("api.model_settings.httpx.Client", FakeClient)
+    runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})
+    with pytest.raises(ModelSettingsError) as failure:
+        runtime.validate_connection(
+            base_url="https://provider.test/v1", model="model-a", network_mode="auto",
+        )
+    assert routes == [False]
+    assert failure.value.diagnostics == {
+        "requestedMode": "auto", "routeUsed": None,
+        "attempts": [{"route": "direct", "outcome": "connection-error",
+                      "category": "timeout", "durationMs":
+                      failure.value.diagnostics["attempts"][0]["durationMs"]}],
+    }
+
+
+@pytest.mark.parametrize(("mode", "trust_env"), [("direct", False), ("system", True)])
+def test_explicit_network_mode_uses_only_the_selected_route(tmp_path, monkeypatch, mode, trust_env):
+    runtime = RuntimeModelSettings(tmp_path / "settings.json", env={})
+    routes: list[bool] = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            routes.append(kwargs["trust_env"])
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def get(self, url, headers):
+            del headers
+            return httpx.Response(200, json={"data": []}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr("api.model_settings.httpx.Client", FakeClient)
+    result = runtime.validate_connection(
+        base_url="https://provider.test/v1", model="model-a", network_mode=mode,
+    )
+    assert routes == [trust_env]
+    assert len(result["diagnostics"]["attempts"]) == 1
 
 
 @pytest.mark.parametrize(

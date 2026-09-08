@@ -11,6 +11,7 @@ import {memoryPath} from '../domain/graph';
 import {api,ApiError} from '../lib/api';
 import {useI18n} from '../lib/i18n';
 import {AppIcon} from './AppIcon';
+import {ActivityStatus} from './ActivityStatus';
 
 const EVENT_PAGE_SIZE=100;
 const lines=(value:string)=>value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
@@ -430,7 +431,7 @@ export function AgentRunWorkspace({graph,active,contentRevision,aiStatus,onRunCo
       <div className="run-list">{!runs.length&&!listLoading&&<p>{t('noRuns')}</p>}{runs.map(run=><button type="button" key={run.runId} className={String(selected?.runId)===String(run.runId)?'current':''} onClick={()=>void inspect(run,key)}><strong>{run.objective}</strong><span className={`run-status ${run.status}`}>{status(run)}</span><small>{t('attempt')}: {run.attemptNumber??1} · {t('revision')}: {run.inputContentRevision}</small>{run.errorCode&&<em>{t('errorCode')}: {run.errorCode}</em>}</button>)}</div>
 	     {selected&&<article className="run-detail">
        <div className="run-detail-heading"><div><h3>{selected.objective}</h3><p><span className={`run-status ${selected.status}`}>{status(selected)}</span> · {t('attempt')}: {selected.attemptNumber??1} · {t('revision')}: {selected.inputContentRevision}</p></div><div className="agent-run-actions">{CANCELLABLE_RUN_STATUSES.has(selected.status)&&<button type="button" disabled={!!runAction} onClick={()=>void cancelRun()}>{runAction===`cancel:${selected.runId}`?t('cancellingRun'):t('cancelRun')}</button>}{RETRYABLE_RUN_STATUSES.has(selected.status)&&<button type="button" className="primary" disabled={!!runAction} onClick={()=>void retryRun()}>{runAction===`retry:${selected.runId}`?t('retryingRun'):t('retryRun')}</button>}</div></div>
-       {ACTIVE_RUN_STATUSES.has(selected.status)&&<p className="agent-wait" role="status">{t('backgroundRunHint')}</p>}
+       {ACTIVE_RUN_STATUSES.has(selected.status)&&<ActivityStatus label={status(selected)} detail={t('backgroundRunHint')} phase={selected.status==='queued'?'connecting':selected.status==='cancelling'?'reconnecting':'waiting'} compact/>}
        <dl className="run-provenance compact">
         <div><dt>{t('workflowId')}</dt><dd>{selected.workflowId}</dd></div>
         <div><dt>{t('instanceId')}</dt><dd>{selected.instanceId}</dd></div>

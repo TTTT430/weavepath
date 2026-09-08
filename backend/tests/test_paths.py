@@ -237,7 +237,7 @@ def test_startup_failure_releases_owned_store_lock(monkeypatch, tmp_path):
     monkeypatch.setenv("WEAVEPATH_DB", str(database))
     failing = create_app()
 
-    def fail_recovery():
+    def fail_recovery(**_kwargs):
         raise RuntimeError("simulated startup recovery failure")
 
     monkeypatch.setattr(failing.state.agent_runs, "recover_interrupted", fail_recovery)

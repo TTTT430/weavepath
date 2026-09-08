@@ -15,8 +15,23 @@ describe('agent runtime API contract',()=>{
   let caught:unknown;
   try{await api.createAgentRun('wf','node',{objective:'test',constraints:[],deliverables:[],acceptanceChecks:[],expectedContentRevision:2,idempotencyKey:'idem'})}
   catch(error){caught=error}
+ expect(caught).toBeInstanceOf(ApiError);
+ expect(caught).toMatchObject({status:502,code:'toolExecutionFailed',runId:'run-7'});
+ });
+
+ it('preserves safe model connection diagnostics on an error response',async()=>{
+  const diagnostics={requestedMode:'auto',routeUsed:null,attempts:[
+   {route:'direct',outcome:'connection-error',category:'dns',durationMs:21},
+   {route:'system',outcome:'connection-error',category:'proxy',durationMs:34},
+  ]};
+  vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response(503,{
+   code:'modelDiscoveryConnectionFailed',error:'Unable to reach the model provider',diagnostics,
+  })));
+  let caught:unknown;
+  try{await api.validateAISettings({baseUrl:'https://example.test/v1',model:'model',persistence:'memory',systemPrompt:'',networkMode:'auto'})}
+  catch(error){caught=error}
   expect(caught).toBeInstanceOf(ApiError);
-  expect(caught).toMatchObject({status:502,code:'toolExecutionFailed',runId:'run-7'});
+  expect(caught).toMatchObject({status:503,code:'modelDiscoveryConnectionFailed',diagnostics});
  });
 
  it('normalizes structured memory route provenance without stringifying objects',async()=>{

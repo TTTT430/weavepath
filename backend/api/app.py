@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from agent_runtime import (AgentModelPort, AgentRunError, AgentRunRepository, AgentRuntimeService,
+from agent_runtime import (AgentModelPort, AgentRunDispatcher, AgentRunError, AgentRunRepository, AgentRuntimeService,
                            OpenAICompatibleAgentAdapter, runtime_registry)
 from api.llm import LLMClient, LLMUnavailable, OpenAICompatibleLLM
 from api.model_settings import RuntimeModelSettings
@@ -307,6 +307,8 @@ class ModelSettingsInput(CamelModel):
     system_prompt: str = Field("", alias="systemPrompt", max_length=20_000)
     persistence: Literal["memory", "local"] = "memory"
     clear_api_key: bool = Field(False, alias="clearApiKey")
+    persist_api_key: bool = Field(False, alias="persistApiKey")
+    network_mode: Literal["auto", "system", "direct"] = Field("auto", alias="networkMode")
 
 
 class ModelSettingsValidationInput(ModelSettingsInput):
@@ -425,8 +427,10 @@ class ExperimentInput(CamelModel):
 
 def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = None,
                model_settings: RuntimeModelSettings | None = None,
-               agent_model: AgentModelPort | None = None) -> FastAPI:
+               agent_model: AgentModelPort | None = None,
+               background_agent_runs: bool | None = None) -> FastAPI:
     owned = store is None
+    background_enabled = owned if background_agent_runs is None else background_agent_runs
     instance_lock: _ProcessFileLock | None = None
     if owned:
         graph_store, instance_lock = _open_locked_default_store()
@@ -451,6 +455,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                                            runtime_registry(workspace_root),
                                            engineering=engineering)
                        if agent_model is not None else None)
+        run_dispatcher = (AgentRunDispatcher(run_service)
+                          if run_service is not None and background_enabled else None)
     except BaseException:
         if owned:
             try:
@@ -463,10 +469,16 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
-            run_repository.recover_interrupted()
+            run_repository.recover_interrupted(preserve_queued=run_dispatcher is not None)
             graph_store.recover_chat_requests()
+            if run_dispatcher is not None:
+                run_dispatcher.start()
+                for queued_run_id in run_repository.queued_run_ids():
+                    run_dispatcher.submit(queued_run_id)
             yield
         finally:
+            if run_dispatcher is not None:
+                run_dispatcher.stop()
             if owned:
                 try:
                     graph_store.close()
@@ -479,6 +491,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     app.state.model_settings = settings
     app.state.agent_runs = run_repository
     app.state.agent_runtime = run_service
+    app.state.agent_dispatcher = run_dispatcher
     app.state.engineering = engineering
     app.state.host_adapter = host_adapter
     # Fast same-process cancellation state; durable request identity/results
@@ -502,7 +515,11 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
 
     @app.exception_handler(LLMUnavailable)
     async def llm_unavailable(_: Request, exc: LLMUnavailable):
-        return JSONResponse({"code": exc.code, "error": str(exc)}, exc.status_code)
+        payload: dict[str, object] = {"code": exc.code, "error": str(exc)}
+        diagnostics = getattr(exc, "diagnostics", None)
+        if isinstance(diagnostics, dict):
+            payload["diagnostics"] = diagnostics
+        return JSONResponse(payload, exc.status_code)
 
     @app.exception_handler(AgentRunError)
     async def agent_run_error(_: Request, exc: AgentRunError):
@@ -593,6 +610,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             api_key=body.api_key.get_secret_value() if body.api_key is not None else None,
             connect_timeout_seconds=body.connect_timeout_seconds, system_prompt=body.system_prompt,
             persistence=body.persistence, clear_api_key=body.clear_api_key,
+            persist_api_key=body.persist_api_key, network_mode=body.network_mode,
         )
 
     @app.delete(prefix + "/ai/settings")
@@ -610,6 +628,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             base_url=body.base_url, model=body.model,
             api_key=body.api_key.get_secret_value() if body.api_key is not None else None,
             connect_timeout_seconds=body.connect_timeout_seconds, system_prompt=body.system_prompt,
+            network_mode=body.network_mode,
         )
 
     @app.post(prefix + "/workflows", status_code=201)
@@ -887,7 +906,12 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def create_agent_run(workflow_id: str, instance_id: str, body: CreateAgentRunInput):
         if run_service is None:
             raise LLMUnavailable("AI provider is not configured")
-        return run_service.execute(workflow_id, instance_id, body.model_dump(by_alias=True))
+        request_body = body.model_dump(by_alias=True)
+        if run_dispatcher is not None:
+            return run_service.enqueue(
+                workflow_id, instance_id, request_body, run_dispatcher.submit,
+            )
+        return run_service.execute(workflow_id, instance_id, request_body)
 
     @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/runs")
     def list_agent_runs(workflow_id: str, instance_id: str):
@@ -913,7 +937,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def retry_agent_run(run_id: str, body: RetryAgentRunInput):
         if run_service is None:
             raise LLMUnavailable("AI provider is not configured")
-        return run_service.retry(run_id, body.model_dump(by_alias=True, exclude_none=True))
+        return run_service.retry(
+            run_id, body.model_dump(by_alias=True, exclude_none=True),
+            submit=run_dispatcher.submit if run_dispatcher is not None else None,
+        )
 
     @app.post(prefix + "/runs/{run_id}/approvals/{approval_id}/decision")
     def decide_agent_approval(run_id: str, approval_id: str,

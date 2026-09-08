@@ -43,7 +43,8 @@ POST /api/v1/runs/{runId}/approvals/{approvalId}/decision
 
 ## 当前限制
 
-- 普通模型运行仍由本机单进程同步执行；状态和审批可恢复不等于已有后台 worker、lease 或跨进程接管。
+- 正式本机 app 已使用单进程后台 worker；关闭面板或刷新页面不影响运行。进程重启只自动恢复尚未进入模型调用的 queued run；未知上游边界中的 running run 会安全中断，等待审批保持可恢复，cancelling 收敛为 cancelled。
+- 尚无跨进程 owner/lease 或多个 Uvicorn worker 的接管能力。
 - 不应以多个 Uvicorn worker 连接同一个 SQLite 文件运行当前 preview。
 - 缓存复用由 provider 决定；相同输入只提供命中条件，不保证命中。
 - 第三方 OpenAI-compatible 网关可能不返回任何缓存字段，此时只能显示不可用。
@@ -63,4 +64,4 @@ POST /api/v1/runs/{runId}/approvals/{approvalId}/decision
 - 审批幂等、拒绝、取消晚响应、重试 lineage、重启恢复、revision 冲突和 Artifact 保留；
 - 工作区工具的显式根目录和路径安全。
 
-当前基线：后端 143 项、前端 125 项、Python compileall、TypeScript typecheck 和 production build 通过。
+当前基线：后端 158 项、前端 131 项、Python compileall、TypeScript typecheck 和 production build 通过。

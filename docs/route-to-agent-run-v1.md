@@ -17,7 +17,7 @@ The verified local preview currently contains:
 - idempotent creation, revision checks, terminal failure records, and startup interruption recovery;
 - a web execution-brief dialog and persisted run/timeline panel.
 
-The POST request remains open until the bounded model/tool loop reaches a terminal state. A concurrent replay with the same idempotency key is serialized behind the original request and receives that terminal run rather than a stale `queued`/`running` snapshot. “Durable” means the accepted input, frozen context, state, event journal, tool records, and final answer survive a process restart. It does not mean background execution.
+This document records the original v1 synchronous contract. The current production app now accepts the frozen run durably, returns its `queued`/`running` snapshot immediately, and lets the single-process background dispatcher continue independently of the browser request. A replay with the same idempotency key returns the same durable run. On process restart, a run still known to be `queued` can resume; a run already inside an uncertain provider-call boundary becomes `interrupted` instead of being replayed. Tests may still select synchronous execution for deterministic contract checks.
 
 ## Explicit non-goals
 

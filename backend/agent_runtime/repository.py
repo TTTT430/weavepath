@@ -626,7 +626,26 @@ class AgentRunRepository:
         result["finalAnswer"] = answer
         return result
 
-    def recover_interrupted(self) -> int:
+    def queued_run_ids(self) -> list[str]:
+        with self.lock:
+            return [str(row["id"]) for row in self.conn.execute(
+                "SELECT id FROM agent_runs WHERE status='queued' ORDER BY created_at,id"
+            ).fetchall()]
+
+    def execution_payload(self, run_id: str) -> dict[str, Any]:
+        """Return private frozen execution inputs; never expose this through HTTP."""
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,)).fetchone()
+            if not row:
+                raise NotFound("agent run not found")
+            return {
+                "status": str(row["status"]),
+                "context": json.loads(row["context_snapshot_json"]),
+                "modelSnapshot": json.loads(row["model_snapshot_json"]),
+                "request": json.loads(row["request_json"]),
+            }
+
+    def recover_interrupted(self, *, preserve_queued: bool = False) -> int:
         count = 0
         with self.tx() as cx:
             now = _now()
@@ -698,8 +717,11 @@ class AgentRunRepository:
                 if changed == 1:
                     self._event(cx, row["id"], "run.cancelled", {"errorCode": "runCancelled"})
                     count += 1
+            recoverable_statuses = ("running",) if preserve_queued else ("queued", "running")
+            placeholders = ",".join("?" for _ in recoverable_statuses)
             rows = cx.execute(
-                "SELECT id FROM agent_runs WHERE status IN ('queued','running')"
+                f"SELECT id FROM agent_runs WHERE status IN ({placeholders})",
+                recoverable_statuses,
             ).fetchall()
             for row in rows:
                 unfinished_calls = cx.execute(
@@ -730,8 +752,8 @@ class AgentRunRepository:
                     })
                 changed = cx.execute(
                     "UPDATE agent_runs SET status='interrupted',error_code='runInterrupted',updated_at=? "
-                    "WHERE id=? AND status IN ('queued','running')",
-                    (now, row["id"]),
+                    f"WHERE id=? AND status IN ({placeholders})",
+                    (now, row["id"], *recoverable_statuses),
                 ).rowcount
                 if changed == 1:
                     self._event(cx, row["id"], "run.interrupted", {"errorCode": "runInterrupted"})
