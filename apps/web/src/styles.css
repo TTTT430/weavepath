@@ -1164,8 +1164,63 @@ html .composer {
   border-radius: 13px;
   box-shadow: 0 7px 22px rgba(39,57,72,.12);
 }
-html .composer:focus-within { border-color: var(--ui-accent); box-shadow: 0 0 0 3px color-mix(in srgb,var(--ui-accent) 18%,transparent),0 7px 22px rgba(39,57,72,.12); }
+html .composer:focus-within { border-color: var(--ui-accent); box-shadow: 0 7px 22px rgba(39,57,72,.12); }
 html .composer textarea { color: var(--ui-text); }
+html .composer textarea,
+html .composer textarea:hover,
+html .composer textarea:focus,
+html .composer textarea:focus-visible {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+/* Reply metadata follows the quiet Codex-style disclosure row: the elapsed
+   time is always visible, while provider cache accounting stays one click
+   away and never competes with the answer itself. */
+html .message-response-details {
+  width: 100%;
+  margin-top: 12px;
+  color: var(--ui-subtle);
+  font-size: 11px;
+}
+html .message-response-details summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 2px 0;
+  color: var(--ui-subtle);
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+html .message-response-details summary::-webkit-details-marker { display: none; }
+html .message-response-details summary:hover { color: var(--ui-muted); }
+html .message-response-details summary .app-icon { width: 14px; height: 14px; }
+html .message-response-details .response-details-chevron {
+  width: 12px;
+  height: 12px;
+  transition: transform .15s ease;
+}
+html .message-response-details[open] .response-details-chevron { transform: rotate(90deg); }
+html .response-details-grid {
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  gap: 7px;
+  max-width: 680px;
+  margin-top: 7px;
+  padding: 9px;
+  background: var(--ui-panel-muted);
+  border: 1px solid var(--ui-border);
+  border-radius: 8px;
+}
+html .response-details-grid > div { display: grid; min-width: 0; gap: 3px; }
+html .response-details-grid small { color: var(--ui-subtle); }
+html .response-details-grid strong { color: var(--ui-muted); font-size: 12px; font-weight: 600; }
 
 /* Shared Synapse canvas geometry. */
 html .workspace-canvas-page,
@@ -1919,6 +1974,7 @@ html .editable-title:focus-visible { outline: 2px solid var(--ui-accent); outlin
   html .messages { padding: 16px 12px 10px; }
   html .message.user > div { max-width: 92%; }
   html .composer { width: calc(100% - 24px); }
+  html .response-details-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   html .canvas-header { grid-template-columns: minmax(0,1fr) auto auto; }
   html .canvas-conversation-picker select { width: min(140px,38vw); }
   html .canvas-body { grid-template-columns: 1fr; }

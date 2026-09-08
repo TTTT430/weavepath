@@ -1,5 +1,5 @@
 import{useCallback,useEffect,useMemo,useRef,useState}from'react';
-import type{AIStatus,Graph,Message,MessageSnapshot,WorkflowSummary}from'../domain/types';
+import type{AIStatus,ChatResponseDetails,Graph,Message,MessageSnapshot,WorkflowSummary}from'../domain/types';
 import{api,ApiError}from'../lib/api';
 import{useI18n}from'../lib/i18n';
 import{routeLabel}from'../domain/graph';
@@ -33,6 +33,18 @@ function elapsedLabel(milliseconds:number){
  return minutes?`${minutes}:${String(remaining).padStart(2,'0')}`:`${seconds}s`;
 }
 
+function responseDuration(milliseconds:number,locale:'zh-CN'|'en'){
+ const seconds=Math.max(0,Math.round(milliseconds/1000));
+ if(locale==='zh-CN'){
+  if(seconds<1)return'用时不足 1 秒';
+  const hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60),rest=seconds%60;
+  return`用时 ${hours?`${hours} 小时 `:''}${minutes?`${minutes} 分钟 `:''}${rest||(!hours&&!minutes)?`${rest} 秒`:''}`.trim();
+ }
+ if(seconds<1)return'Took less than 1 second';
+ const hours=Math.floor(seconds/3600),minutes=Math.floor(seconds%3600/60),rest=seconds%60;
+ return`Took ${hours?`${hours}h `:''}${minutes?`${minutes}m `:''}${rest||(!hours&&!minutes)?`${rest}s`:''}`.trim();
+}
+
 export interface ChatPageProps{
  onOpenWorkflow?:(workflowId:string)=>void
  onWorkspaceChange?:(context:{workflowId:string;graph:Graph|null})=>void
@@ -40,7 +52,7 @@ export interface ChatPageProps{
 }
 
 export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSignal}:ChatPageProps={}){
- const{t}=useI18n();
+ const{t,locale}=useI18n();
  const[settingsOpen,setSettingsOpen]=useState(false);
  const[workflows,setWorkflows]=useState<WorkflowSummary[]>([]);
  const[workflowId,setWorkflowId]=useState(localStorage.getItem('cw.workflow')||'');
@@ -599,8 +611,15 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
 
  const lastUserId=([...messages].reverse().find(message=>message.role==='user'&&!message.inherited)?.id);
  const renderMessage=(message:Message,actions=false)=>{
-  const copied=copiedId===String(message.id);
-  return <article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<MarkdownMessage content={message.content}/>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions" aria-label={t('messageActions')}><button type="button" className="message-action-button" aria-label={t('editQuestion')} title={t('editQuestion')} onClick={()=>beginEdit(message)}><AppIcon name="edit" className="message-action-icon"/></button><button type="button" className={`message-action-button${copied?' is-copied':''}`} aria-label={copied?t('copied'):t('copyMessage')} title={copied?t('copied'):t('copyMessage')} onClick={()=>void copyMessage(message)}><AppIcon name={copied?'check':'copy'} className="message-action-icon"/></button></div>}</>}</div></article>;
+ const copied=copiedId===String(message.id);
+  const responseDetails=(details:ChatResponseDetails)=>{
+   const available=details.cacheStatus==='reported';
+   const value=(number:number|null|undefined,percent=false)=>available&&number!=null
+    ?percent?`${Math.round(number*1000)/10}%`:number.toLocaleString(locale)
+    :t('unavailable');
+   return <details className="message-response-details"><summary aria-label={t('replyDetails')}><AppIcon name="clock"/><span>{responseDuration(details.durationMs,locale)}</span><AppIcon name="chevronRight" className="response-details-chevron"/></summary><div className="response-details-grid"><div><small>{t('cachedTokens')}</small><strong>{value(details.cachedInputTokens)}</strong></div><div><small>{t('cacheMissTokens')}</small><strong>{value(details.uncachedInputTokens)}</strong></div><div><small>{t('cacheHitRate')}</small><strong>{value(details.cacheReuseRatio,true)}</strong></div><div><small>{t('cacheCoverage')}</small><strong>{value(details.cacheCoverage,true)}</strong></div></div></details>;
+  };
+  return <article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<><MarkdownMessage content={message.content}/>{message.responseDetails&&responseDetails(message.responseDetails)}</>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions" aria-label={t('messageActions')}><button type="button" className="message-action-button" aria-label={t('editQuestion')} title={t('editQuestion')} onClick={()=>beginEdit(message)}><AppIcon name="edit" className="message-action-icon"/></button><button type="button" className={`message-action-button${copied?' is-copied':''}`} aria-label={copied?t('copied'):t('copyMessage')} title={copied?t('copied'):t('copyMessage')} onClick={()=>void copyMessage(message)}><AppIcon name={copied?'check':'copy'} className="message-action-icon"/></button></div>}</>}</div></article>;
  };
  const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><AppIcon name={memoryOpen?'chevronDown':'chevronRight'}/><span>{t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
  const progressText=replyPhase==='connecting'?t('connecting'):replyPhase==='waiting'?t('waitingForModel'):replyPhase==='receiving'?t('receivingResponse'):replyPhase==='reconnecting'?`${t('reconnecting')}${reply.attempt&&reply.attempt>1?` (${reply.attempt}/3)`:''}`:t('thinking');

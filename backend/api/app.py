@@ -8,6 +8,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Event, Lock
+from time import perf_counter
 from typing import BinaryIO, Callable, Literal, TypeVar
 
 from fastapi import FastAPI, Query, Request
@@ -533,6 +534,41 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             "instruction": "Use only these explicitly accepted cross-route facts; do not infer sibling transcripts.",
         }, ensure_ascii=False)}]
 
+    def response_details(started_at: float,
+                         usage: dict[str, object] | None = None) -> dict[str, object]:
+        provider = llm.status()
+        normalized = dict(usage or {})
+        cached = normalized.get("cachedInputTokens")
+        uncached = normalized.get("uncachedInputTokens")
+        cache_status = normalized.get("cacheStatus") or "not_reported"
+        reuse_ratio = None
+        if (cache_status == "reported" and isinstance(cached, int)
+                and isinstance(uncached, int) and cached + uncached > 0):
+            reuse_ratio = cached / (cached + uncached)
+        return {
+            "durationMs": max(0, round((perf_counter() - started_at) * 1000)),
+            "provider": provider.get("provider"),
+            "model": provider.get("model"),
+            "inputTokens": normalized.get("inputTokens"),
+            "outputTokens": normalized.get("outputTokens"),
+            "cachedInputTokens": cached,
+            "uncachedInputTokens": uncached,
+            "cacheReuseRatio": reuse_ratio,
+            # An ordinary reply has one model call. Coverage is complete only
+            # when that call reports usable cache accounting.
+            "cacheCoverage": 1.0 if cache_status == "reported" else None,
+            "cacheStatus": cache_status,
+        }
+
+    def complete_with_details(messages: list[dict[str, object]]) -> tuple[str, dict[str, object]]:
+        started_at = perf_counter()
+        complete_detailed = getattr(llm, "complete_with_details", None)
+        if callable(complete_detailed):
+            answer, usage = complete_detailed(messages)
+        else:
+            answer, usage = llm.complete(messages), None
+        return answer, response_details(started_at, usage)
+
     @app.get(prefix + "/health")
     def health():
         return {"ok": True, "service": "weavepath", "version": app.version,
@@ -717,6 +753,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     "requestId": key, "userMessage": user_message,
                 })
                 parts: list[str] = []
+                usage: dict[str, object] | None = None
+                response_started_at = perf_counter()
                 if hasattr(llm, "stream_events"):
                     provider_events = llm.stream_events(context, event)
                 else:
@@ -736,6 +774,11 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                         parts.clear()
                         yield _sse("message.reset", {"requestId": key})
                         continue
+                    if provider_event.get("type") == "usage":
+                        candidate = provider_event.get("usage")
+                        if isinstance(candidate, dict):
+                            usage = candidate
+                        continue
                     chunk = provider_event.get("content")
                     if provider_event.get("type") != "delta" or not isinstance(chunk, str) or not chunk:
                         continue
@@ -749,7 +792,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 if not answer:
                     raise LLMUnavailable("AI provider returned an empty response", code="aiEmptyResponse", status_code=502)
                 assistant_message = graph_store.append_message(
-                    workflow_id, instance_id, role="assistant", content=answer
+                    workflow_id, instance_id, role="assistant", content=answer,
+                    response_details=response_details(response_started_at, usage),
                 )
                 result = {"userMessage": user_message, "assistantMessage": assistant_message}
                 if key is not None:
@@ -792,8 +836,11 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 if key is not None:
                     graph_store.record_chat_user_message(workflow_id, instance_id, key, user_message["id"])
             context = route_context(workflow_id, instance_id, graph_store.list_messages(workflow_id, instance_id)["messages"])
-            assistant_text = llm.complete(context)
-            assistant_message = graph_store.append_message(workflow_id, instance_id, role="assistant", content=assistant_text)
+            assistant_text, details = complete_with_details(context)
+            assistant_message = graph_store.append_message(
+                workflow_id, instance_id, role="assistant", content=assistant_text,
+                response_details=details,
+            )
             result = {"userMessage": user_message, "assistantMessage": assistant_message}
             if key is not None:
                 graph_store.complete_chat_request(workflow_id, instance_id, key, result)
@@ -826,11 +873,14 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             workflow_id, instance_id, message_id, content=body.content,
             expected_content_revision=body.expected_revision,
         )
-        assistant_text = llm.complete(route_context(workflow_id, instance_id, prepared["messages"]))
+        assistant_text, details = complete_with_details(
+            route_context(workflow_id, instance_id, prepared["messages"])
+        )
         return graph_store.commit_latest_local_user_edit(
             workflow_id, instance_id, message_id, content=body.content,
             expected_content_revision=body.expected_revision,
             assistant_content=assistant_text,
+            assistant_response_details=details,
         )
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/runs", status_code=201)
@@ -944,9 +994,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     workflow_id, child_id,
                     graph_store.list_messages(workflow_id, child_id, scope="effective")["messages"],
                 )
-                answer = llm.complete(context)
+                answer, details = complete_with_details(context)
                 assistant_message = graph_store.append_message(
-                    workflow_id, child_id, role="assistant", content=answer
+                    workflow_id, child_id, role="assistant", content=answer,
+                    response_details=details,
                 )
                 reply_status = "completed"
             except LLMUnavailable as exc:

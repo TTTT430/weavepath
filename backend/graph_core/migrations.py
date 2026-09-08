@@ -143,6 +143,11 @@ CREATE TABLE IF NOT EXISTS chat_requests(
     PRIMARY KEY(workflow_id,instance_id,idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_requests_status ON chat_requests(status,updated_at);
+CREATE TABLE IF NOT EXISTS message_response_details(
+    message_id INTEGER PRIMARY KEY REFERENCES local_messages(id) ON DELETE CASCADE,
+    details_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 # Runtime v2 remains an additive preview and deliberately does not advance the

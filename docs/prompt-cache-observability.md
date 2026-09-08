@@ -30,10 +30,13 @@ WeavePath 现在**不需要实现自己的推理引擎 KV cache**；Agent Runtim
 - `ModelTurn.usage` 接收规范化后的 token/cache usage，`model_step_usage` 按模型调用持久化；
 - OpenAI Chat/Responses 风格的嵌套 `cached_tokens` 与 DeepSeek 顶层 hit/miss 字段均可解析；
 - Run metrics 与 Web 面板显示缓存 token、复用率、统计覆盖率和不可用状态；
+- 普通 Local Chat 回复同样保存单次模型调用的用时与 allowlist usage，并在回答下方提供可展开详情；
 - Tool Registry 规格按 `name + version` 排序，JSON Schema 递归规范化；
 - context snapshot 保存审计所需的完整 envelope，但模型输入只使用白名单投影。
 
-普通 Local Chat JSON/SSE 仍只返回文本，不进入本轮 Agent Runtime usage journal；这是后续独立集成点。
+普通 Local Chat 的 usage 不混入 Agent Runtime 的逐 step journal，而是按 assistant message 存入独立元数据表。
+一条普通回答对应一次模型调用：返回有效缓存字段时覆盖率为 `100%`；未返回、不支持或字段矛盾时，
+缓存 token、未缓存 token、复用率和覆盖率均显示“不可用”。旧消息没有可追溯用时，因此不会回填伪造详情。
 即使 Runtime 已能显示统计，也不能把“相同对话路线”直接等同于“命中缓存”：供应商是否缓存和返回 usage
 仍由其服务决定。
 

@@ -135,6 +135,25 @@ describe('chat delivery mode',()=>{
   await waitFor(()=>expect(apiMock.chat).toHaveBeenCalledWith('wf-1','root','测试消息',expect.any(String)));
   expect(apiMock.send).not.toHaveBeenCalled();expect(await screen.findByText('助手回复')).toBeInTheDocument();
  });
+ it('shows elapsed time below an ordinary reply and expands real cache accounting',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'u1',role:'user',content:'测试消息'},{id:'a1',role:'assistant',content:'助手回复',responseDetails:{durationMs:81320,provider:'openai-compatible',model:'test-model',cachedInputTokens:750,uncachedInputTokens:250,cacheReuseRatio:.75,cacheCoverage:1,cacheStatus:'reported'}}],contentRevision:2});
+  renderChat();
+  expect(await screen.findByText('助手回复')).toBeInTheDocument();
+  const summary=screen.getByLabelText('回复详情'),details=summary.closest('details')!;
+  expect(within(details).getByText('用时 1 分钟 21 秒')).toBeInTheDocument();
+  fireEvent.click(summary);
+  expect(within(details).getByText('750')).toBeInTheDocument();
+  expect(within(details).getByText('250')).toBeInTheDocument();
+  expect(within(details).getByText('75%')).toBeInTheDocument();
+  expect(within(details).getByText('100%')).toBeInTheDocument();
+ });
+ it('labels cache fields unavailable when an ordinary reply provider omitted them',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'a1',role:'assistant',content:'无缓存统计',responseDetails:{durationMs:400,cacheStatus:'unsupported'}}],contentRevision:1});
+  renderChat();await screen.findByText('无缓存统计');fireEvent.click(screen.getByText('用时不足 1 秒'));
+  expect(screen.getAllByText('不可用')).toHaveLength(4);
+ });
  it('refreshes graph metadata after the first message reveals an automatically generated branch title',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
   const untitled={...graph,nodes:[{...graph.nodes[0],title:'新分支 1'}]};

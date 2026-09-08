@@ -24,6 +24,34 @@ class FakeLLM:
         return "assistant answer"
 
 
+class DetailedFakeLLM(FakeLLM):
+    def complete_with_details(self, messages):
+        self.calls += 1
+        self.messages = messages
+        return "assistant answer", {
+            "inputTokens": 100,
+            "outputTokens": 12,
+            "cachedInputTokens": 75,
+            "uncachedInputTokens": 25,
+            "cacheStatus": "reported",
+        }
+
+
+class DetailedStreamingFakeLLM(FakeLLM):
+    def stream_events(self, messages, _cancel_event=None):
+        self.calls += 1
+        self.messages = messages
+        yield {"type": "status", "phase": "waiting"}
+        yield {"type": "delta", "content": "streamed answer"}
+        yield {"type": "usage", "usage": {
+            "inputTokens": 50,
+            "outputTokens": 6,
+            "cachedInputTokens": 30,
+            "uncachedInputTokens": 20,
+            "cacheStatus": "reported",
+        }}
+
+
 class CallbackLLM(FakeLLM):
     def __init__(self, callback, *, error: Exception | None = None):
         super().__init__()
@@ -111,6 +139,66 @@ def test_ai_status_and_route_aware_chat_round_trip():
         assert [(item["role"], item["content"]) for item in listed] == [
             ("user", "question"), ("assistant", "assistant answer")
         ]
+    store.close()
+
+
+def test_ordinary_chat_persists_response_duration_and_provider_cache_usage():
+    store = GraphStore(":memory:")
+    llm = DetailedFakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Workflow", "rootTitle": "A", "rootInstanceId": "A"
+        }).json()
+        workflow_id = graph["workflowId"]
+        response = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/chat",
+            json={"content": "question"},
+        )
+        assert response.status_code == 200
+        details = response.json()["assistantMessage"]["responseDetails"]
+        assert details == {
+            "durationMs": details["durationMs"],
+            "provider": "fake",
+            "model": "test-model",
+            "inputTokens": 100,
+            "outputTokens": 12,
+            "cachedInputTokens": 75,
+            "uncachedInputTokens": 25,
+            "cacheReuseRatio": 0.75,
+            "cacheCoverage": 1.0,
+            "cacheStatus": "reported",
+        }
+        assert isinstance(details["durationMs"], int) and details["durationMs"] >= 0
+        listed = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/A/messages?scope=local"
+        ).json()["messages"]
+        assert listed[-1]["responseDetails"] == details
+    store.close()
+
+
+def test_streaming_chat_persists_usage_on_the_completed_assistant_message():
+    store = GraphStore(":memory:")
+    llm = DetailedStreamingFakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Workflow", "rootTitle": "A", "rootInstanceId": "A"
+        }).json()
+        workflow_id = graph["workflowId"]
+        response = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/chat/stream",
+            json={"content": "question", "idempotencyKey": "stream-usage"},
+        )
+        assert response.status_code == 200
+        assert "message.completed" in response.text
+        listed = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/A/messages?scope=local"
+        ).json()["messages"]
+        details = listed[-1]["responseDetails"]
+        assert listed[-1]["content"] == "streamed answer"
+        assert details["cachedInputTokens"] == 30
+        assert details["uncachedInputTokens"] == 20
+        assert details["cacheReuseRatio"] == 0.6
+        assert details["cacheCoverage"] == 1.0
     store.close()
 
 

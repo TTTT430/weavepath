@@ -173,6 +173,9 @@ class RuntimeModelSettings:
     def complete(self, messages: list[dict[str, Any]]) -> str:
         return self._client().complete(messages)
 
+    def complete_with_details(self, messages: list[dict[str, Any]]) -> tuple[str, dict[str, int | str | None] | None]:
+        return self._client().complete_with_details(messages)
+
     def stream(self, messages: list[dict[str, Any]],
                cancel_event: Event | None = None) -> Iterator[str]:
         return self._client().stream(messages, cancel_event)

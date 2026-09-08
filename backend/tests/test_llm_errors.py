@@ -95,6 +95,46 @@ class PartialThenReconnectingClient(ReconnectingStreamClient):
         return PartialThenReconnectingResponse(self.calls)
 
 
+class UsageStreamResponse(FakeStreamResponse):
+    def iter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"ok"}}]}'
+        yield ('data: {"choices":[],"usage":{"prompt_tokens":100,'
+               '"completion_tokens":4,"prompt_cache_hit_tokens":80,'
+               '"prompt_cache_miss_tokens":20}}')
+        yield "data: [DONE]"
+
+
+class UsageStreamClient(ReconnectingStreamClient):
+    request_json = None
+
+    def stream(self, _method, _url, **kwargs):
+        type(self).request_json = kwargs.get("json")
+        return UsageStreamResponse()
+
+
+class UnsupportedUsageResponse(FakeStreamResponse):
+    def __init__(self, supported):
+        self.supported = supported
+
+    def raise_for_status(self):
+        if not self.supported:
+            request = httpx.Request("POST", "https://provider.test/v1/chat/completions")
+            raise httpx.HTTPStatusError(
+                "unsupported stream_options",
+                request=request,
+                response=httpx.Response(400, request=request),
+            )
+
+
+class UnsupportedUsageClient(ReconnectingStreamClient):
+    request_jsons = []
+
+    def stream(self, _method, _url, **kwargs):
+        payload = kwargs.get("json")
+        type(self).request_jsons.append(payload)
+        return UnsupportedUsageResponse("stream_options" not in payload)
+
+
 def test_build_llm_prefers_weavepath_environment_and_keeps_legacy_fallback(monkeypatch):
     values = {
         "WEAVEPATH_LLM_BASE_URL": "https://weavepath.test/v1",
@@ -155,6 +195,31 @@ def test_stream_resets_partial_draft_before_reconnecting(monkeypatch):
     reset_index = next(index for index, event in enumerate(events) if event["type"] == "reset")
     assert events[reset_index + 1]["phase"] == "reconnecting"
     assert PartialThenReconnectingClient.calls == 2
+
+
+def test_stream_requests_and_normalizes_provider_cache_usage(monkeypatch):
+    monkeypatch.setattr("api.llm.httpx.Client", UsageStreamClient)
+    client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a")
+    events = list(client.stream_events([{"role": "user", "content": "question"}]))
+    assert UsageStreamClient.request_json["stream_options"] == {"include_usage": True}
+    assert next(event["usage"] for event in events if event["type"] == "usage") == {
+        "inputTokens": 100,
+        "outputTokens": 4,
+        "cachedInputTokens": 80,
+        "uncachedInputTokens": 20,
+        "cacheStatus": "reported",
+    }
+
+
+def test_stream_falls_back_when_gateway_rejects_optional_usage_flag(monkeypatch):
+    UnsupportedUsageClient.request_jsons = []
+    monkeypatch.setattr("api.llm.httpx.Client", UnsupportedUsageClient)
+    client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a")
+    events = list(client.stream_events([{"role": "user", "content": "question"}]))
+    assert [item["content"] for item in events if item["type"] == "delta"] == ["ok"]
+    assert len(UnsupportedUsageClient.request_jsons) == 2
+    assert "stream_options" in UnsupportedUsageClient.request_jsons[0]
+    assert "stream_options" not in UnsupportedUsageClient.request_jsons[1]
 
 
 @pytest.mark.parametrize(

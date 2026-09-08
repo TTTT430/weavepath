@@ -22,7 +22,7 @@
 | `backend/graph_core/` | In progress | 已验证 SQLite GraphStore、动态 parent 路线记忆（checkpoint 创建快照用于审计）、同 topic 多实例、leaf-first prune、实例级 `contentRevision`、workflow `eventRevision`、schema v1→v7 前向迁移、checkpoint cursor、空内部路线投影、系统/用户标题来源和从具体用户 turn 创建分支；仍未拆稳定 repository/ports，也没有自动 rollback/downgrade |
 | `backend/api/` | In progress | health/SQLite schema version 为 7；核心 `/api/v1`、OpenAI-compatible Local Chat（JSON 与 SSE 流式）、取消请求、聊天幂等、模型设置、Route-to-Agent Run preview、Engineering Lab preview、`GET .../turns`/`turn-tree`、可省略 prompt 的内部 `fork-chat` 和 revision-safe rename 已完成自动化验证；graph snapshot 与 legacy manifest 协议仍为 schema v1，尚无 WebSocket、认证/多租户边界和完整 application service 分层 |
 | `backend/tests/` | In progress | graph/API、路线隔离、AI 设置、Agent Runtime、工程记录、工具安全、turn cursor、空分支/自动命名/手动重命名和 v1→v7 migration 已纳入套件；2026-09-08 当前完整后端套件为 143 项通过 |
-| `apps/web/` | In progress | React chat/model settings、可读 Agent 执行时间线、审批/取消/重试与缓存 usage、原生 `WorkspaceShell`、可操作双层画布和 Engineering Lab 已实现；前端 125 项测试、typecheck/production build 和既有主路径 E2E 已建立，Runtime v2 新路径的真实 provider 浏览器 E2E、实验室写入路径和真实窄屏仍待补验 |
+| `apps/web/` | In progress | React chat/model settings、可读 Agent 执行时间线、审批/取消/重试与缓存 usage、原生 `WorkspaceShell`、可操作双层画布和 Engineering Lab 已实现；前端 127 项测试、typecheck/production build 和既有主路径 E2E 已建立，Runtime v2 新路径的真实 provider 浏览器 E2E、实验室写入路径和真实窄屏仍待补验 |
 | WorkspaceShell / 双层画布 | Verified local preview | 默认入口为同页“对话 / 工作流”；顶层只显示 `surface_scope=workflow` 的对话，选择节点即同步 Chat 的具体路线，双击还会钻入已激活 owner 的内部 Turn Tree。两层使用统一的 Synapse 式卡片、连线和 inspector；卡片 `＋` 可直接创建并激活对应 scope 的子分支，空 turn 路线立即显示。第二层 route selection/composer 与 Chat 共用消息真源，内部路线不会进入第一层；“继续对话”只返回已经同步的 Chat。边界见 ADR-0004 |
 | `scripts/dev.ps1` | Done for current slice | 从仓库根目录启动 API:8000 和 Web:5173，可用 `-WebPort` 覆盖 Web 端口 |
 | `scripts/check.ps1` | Done for current slice | 统一执行后端测试/compileall 与前端测试/build |
@@ -72,7 +72,7 @@
 
 2026-09-07 的 **Verified local preview** 记录如下：
 
-- 当前 Python 3.12 统一后端套件 143 项通过，其中覆盖 run create/read/events/metrics、cache-aware route context、event sequence、重启恢复、连接重试与流重置、工具安全、adapter contract、idempotency 与 revision；
+- 当前 Python 3.12 统一后端套件 147 项通过，其中覆盖 run create/read/events/metrics、普通回复 usage 持久化、cache-aware route context、event sequence、重启恢复、连接重试与流重置、工具安全、adapter contract、idempotency 与 revision；
 - 当前前端 Vitest 统一套件覆盖 brief、可读执行时间线、重复提交保护、失败 Run 恢复、事件分页、工程实验室和路线切换竞态；
 - Python compileall、TypeScript typecheck 与 production build 通过；仍有非阻塞 chunk-size 警告；
 - 真实浏览器使用受控 OpenAI-compatible 假上游完成 `数据集 → 情感分析` 路线的模型→`safe_calculator`→timeline→最终回答闭环；兄弟路线 canary 未进入请求；

@@ -229,10 +229,16 @@ class GraphStore:
 
     def _local_messages(self, cx: sqlite3.Connection, instance_id: str) -> list[dict[str, Any]]:
         messages = [dict(row) for row in cx.execute(
-            "SELECT id,role,content,created_at AS createdAt FROM local_messages WHERE instance_id=? ORDER BY id",
+            "SELECT lm.id,lm.role,lm.content,lm.created_at AS createdAt,"
+            "mrd.details_json AS responseDetailsJson FROM local_messages lm "
+            "LEFT JOIN message_response_details mrd ON mrd.message_id=lm.id "
+            "WHERE lm.instance_id=? ORDER BY lm.id",
             (instance_id,),
         ).fetchall()]
         for message in messages:
+            details = _loads(message.pop("responseDetailsJson", None), None)
+            if isinstance(details, dict):
+                message["responseDetails"] = details
             message["inherited"] = False
         return messages
 
@@ -602,7 +608,8 @@ class GraphStore:
             "routeNodes": route_nodes,
         }
 
-    def append_message(self, workflow_id: str, instance_id: str, *, role: str, content: str) -> dict[str, Any]:
+    def append_message(self, workflow_id: str, instance_id: str, *, role: str, content: str,
+                       response_details: dict[str, Any] | None = None) -> dict[str, Any]:
         if role not in {"system", "user", "assistant", "tool"} or not content:
             raise Validation("invalid role or empty content")
         now = _now()
@@ -624,6 +631,12 @@ class GraphStore:
                 generated_workflow_name = _prompt_branch_title(content)
             cur = cx.execute("INSERT INTO local_messages(workflow_id,instance_id,role,content,created_at) VALUES(?,?,?,?,?)",
                              (workflow_id, instance_id, role, content, now))
+            if response_details is not None:
+                cx.execute(
+                    "INSERT INTO message_response_details(message_id,details_json,created_at) "
+                    "VALUES(?,?,?)",
+                    (cur.lastrowid, _stable_json(response_details), now),
+                )
             if generated_title:
                 cx.execute(
                     "UPDATE conversation_instances SET title=?,content_revision=content_revision+1,"
@@ -652,7 +665,8 @@ class GraphStore:
             revision = self._instance(cx, workflow_id, instance_id)["content_revision"]
         return {"id": cur.lastrowid, "instanceId": instance_id, "role": role, "content": content,
                 "createdAt": now, "inherited": False, "contentRevision": revision,
-                "eventRevision": event_revision, "graphRevision": graph_revision}
+                "eventRevision": event_revision, "graphRevision": graph_revision,
+                **({"responseDetails": response_details} if response_details is not None else {})}
 
     def _validate_latest_local_user_edit(self, cx: sqlite3.Connection, workflow_id: str,
                                          instance_id: str, message_id: int,
@@ -695,7 +709,8 @@ class GraphStore:
     def commit_latest_local_user_edit(self, workflow_id: str, instance_id: str,
                                       message_id: int, *, content: str,
                                       expected_content_revision: int,
-                                      assistant_content: str | None = None) -> dict[str, Any]:
+                                      assistant_content: str | None = None,
+                                      assistant_response_details: dict[str, Any] | None = None) -> dict[str, Any]:
         if not content.strip():
             raise Validation("content must not be blank")
         if assistant_content is not None and not assistant_content.strip():
@@ -726,6 +741,12 @@ class GraphStore:
                     "VALUES(?,?,?,?,?)",
                     (workflow_id, instance_id, "assistant", assistant_content.strip(), now),
                 ).lastrowid
+                if assistant_response_details is not None:
+                    cx.execute(
+                        "INSERT INTO message_response_details(message_id,details_json,created_at) "
+                        "VALUES(?,?,?)",
+                        (assistant_id, _stable_json(assistant_response_details), now),
+                    )
             cx.execute(
                 "UPDATE conversation_instances SET content_revision=content_revision+1,updated_at=? WHERE id=?",
                 (now, instance_id),
@@ -743,6 +764,8 @@ class GraphStore:
                 "id": assistant_id, "instanceId": instance_id, "role": "assistant",
                 "content": assistant_content.strip(), "createdAt": now, "inherited": False,
                 "contentRevision": revision, "eventRevision": event_revision,
+                **({"responseDetails": assistant_response_details}
+                   if assistant_response_details is not None else {}),
             }
         return {
             "userMessage": {"id": message_id, "instanceId": instance_id, "role": "user",
