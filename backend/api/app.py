@@ -228,7 +228,9 @@ class MessageInput(CamelModel):
 
 
 class ChatInput(CamelModel):
-    content: str = Field(min_length=1, max_length=20_000)
+    # Text attachments are stored inside the durable user-message envelope.
+    # The UI enforces 2 MiB per file and a 4M-character combined budget.
+    content: str = Field(min_length=1, max_length=4_000_000)
     idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
 
     @field_validator("content")
@@ -309,6 +311,9 @@ class ModelSettingsInput(CamelModel):
     clear_api_key: bool = Field(False, alias="clearApiKey")
     persist_api_key: bool = Field(False, alias="persistApiKey")
     network_mode: Literal["auto", "system", "direct"] = Field("auto", alias="networkMode")
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] | None = Field(
+        None, alias="reasoningEffort"
+    )
 
 
 class ModelSettingsValidationInput(ModelSettingsInput):
@@ -318,6 +323,9 @@ class ModelSettingsValidationInput(ModelSettingsInput):
 
 class ModelSelectionInput(CamelModel):
     model: str = Field(min_length=1, max_length=200)
+    reasoning_effort: Literal["low", "medium", "high", "xhigh"] | None = Field(
+        None, alias="reasoningEffort"
+    )
 
 
 class ForkInput(CamelModel):
@@ -615,6 +623,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             connect_timeout_seconds=body.connect_timeout_seconds, system_prompt=body.system_prompt,
             persistence=body.persistence, clear_api_key=body.clear_api_key,
             persist_api_key=body.persist_api_key, network_mode=body.network_mode,
+            reasoning_effort=body.reasoning_effort,
         )
 
     @app.delete(prefix + "/ai/settings")
@@ -628,7 +637,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
 
     @app.patch(prefix + "/ai/settings/model")
     def switch_ai_model(body: ModelSelectionInput):
-        return settings.switch_model(body.model)
+        return settings.switch_model(body.model, body.reasoning_effort)
 
     @app.post(prefix + "/ai/settings/validate")
     def validate_ai_settings(body: ModelSettingsValidationInput):

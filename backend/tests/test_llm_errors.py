@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from api.llm import OpenAICompatibleLLM, build_llm_from_env
+from api.llm import LLMUnavailable, OpenAICompatibleLLM, build_llm_from_env
 from graph_core import GraphStore
 
 
@@ -32,6 +32,18 @@ class FakeClient:
             return httpx.Response(
                 401,
                 text="provider body contains api-key-should-never-leak",
+                request=request,
+            )
+        if self.behavior == "unsupported_reasoning":
+            return httpx.Response(
+                400,
+                text="unsupported parameter: reasoning_effort",
+                request=request,
+            )
+        if self.behavior == "context_too_large":
+            return httpx.Response(
+                400,
+                text="maximum context length exceeded",
                 request=request,
             )
         return httpx.Response(
@@ -144,6 +156,7 @@ def test_build_llm_prefers_weavepath_environment_and_keeps_legacy_fallback(monke
         "WEAVEPATH_LLM_API_KEY": "new-key",
         "WEAVEPATH_LLM_TIMEOUT": "17",
         "WEAVEPATH_LLM_SYSTEM_PROMPT": "new prompt",
+        "WEAVEPATH_LLM_REASONING_EFFORT": "high",
         "COTHINKER_LLM_BASE_URL": "https://legacy.test/v1",
         "COTHINKER_LLM_MODEL": "legacy-model",
         "COTHINKER_LLM_API_KEY": "legacy-key",
@@ -162,6 +175,7 @@ def test_build_llm_prefers_weavepath_environment_and_keeps_legacy_fallback(monke
     assert timeout.connect == 17
     assert timeout.read is None
     assert client.system_prompt == "new prompt"
+    assert client.reasoning_effort == "high"
 
     for key in [name for name in values if name.startswith("WEAVEPATH_")]:
         monkeypatch.delenv(key)
@@ -207,9 +221,11 @@ def test_stream_resets_partial_draft_before_reconnecting(monkeypatch):
 
 def test_stream_requests_and_normalizes_provider_cache_usage(monkeypatch):
     monkeypatch.setattr("api.llm.httpx.Client", UsageStreamClient)
-    client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a")
+    client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a",
+                                 reasoning_effort="high")
     events = list(client.stream_events([{"role": "user", "content": "question"}]))
     assert UsageStreamClient.request_json["stream_options"] == {"include_usage": True}
+    assert UsageStreamClient.request_json["reasoning_effort"] == "high"
     assert next(event["usage"] for event in events if event["type"] == "usage") == {
         "inputTokens": 100,
         "outputTokens": 4,
@@ -228,6 +244,32 @@ def test_stream_falls_back_when_gateway_rejects_optional_usage_flag(monkeypatch)
     assert len(UnsupportedUsageClient.request_jsons) == 2
     assert "stream_options" in UnsupportedUsageClient.request_jsons[0]
     assert "stream_options" not in UnsupportedUsageClient.request_jsons[1]
+
+
+def test_reasoning_effort_rejection_has_an_actionable_safe_error(monkeypatch):
+    FakeClient.behavior = "unsupported_reasoning"
+    FakeClient.calls = 0
+    monkeypatch.setattr("api.llm.httpx.Client", FakeClient)
+    client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a",
+                                 reasoning_effort="xhigh")
+    with pytest.raises(LLMUnavailable) as caught:
+        client.complete([{"role": "user", "content": "question"}])
+    assert caught.value.code == "reasoningEffortUnsupported"
+    assert caught.value.status_code == 422
+    assert "unsupported parameter" not in str(caught.value)
+
+
+def test_provider_context_limit_has_an_actionable_safe_error(monkeypatch):
+    FakeClient.behavior = "context_too_large"
+    FakeClient.calls = 0
+    monkeypatch.setattr("api.llm.httpx.Client", FakeClient)
+    client = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a",
+                                 reasoning_effort="high")
+    with pytest.raises(LLMUnavailable) as caught:
+        client.complete([{"role": "user", "content": "large request"}])
+    assert caught.value.code == "aiContextTooLarge"
+    assert caught.value.status_code == 422
+    assert "maximum context length" not in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -301,7 +343,7 @@ def test_chat_rejects_blank_content_before_storage_or_llm_call(content):
 def test_chat_rejects_content_over_limit_without_echoing_it():
     store = GraphStore(":memory:")
     llm = OpenAICompatibleLLM(base_url="https://provider.test/v1", model="model-a")
-    secret_content = "s" * 20_001
+    secret_content = "s" * 4_000_001
     with TestClient(create_app(store, llm_client=llm)) as client:
         graph = client.post(
             "/api/v1/workflows",

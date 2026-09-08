@@ -17,7 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from api.credential_store import CredentialStore, default_credential_store
-from api.llm import LLMUnavailable, NetworkMode, OpenAICompatibleLLM
+from api.llm import LLMUnavailable, NetworkMode, OpenAICompatibleLLM, ReasoningEffort
 
 
 Persistence = Literal["memory", "local"]
@@ -59,6 +59,7 @@ class ModelConfig:
     timeout_seconds: float = 15.0
     system_prompt: str = ""
     network_mode: NetworkMode = "auto"
+    reasoning_effort: ReasoningEffort | None = None
 
 
 class RuntimeModelSettings:
@@ -98,6 +99,7 @@ class RuntimeModelSettings:
                     _prompt(self._env.get("WEAVEPATH_LLM_SYSTEM_PROMPT")
                             or self._env.get("COTHINKER_LLM_SYSTEM_PROMPT") or ""),
                     _network_mode(self._env.get("WEAVEPATH_LLM_NETWORK_MODE") or "auto"),
+                    _reasoning_effort(self._env.get("WEAVEPATH_LLM_REASONING_EFFORT") or None),
                 )
             except (TypeError, ValueError):
                 self._config = None
@@ -111,6 +113,7 @@ class RuntimeModelSettings:
                 _timeout(raw.get("connectTimeoutSeconds", raw.get("timeoutSeconds", 15))),
                 str(raw.get("systemPrompt", "")),
                 _network_mode(raw.get("networkMode", "auto")),
+                _reasoning_effort(raw.get("reasoningEffort")),
             )
             self._source, self._persistence = "local", "local"
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
@@ -136,6 +139,7 @@ class RuntimeModelSettings:
                 "model": config.model if config else None,
                 "networkMode": config.network_mode if config else "auto",
                 "systemPrompt": config.system_prompt if config else "",
+                "reasoningEffort": config.reasoning_effort if config else None,
                 "hasApiKey": bool(self._api_key),
                 "apiKeyPersisted": self._api_key_persisted,
                 "secureKeyStorageAvailable": bool(self._credential_store.available),
@@ -152,10 +156,11 @@ class RuntimeModelSettings:
                   connect_timeout_seconds: float = 15.0, system_prompt: str = "",
                   persistence: Persistence = "memory", clear_api_key: bool = False,
                   persist_api_key: bool = False,
-                  network_mode: NetworkMode = "auto") -> dict[str, Any]:
+                  network_mode: NetworkMode = "auto",
+                  reasoning_effort: ReasoningEffort | None = None) -> dict[str, Any]:
         config = ModelConfig(validate_base_url(base_url), _model(model),
                              _timeout(connect_timeout_seconds), _prompt(system_prompt),
-                             _network_mode(network_mode))
+                             _network_mode(network_mode), _reasoning_effort(reasoning_effort))
         with self._lock:
             next_api_key = self._api_key
             if clear_api_key:
@@ -183,8 +188,9 @@ class RuntimeModelSettings:
             self._credential_error = False
             return self.status()
 
-    def switch_model(self, model: str) -> dict[str, Any]:
-        """Change only the active model, preserving provider and secret state."""
+    def switch_model(self, model: str,
+                     reasoning_effort: ReasoningEffort | None = None) -> dict[str, Any]:
+        """Change generation controls while preserving provider and secrets."""
         selected = _model(model)
         with self._lock:
             if self._config is None:
@@ -194,6 +200,7 @@ class RuntimeModelSettings:
             config = ModelConfig(
                 self._config.base_url, selected, self._config.timeout_seconds,
                 self._config.system_prompt, self._config.network_mode,
+                _reasoning_effort(reasoning_effort),
             )
             # Persist only when the existing non-secret settings are already
             # local. The API key vault is intentionally untouched.
@@ -218,10 +225,11 @@ class RuntimeModelSettings:
         self.local_path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.local_path.with_suffix(self.local_path.suffix + ".tmp")
         value = {
-            "version": 2, "provider": "openai-compatible", "baseUrl": config.base_url,
+            "version": 3, "provider": "openai-compatible", "baseUrl": config.base_url,
             "model": config.model, "connectTimeoutSeconds": config.timeout_seconds,
             "systemPrompt": config.system_prompt,
             "networkMode": config.network_mode,
+            "reasoningEffort": config.reasoning_effort,
         }
         temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         try:
@@ -240,6 +248,7 @@ class RuntimeModelSettings:
                 system_prompt=self._config.system_prompt or OpenAICompatibleLLM.__dataclass_fields__["system_prompt"].default,
                 timeout_seconds=self._config.timeout_seconds,
                 network_mode=self._config.network_mode,
+                reasoning_effort=self._config.reasoning_effort,
             )
 
     def complete(self, messages: list[dict[str, Any]]) -> str:
@@ -272,6 +281,7 @@ class RuntimeModelSettings:
                 system_prompt=draft.system_prompt or OpenAICompatibleLLM.__dataclass_fields__["system_prompt"].default,
                 timeout_seconds=draft.timeout_seconds,
                 network_mode=draft.network_mode,
+                reasoning_effort=draft.reasoning_effort,
             )
         headers = {"Accept": "application/json"}
         if client.api_key:
@@ -406,6 +416,14 @@ def _timeout(value: Any) -> float:
 def _network_mode(value: Any) -> NetworkMode:
     if value not in {"auto", "system", "direct"}:
         raise ValueError("networkMode must be auto, system, or direct")
+    return value
+
+
+def _reasoning_effort(value: Any) -> ReasoningEffort | None:
+    if value in {None, "", "auto"}:
+        return None
+    if value not in {"low", "medium", "high", "xhigh"}:
+        raise ValueError("reasoningEffort must be low, medium, high, xhigh, or null")
     return value
 
 

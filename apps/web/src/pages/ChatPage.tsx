@@ -11,6 +11,8 @@ import{AgentRunWorkspace}from'../components/AgentRunWorkspace';
 import{AppIcon}from'../components/AppIcon';
 import{ActivityStatus}from'../components/ActivityStatus';
 import{ComposerModelPicker}from'../components/ComposerModelPicker';
+import{ChatUserMessage}from'../components/ChatUserMessage';
+import{MAX_ATTACHMENTS,MAX_ATTACHMENT_BYTES,MAX_COMPOSER_CONTENT,formatFileSize,parseChatMessage,serializeChatMessage,supportsTextAttachment,type ChatAttachment}from'../lib/chatAttachments';
 import{notifyWorkflowChanged,type WorkflowChangedEvent}from'../lib/workflowEvents';
 
 type ReplyState='idle'|'thinking'|'error'|'cancelled';
@@ -63,6 +65,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const[memoryOpenOwner,setMemoryOpenOwner]=useState('');
  const[memoryLoadingOwner,setMemoryLoadingOwner]=useState('');
  const[draft,setDraft]=useState('');
+ const[attachments,setAttachments]=useState<ChatAttachment[]>([]);
+ const[attachmentError,setAttachmentError]=useState('');
  const[error,setError]=useState('');
  const[workflowBusy,setWorkflowBusy]=useState(false);
  const[pendingOwners,setPendingOwners]=useState<Set<string>>(()=>new Set());
@@ -80,6 +84,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const[editDraft,setEditDraft]=useState('');
  const[copiedId,setCopiedId]=useState('');
  const messagesRef=useRef<HTMLDivElement>(null);
+ const attachmentInputRef=useRef<HTMLInputElement>(null);
  const workflowRequest=useRef(0),graphRequest=useRef(0),memoryRequest=useRef(0);
  const graphRef=useRef<Graph|null>(null),activeRouteIdRef=useRef(''),workflowIdRef=useRef(workflowId);
  const sendLocks=useRef<Set<string>>(new Set());
@@ -89,6 +94,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const streamRequests=useRef<Map<string,string>>(new Map());
  const lifecycleRequests=useRef<Map<string,LifecycleRequest>>(new Map());
  const surfaceId=useRef(crypto.randomUUID());
+ const composerOwner=useRef('');
  const mountedAt=useRef(Date.now());
  const cancelledRequests=useRef<Set<string>>(new Set());
  const processedActivationRevision=useRef(0);
@@ -293,6 +299,11 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   setEditingId('');
   setEditDraft('');
   setCopiedId('');
+  if(composerOwner.current!==owner){
+   composerOwner.current=owner;
+   setAttachments([]);
+   setAttachmentError('');
+  }
   if(graph&&activeRouteId&&owner)void refreshRouteMessages(graph.workflowId,activeRouteId,graph.activeRouteContentRevision||0);
  },[owner,graph?.workflowId,activeRouteId,graph?.activeRouteContentRevision,refreshRouteMessages]);
  // A canvas request is durable before the model finishes.  Polling while a
@@ -409,6 +420,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
     case'aiTimeout':return t('aiTimeout');
     case'aiConnectionFailed':return t('aiConnectionFailed');
     case'aiUnavailable':return t('aiUnavailable');
+    case'aiContextTooLarge':return t('aiContextTooLarge');
+    case'reasoningEffortUnsupported':return t('reasoningEffortUnsupported');
     case'aiEmptyResponse':return t('aiEmptyResponse');
     case'validationError':return t('validationError');
     case'conflict':return t('contentConflict');
@@ -417,14 +430,33 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   return t('aiGenericError');
  }
 
- function beginEdit(message:Message){setEditingId(String(message.id));setEditDraft(message.content)}
+ async function addAttachments(selected:File[]){
+  if(!selected.length)return;
+  setAttachmentError('');
+  if(attachments.length+selected.length>MAX_ATTACHMENTS){setAttachmentError(t('attachmentLimit'));return}
+  const next=[...attachments];
+  try{
+   for(const file of selected){
+    if(file.size>MAX_ATTACHMENT_BYTES){setAttachmentError(t('attachmentTooLarge'));return}
+    if(!supportsTextAttachment(file.name,file.type)){setAttachmentError(t('attachmentUnsupported'));return}
+    const item:ChatAttachment={id:crypto.randomUUID(),name:file.name,mimeType:file.type||'text/plain',size:file.size,content:await file.text()};
+    if(serializeChatMessage(draft,[...next,item]).length>MAX_COMPOSER_CONTENT){setAttachmentError(t('attachmentContentLimit'));return}
+    next.push(item);
+   }
+   setAttachments(next);
+  }catch{setAttachmentError(t('attachmentReadingFailed'))}
+ }
+
+ function removeAttachment(id:string){setAttachments(current=>current.filter(file=>file.id!==id));setAttachmentError('')}
+ function beginEdit(message:Message){setEditingId(String(message.id));setEditDraft(parseChatMessage(message.content).prompt)}
  async function copyMessage(message:Message){
-  try{await navigator.clipboard.writeText(message.content);setCopiedId(String(message.id))}
+  const content=message.role==='user'?parseChatMessage(message.content).prompt:message.content;
+  try{await navigator.clipboard.writeText(content);setCopiedId(String(message.id))}
   catch{setCopiedId('')}
  }
 
  async function regenerate(message:Message){
-  const content=editDraft.trim(),workflow=graph?.workflowId,instance=activeRouteId;
+  const stored=parseChatMessage(message.content),content=serializeChatMessage(editDraft,stored.attachments),workflow=graph?.workflowId,instance=activeRouteId;
   if(!content||!workflow||!instance)return;
   const targetOwner=`${workflow}:${instance}`,expected=nodeRevision;
   if(!lockRoute(targetOwner))return;
@@ -509,13 +541,16 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  }
 
  async function send(){
-  const text=draft.trim(),workflow=graph?.workflowId,instance=activeRouteId;
+  const text=serializeChatMessage(draft,attachments),workflow=graph?.workflowId,instance=activeRouteId;
   if(!text||!workflow||!instance)return;
+  if(text.length>MAX_COMPOSER_CONTENT){setAttachmentError(t('attachmentContentLimit'));return}
   const targetOwner=`${workflow}:${instance}`;
   if(!lockRoute(targetOwner))return;
   const requestId=crypto.randomUUID();
   nextSnapshotGeneration(targetOwner);
   setDraft('');
+  setAttachments([]);
+  setAttachmentError('');
   setError('');
   setReply({owner:targetOwner,state:aiStatus?.configured?'thinking':'idle',error:'',phase:'connecting',attempt:1,startedAt:Date.now()});
   setStreamingText('');
@@ -620,7 +655,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
     :t('unavailable');
    return <details className="message-response-details"><summary aria-label={t('replyDetails')}><AppIcon name="clock"/><span>{responseDuration(details.durationMs,locale)}</span><AppIcon name="chevronRight" className="response-details-chevron"/></summary><div className="response-details-grid"><div><small>{t('cachedTokens')}</small><strong>{value(details.cachedInputTokens)}</strong></div><div><small>{t('cacheMissTokens')}</small><strong>{value(details.uncachedInputTokens)}</strong></div><div><small>{t('cacheHitRate')}</small><strong>{value(details.cacheReuseRatio,true)}</strong></div><div><small>{t('cacheCoverage')}</small><strong>{value(details.cacheCoverage,true)}</strong></div></div></details>;
   };
-  return <article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label><div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={!editDraft.trim()||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<><MarkdownMessage content={message.content}/>{message.responseDetails&&responseDetails(message.responseDetails)}</>:message.content}{actions&&message.id===lastUserId&&<div className="message-actions" aria-label={t('messageActions')}><button type="button" className="message-action-button" aria-label={t('editQuestion')} title={t('editQuestion')} onClick={()=>beginEdit(message)}><AppIcon name="edit" className="message-action-icon"/></button><button type="button" className={`message-action-button${copied?' is-copied':''}`} aria-label={copied?t('copied'):t('copyMessage')} title={copied?t('copied'):t('copyMessage')} onClick={()=>void copyMessage(message)}><AppIcon name={copied?'check':'copy'} className="message-action-icon"/></button></div>}</>}</div></article>;
+  const stored=message.role==='user'?parseChatMessage(message.content):null;
+  return <article key={message.id} className={`message ${message.role}${actions&&message.id===lastUserId?' actionable':''}`}><div>{editingId===String(message.id)?<div className="message-edit"><label>{t('editQuestionLabel')}<textarea value={editDraft} onChange={event=>setEditDraft(event.target.value)}/></label>{!!stored?.attachments.length&&<div className="message-attachment-list">{stored.attachments.map(file=><span className="message-attachment" key={file.id}><AppIcon name="attachment" size={14}/><span>{file.name}</span><small>{formatFileSize(file.size)}</small></span>)}</div>}<div><button type="button" onClick={()=>{setEditingId('');setEditDraft('')}}>{t('cancelEdit')}</button><button type="button" className="primary" disabled={(!editDraft.trim()&&!stored?.attachments.length)||busy} onClick={()=>void regenerate(message)}>{t('saveRegenerate')}</button></div></div>:<>{message.role==='assistant'?<><MarkdownMessage content={message.content}/>{message.responseDetails&&responseDetails(message.responseDetails)}</>:<ChatUserMessage content={message.content}/>} {actions&&message.id===lastUserId&&<div className="message-actions" aria-label={t('messageActions')}><button type="button" className="message-action-button" aria-label={t('editQuestion')} title={t('editQuestion')} onClick={()=>beginEdit(message)}><AppIcon name="edit" className="message-action-icon"/></button><button type="button" className={`message-action-button${copied?' is-copied':''}`} aria-label={copied?t('copied'):t('copyMessage')} title={copied?t('copied'):t('copyMessage')} onClick={()=>void copyMessage(message)}><AppIcon name={copied?'check':'copy'} className="message-action-icon"/></button></div>}</>}</div></article>;
  };
  const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><AppIcon name={memoryOpen?'chevronDown':'chevronRight'}/><span>{t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
  const progressText=replyPhase==='connecting'?t('connecting'):replyPhase==='waiting'?t('waitingForModel'):replyPhase==='receiving'?t('receivingResponse'):replyPhase==='reconnecting'?`${t('reconnecting')}${reply.attempt&&reply.attempt>1?` (${reply.attempt}/3)`:''}`:t('thinking');
@@ -649,9 +685,14 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    {stream}
    <form className="composer" onSubmit={event=>{event.preventDefault();void send()}}>
     <textarea value={draft} onChange={event=>setDraft(event.target.value)} placeholder={t('placeholder')} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();void send()}}}/>
+    {!!attachments.length&&<div className="composer-attachments" aria-label={t('attachedFiles')}>{attachments.map(file=><span className="composer-attachment" key={file.id}><AppIcon name="attachment" size={14}/><span title={file.name}>{file.name}</span><small>{formatFileSize(file.size)}</small><button type="button" aria-label={`${t('removeAttachment')}: ${file.name}`} title={t('removeAttachment')} onClick={()=>removeAttachment(file.id)}><AppIcon name="close" size={12}/></button></span>)}</div>}
+    {attachmentError&&<div className="composer-attachment-error" role="alert"><AppIcon name="warning" size={14}/><span>{attachmentError}</span></div>}
     <div className="composer-toolbar">
+     <input ref={attachmentInputRef} className="composer-file-input" type="file" multiple accept="text/*,.md,.markdown,.json,.jsonl,.csv,.tsv,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.java,.c,.h,.cpp,.hpp,.cs,.go,.rs,.rb,.php,.sh,.ps1,.sql,.toml,.ini,.cfg,.log,.tex,.r" onChange={event=>{void addAttachments(Array.from(event.target.files||[]));event.target.value=''}}/>
+     <button type="button" className="composer-attach-button" aria-label={t('attachFiles')} title={t('attachFiles')} disabled={busy||attachments.length>=MAX_ATTACHMENTS} onClick={()=>attachmentInputRef.current?.click()}><AppIcon name="plus" size={17}/></button>
+     <span className="composer-toolbar-spacer"/>
      <ComposerModelPicker status={aiStatus} disabled={replyState==='thinking'} onChanged={setAiStatus} onOpenSettings={()=>setSettingsOpen(true)}/>
-     <button className="primary" disabled={!draft.trim()||busy}>{t('send')}</button>
+     <button className="primary" disabled={(!draft.trim()&&!attachments.length)||busy}>{t('send')}</button>
     </div>
    </form>
   </section>

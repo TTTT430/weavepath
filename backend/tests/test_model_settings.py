@@ -81,18 +81,21 @@ def test_quick_model_switch_preserves_provider_key_network_and_persistence(tmp_p
     runtime.configure(
         base_url="https://example.test/v1", model="model-a", api_key="secret",
         persistence="local", persist_api_key=True, network_mode="system",
-        system_prompt="stable policy",
+        system_prompt="stable policy", reasoning_effort="medium",
     )
-    status = runtime.switch_model("model-b")
+    status = runtime.switch_model("model-b", "xhigh")
     assert status["model"] == "model-b"
     assert status["baseUrl"] == "https://example.test/v1"
     assert status["networkMode"] == "system"
+    assert status["reasoningEffort"] == "xhigh"
     assert status["apiKeyPersisted"] is True
     assert status["secretPersistence"] == "secure-local"
     assert credentials.secret == "secret"
     persisted = json.loads(path.read_text(encoding="utf-8"))
     assert persisted["model"] == "model-b"
     assert persisted["systemPrompt"] == "stable policy"
+    assert persisted["reasoningEffort"] == "xhigh"
+    assert persisted["version"] == 3
 
 
 def test_quick_model_switch_endpoint_rejects_unconfigured_provider(tmp_path):
@@ -147,6 +150,7 @@ def test_weavepath_model_environment_has_priority_over_legacy(tmp_path):
         "WEAVEPATH_LLM_API_KEY": "new-key",
         "WEAVEPATH_LLM_TIMEOUT": "23",
         "WEAVEPATH_LLM_SYSTEM_PROMPT": "new prompt",
+        "WEAVEPATH_LLM_REASONING_EFFORT": "high",
         "COTHINKER_LLM_BASE_URL": "https://legacy.test/v1",
         "COTHINKER_LLM_MODEL": "legacy-model",
         "COTHINKER_LLM_API_KEY": "legacy-key",
@@ -162,6 +166,8 @@ def test_weavepath_model_environment_has_priority_over_legacy(tmp_path):
     assert timeout.connect == 23
     assert timeout.read is None
     assert status["systemPrompt"] == "new prompt"
+    assert status["reasoningEffort"] == "high"
+    assert runtime._client().reasoning_effort == "high"
     assert runtime._api_key == "new-key"
 
 

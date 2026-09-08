@@ -86,6 +86,7 @@ class OpenAICompatibleAgentAdapter:
                 "connectTimeoutSeconds": client.timeout_seconds, "responseTimeout": "none",
                 "connectionRetryAttempts": CONNECT_RETRY_ATTEMPTS,
                 "networkMode": client.network_mode,
+                "reasoningEffort": client.reasoning_effort,
                 "systemPrompt": client.system_prompt, "adapterVersion": "1.2.0"}
 
     def next(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> ModelTurn:
@@ -122,7 +123,8 @@ class OpenAICompatibleAgentAdapter:
                     with httpx.Client(timeout=client.request_timeout(), trust_env=trust_env) as http:
                         response = http.post(client.base_url.rstrip("/") + "/chat/completions", headers=headers,
                                              json={"model": client.model, "messages": payload_messages,
-                                                   "tools": payload_tools, "parallel_tool_calls": False})
+                                                   "tools": payload_tools, "parallel_tool_calls": False,
+                                                   **client.request_options()})
                         response.raise_for_status()
                         value = response.json()
                         if not isinstance(value, dict):

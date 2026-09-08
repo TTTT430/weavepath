@@ -1,4 +1,4 @@
-import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,RetryAgentRunInput,Route,TurnCanvasSnapshot,WorkflowSummary} from '../domain/types';
+import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,WorkflowSummary} from '../domain/types';
 const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number,public diagnostics?:ConnectionDiagnostics){super(message);this.name='ApiError'}
@@ -20,7 +20,7 @@ export const api={
  resetAISettings:()=>request<AISettings>('/ai/settings',{method:'DELETE'}),
  validateAISettings:(body:AISettingsInput)=>request<AIValidation>('/ai/settings/validate',{method:'POST',body:JSON.stringify(body)}),
  aiModels:()=>request<{models:string[];count:number}>('/ai/models'),
- switchAIModel:(model:string)=>request<AISettings>('/ai/settings/model',{method:'PATCH',body:JSON.stringify({model})}),
+ switchAIModel:(model:string,reasoningEffort:ReasoningEffort|null=null)=>request<AISettings>('/ai/settings/model',{method:'PATCH',body:JSON.stringify({model,reasoningEffort})}),
  workflows:()=>request<{workflows:Graph[]}>('/workflows').then(x=>x.workflows.map(g=>({id:g.workflowId,name:g.name,activeInstanceId:g.activeInstanceId||undefined}))),
  createWorkflow:(body:{name?:string;rootTitle?:string;rootTopicId?:string})=>request<Graph>('/workflows',{method:'POST',body:JSON.stringify(body)}),
  graph:(w:string)=>request<Graph>(`/workflows/${enc(w)}/graph`),

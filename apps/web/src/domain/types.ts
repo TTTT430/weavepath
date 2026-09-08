@@ -14,13 +14,14 @@ export interface TurnCanvasSnapshot {workflowId:string;instanceId:string;ownerIn
 export interface Route {id:string;topicId:string;title:string;memoryRoute:string[];status:Status}
 export interface PrunePlan {graphRevision:number;targetInstanceId?:string;nodes:Array<{id:string;title?:string}>;rootRemoval?:boolean}
 export type NetworkMode='auto'|'system'|'direct';
+export type ReasoningEffort='low'|'medium'|'high'|'xhigh';
 export type NetworkRoute='system'|'direct';
 export interface ConnectionAttempt {route:NetworkRoute;outcome:'connected'|'connection-error'|'http-error'|'invalid-response';category?:'dns'|'tls'|'proxy'|'timeout'|'connection';durationMs:number;httpStatus?:number}
 export interface ConnectionDiagnostics {requestedMode:NetworkMode;routeUsed:NetworkRoute|null;attempts:ConnectionAttempt[]}
 export interface ApiErrorPayload {message?:string;error?:string;code?:string;runId?:string|number;diagnostics?:ConnectionDiagnostics}
-export interface AIStatus {configured:boolean;provider:string;model:string|null;reason?:string|null}
+export interface AIStatus {configured:boolean;provider:string;model:string|null;reasoningEffort?:ReasoningEffort|null;reason?:string|null}
 export interface AISettings extends AIStatus {baseUrl:string|null;systemPrompt:string;hasApiKey:boolean;source:string;persistence:'memory'|'local';networkMode:NetworkMode;apiKeyPersisted:boolean;secureKeyStorageAvailable:boolean;credentialError:boolean;secretPersistence:'environment'|'secure-local'|'memory'|'none'}
-export interface AISettingsInput {baseUrl:string;model:string;apiKey?:string;systemPrompt?:string;persistence:'memory'|'local';clearApiKey?:boolean;persistApiKey?:boolean;networkMode?:NetworkMode}
+export interface AISettingsInput {baseUrl:string;model:string;apiKey?:string;systemPrompt?:string;persistence:'memory'|'local';clearApiKey?:boolean;persistApiKey?:boolean;networkMode?:NetworkMode;reasoningEffort?:ReasoningEffort|null}
 export interface AIValidation {ok:boolean;modelCount:number;selectedModelAvailable:boolean;models:string[];diagnostics:ConnectionDiagnostics}
 export type AgentRunStatus='queued'|'running'|'awaiting_approval'|'cancelling'|'cancelled'|'completed'|'failed'|'interrupted'|'unknown';
 export interface AgentToolSpec {name:string;version:string;description?:string}

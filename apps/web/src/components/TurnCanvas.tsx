@@ -2,6 +2,7 @@ import{useEffect,useMemo,useState}from'react';
 import{Background,Controls,Handle,MiniMap,Panel,Position,ReactFlow,useNodesState,type Node,type NodeProps,type ReactFlowInstance,type Viewport}from'@xyflow/react';
 import type{ConversationTurn,Message,TurnCanvasSnapshot}from'../domain/types';
 import type{CanvasPosition}from'../lib/canvasState';
+import{parseChatMessage}from'../lib/chatAttachments';
 import{AppIcon}from'./AppIcon';
 
 interface CanvasTurn extends ConversationTurn{isRoutePlaceholder?:boolean}
@@ -33,7 +34,7 @@ function TurnCard({data,selected=false}:{data:TurnData;selected?:boolean}){
   <button type="button" className="turn-collapse icon-button" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} title={data.collapsed?data.expandLabel:data.collapseLabel} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}><AppIcon name={data.collapsed?'plus':'minus'}/></button>
   {!placeholder&&data.onBranch&&<button type="button" className="turn-branch icon-button" aria-label={`${data.branchLabel}: ${turn.sequence}`} title={data.branchLabel} onClick={event=>{event.stopPropagation();data.onBranch?.(turn)}}><AppIcon name="plus"/></button>}
   <header><strong>{placeholder?(turn.routeTitle||data.turnLabel):`${data.turnLabel} ${turn.sequence}`}</strong>{!placeholder&&turn.routeTitle&&<small className="turn-route-title">{turn.routeTitle}</small>}<span className={`turn-status ${turn.status}`}>{data.statusLabels[turn.status]||turn.status}</span></header>
-  <p className="turn-user">{excerpt(turn.userMessage.content)}</p>
+  <p className="turn-user">{(()=>{const content=parseChatMessage(turn.userMessage.content);return excerpt(content.prompt||content.attachments.map(file=>file.name).join(', '))})()}</p>
   {!data.collapsed&&<div className="turn-responses"><small>{data.responseLabel}: {turn.responses.length}</small>{turn.responses.map(message=><p key={message.id} className={`turn-response ${message.role}`}><small>{data.roleLabels[message.role]||message.role}</small>{excerpt(message.content)}</p>)}</div>}
   <footer className="turn-node-footer"><button type="button" onClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId)}}><AppIcon name="details"/><span>{data.detailsLabel}</span></button></footer>
  </article>;

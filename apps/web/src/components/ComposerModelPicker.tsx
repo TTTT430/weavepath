@@ -1,5 +1,5 @@
 import{useEffect,useMemo,useRef,useState}from'react';
-import type{AIStatus}from'../domain/types';
+import type{AIStatus,ReasoningEffort}from'../domain/types';
 import{api}from'../lib/api';
 import{useI18n}from'../lib/i18n';
 import{AppIcon}from'./AppIcon';
@@ -17,7 +17,10 @@ export function ComposerModelPicker({status,disabled=false,onChanged,onOpenSetti
  const[open,setOpen]=useState(false),[models,setModels]=useState<string[]>([]),[query,setQuery]=useState('');
  const[loading,setLoading]=useState(false),[switching,setSwitching]=useState(''),[error,setError]=useState('');
  const current=status?.model||'';
+ const effort=status?.reasoningEffort||null;
  const configured=Boolean(status?.configured&&current);
+ const efforts:Array<ReasoningEffort|null>=[null,'low','medium','high','xhigh'];
+ const effortLabel=(value:ReasoningEffort|null)=>t(value===null?'reasoningAuto':value==='low'?'reasoningLow':value==='medium'?'reasoningMedium':value==='high'?'reasoningHigh':'reasoningXHigh');
  const filtered=useMemo(()=>{
   const needle=query.trim().toLocaleLowerCase();
   return models.filter(model=>!needle||model.toLocaleLowerCase().includes(needle));
@@ -50,17 +53,26 @@ export function ComposerModelPicker({status,disabled=false,onChanged,onOpenSetti
  async function choose(model:string){
   if(model===current){setOpen(false);return}
   setSwitching(model);setError('');
-  try{onChanged(await api.switchAIModel(model));setOpen(false)}
+  try{onChanged(await api.switchAIModel(model,effort));setOpen(false)}
+  catch{setError(t('modelSwitchFailed'))}
+  finally{setSwitching('')}
+ }
+
+ async function chooseEffort(value:ReasoningEffort|null){
+  if(value===effort)return;
+  setSwitching(`effort:${value||'auto'}`);setError('');
+  try{onChanged(await api.switchAIModel(current,value))}
   catch{setError(t('modelSwitchFailed'))}
   finally{setSwitching('')}
  }
 
  return <div className="composer-model-picker" ref={root}>
-  <button type="button" className="composer-model-trigger" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-label={configured?`${t('switchModel')}: ${current}`:t('configureModel')} title={configured?t('switchModel'):t('configureModel')} onClick={toggle}>
-   <AppIcon name="model" size={15}/><span>{configured?current:t('configureModel')}</span><AppIcon name="chevronDown" size={13}/>
+  <button type="button" className="composer-model-trigger" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-label={configured?`${t('switchModel')}: ${current} · ${effortLabel(effort)}`:t('configureModel')} title={configured?t('switchModel'):t('configureModel')} onClick={toggle}>
+   <AppIcon name="model" size={14}/><span>{configured?<>{current}<small>{effortLabel(effort)}</small></>:t('configureModel')}</span><AppIcon name="chevronDown" size={12}/>
   </button>
   {open&&<section className="composer-model-menu" role="dialog" aria-label={t('switchModel')}>
    <header><strong>{t('switchModel')}</strong><button type="button" className="icon-button" aria-label={t('refreshModels')} title={t('refreshModels')} disabled={loading||!!switching} onClick={()=>void load(true)}><AppIcon name="retry" size={14}/></button><button type="button" className="icon-button" aria-label={t('modelSettings')} title={t('modelSettings')} onClick={()=>{setOpen(false);onOpenSettings()}}><AppIcon name="settings" size={14}/></button></header>
+   <div className="composer-reasoning"><span>{t('reasoningEffort')}</span><div>{efforts.map(value=><button type="button" className={value===effort?'current':''} aria-pressed={value===effort} disabled={!!switching} key={value||'auto'} onClick={()=>void chooseEffort(value)}>{switching===`effort:${value||'auto'}`?<span className="composer-model-spinner"/>:effortLabel(value)}</button>)}</div></div>
    {models.length>6&&<label className="composer-model-search"><span>{t('searchModels')}</span><input autoFocus value={query} onChange={event=>setQuery(event.target.value)} placeholder={t('searchModels')}/></label>}
    {loading?<div className="composer-model-state" role="status"><span className="composer-model-spinner"/><span>{t('loadingModels')}</span></div>:error?<div className="composer-model-state is-error" role="alert"><AppIcon name="warning" size={15}/><span>{error}</span></div>:<div className="composer-model-options" role="listbox" aria-label={t('availableModels')}>{filtered.map(model=><button type="button" role="option" aria-selected={model===current} className={model===current?'current':''} disabled={!!switching} key={model} onClick={()=>void choose(model)}><span>{model}</span>{switching===model?<span className="composer-model-spinner"/>:model===current?<AppIcon name="check" size={14}/>:null}</button>)}{!filtered.length&&<p>{t('noModels')}</p>}</div>}
   </section>}

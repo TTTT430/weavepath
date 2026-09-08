@@ -20,7 +20,7 @@ describe('agent runtime API contract',()=>{
   expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/ai/models');
   expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/ai/settings/model');
   expect(fetchMock.mock.calls[1][1]).toMatchObject({method:'PATCH'});
-  expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({model:'model-b'});
+  expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({model:'model-b',reasoningEffort:null});
  });
 
  it('keeps the persisted run id on an error response',async()=>{

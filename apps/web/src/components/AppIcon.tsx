@@ -19,6 +19,7 @@ export type AppIconName=
  |'warning'
  |'settings'
  |'model'
+ |'attachment'
  |'workflow';
 
 export interface AppIconProps{
@@ -49,6 +50,7 @@ export function AppIcon({name,size=16,className='app-icon'}:AppIconProps){
   :name==='warning'?<><path d="M10 3 18 17H2z"/><path d="M10 7.2v4.5M10 14.5h.01"/></>
   :name==='settings'?<><circle cx="10" cy="10" r="2.7"/><path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.7 4.7l1.4 1.4M13.9 13.9l1.4 1.4M15.3 4.7l-1.4 1.4M6.1 13.9l-1.4 1.4"/></>
   :name==='model'?<path d="m11.2 1.8-6.4 9h4.4l-.4 7.4 6.4-9h-4.4z" fill="currentColor" stroke="none"/>
+  :name==='attachment'?<path d="M7.2 10.8 12.8 5a2.7 2.7 0 0 1 3.9 3.8l-7.1 7.3a4.3 4.3 0 0 1-6.1-6l7-7.1a1.8 1.8 0 0 1 2.6 2.5l-7 7.1a.9.9 0 0 1-1.3-1.2l5.8-5.9"/>
   :name==='workflow'?<><rect x="2.5" y="3" width="5" height="4" rx="1"/><rect x="12.5" y="13" width="5" height="4" rx="1"/><rect x="12.5" y="3" width="5" height="4" rx="1"/><path d="M7.5 5h5M5 7v8h7.5"/></>
   :<path d="m3.5 10.2 4 4L16.5 5"/>}
  </svg>;

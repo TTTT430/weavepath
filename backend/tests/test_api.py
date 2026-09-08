@@ -4,10 +4,15 @@ import json
 
 from fastapi.testclient import TestClient
 
-from api.app import create_app
+from api.app import ChatInput, create_app
 from api.llm import DisabledLLM
 from api.llm import LLMUnavailable
 from graph_core import GraphStore
+
+
+def test_chat_input_accepts_a_useful_text_attachment_payload():
+    payload = "x" * 250_000
+    assert ChatInput(content=payload).content == payload
 
 
 class FakeLLM:

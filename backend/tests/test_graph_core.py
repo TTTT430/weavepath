@@ -65,6 +65,18 @@ def test_workflow_node_summary_tracks_latest_local_exchange(store: GraphStore):
     )
 
 
+def test_workflow_summary_uses_attachment_prompt_without_exposing_envelope(store: GraphStore):
+    wf = create(store)
+    content = ('[WeavePath attachments v1]\n'
+               '{"instruction":"context","files":[{"name":"notes.md",'
+               '"mimeType":"text/markdown","size":4,"content":"data"}],'
+               '"prompt":"总结附件中的研究问题"}')
+    store.append_message(wf, "A", role="user", content=content)
+    node = next(item for item in store.get_graph(wf)["nodes"] if item["id"] == "A")
+    assert node["summary"] == "总结附件中的研究问题"
+    assert "WeavePath attachments" not in node["summary"]
+
+
 def test_workflow_node_summary_is_local_and_keeps_siblings_isolated(store: GraphStore):
     wf = create(store)
     store.append_message(wf, "A", role="user", content="shared parent context")

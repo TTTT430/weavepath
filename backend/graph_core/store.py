@@ -46,11 +46,33 @@ def _stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+_ATTACHMENT_MESSAGE_PREFIX = "[WeavePath attachments v1]\n"
+
+
+def _display_message_content(content: str) -> str:
+    """Return user-visible text from a durable attachment message envelope."""
+    if not content.startswith(_ATTACHMENT_MESSAGE_PREFIX):
+        return content
+    try:
+        payload = json.loads(content[len(_ATTACHMENT_MESSAGE_PREFIX):])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return content
+    if not isinstance(payload, dict):
+        return content
+    prompt = payload.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt
+    files = payload.get("files")
+    names = [item.get("name") for item in files or []
+             if isinstance(item, dict) and isinstance(item.get("name"), str)]
+    return "Attachments: " + ", ".join(names) if names else content
+
+
 def _prompt_branch_title(initial_message: str | None) -> str | None:
     """Build a compact, deterministic title from a branch's first prompt."""
     if not initial_message:
         return None
-    summary = " ".join(initial_message.split())
+    summary = " ".join(_display_message_content(initial_message).split())
     if not summary:
         return None
     return summary if len(summary) <= 48 else summary[:47].rstrip() + "…"
@@ -58,7 +80,7 @@ def _prompt_branch_title(initial_message: str | None) -> str | None:
 
 def _summary_excerpt(content: str, limit: int) -> str:
     """Turn message content into a compact, readable canvas-card excerpt."""
-    value = re.sub(r"```(?:[^\n]*)\n?", " ", content)
+    value = re.sub(r"```(?:[^\n]*)\n?", " ", _display_message_content(content))
     value = re.sub(r"!?\[([^\]]+)\]\([^)]*\)", r"\1", value)
     value = re.sub(r"(?m)^\s{0,3}(?:#{1,6}|>|[-+*]|\d+[.)])\s*", "", value)
     value = re.sub(r"[*_~`]", "", value)

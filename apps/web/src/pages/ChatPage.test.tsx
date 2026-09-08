@@ -3,6 +3,7 @@ import{afterEach,beforeEach,describe,expect,it,vi}from'vitest';
 import{I18nProvider}from'../lib/i18n';
 import{ChatPage}from'./ChatPage';
 import{ApiError}from'../lib/api';
+import{parseChatMessage}from'../lib/chatAttachments';
 
 const apiMock=vi.hoisted(()=>({
  workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),send:vi.fn(),chat:vi.fn(),
@@ -29,7 +30,7 @@ beforeEach(()=>{
  apiMock.graph.mockResolvedValue(graph);apiMock.messages.mockResolvedValue([]);apiMock.send.mockResolvedValue({id:'u1',role:'user',content:'测试消息'});
  apiMock.messageSnapshot.mockImplementation(async(w:string,i:string,scope:string)=>({messages:await apiMock.messages(w,i,scope),contentRevision:1}));apiMock.regenerate.mockResolvedValue({messages:[],contentRevision:2});apiMock.agentRuns.mockResolvedValue([]);apiMock.agentRun.mockResolvedValue({});apiMock.agentRunEvents.mockResolvedValue({runId:'',events:[],nextAfterSequence:null});
  apiMock.aiSettings.mockResolvedValue({configured:false,provider:'openai-compatible',baseUrl:null,model:null,systemPrompt:'',hasApiKey:false,source:'none',persistence:'memory'});
- apiMock.aiModels.mockResolvedValue({models:[],count:0});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+ apiMock.aiModels.mockResolvedValue({models:[],count:0});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model',reasoningEffort:null});
  apiMock.chat.mockResolvedValue({userMessage:{id:'u1',role:'user',content:'测试消息'},assistantMessage:{id:'a1',role:'assistant',content:'助手回复'}});
  apiMock.renameWorkflow.mockResolvedValue({workflowId:'wf-1',name:'新项目名称',graphRevision:1,eventRevision:1});
 });
@@ -37,7 +38,8 @@ beforeEach(()=>{
 afterEach(()=>{cleanup();vi.clearAllMocks()});
 
 describe('chat delivery mode',()=>{
- it('switches the configured model from the composer without opening settings',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});apiMock.aiModels.mockResolvedValue({models:['test-model','analysis-model'],count:2});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'analysis-model'});renderChat();const trigger=await screen.findByRole('button',{name:'切换模型: test-model'});expect(trigger.closest('.composer')).not.toBeNull();fireEvent.click(trigger);fireEvent.click(await screen.findByRole('option',{name:'analysis-model'}));await waitFor(()=>expect(apiMock.switchAIModel).toHaveBeenCalledWith('analysis-model'));expect(await screen.findByRole('button',{name:'切换模型: analysis-model'})).toBeInTheDocument();expect(screen.queryByRole('heading',{name:'模型设置'})).not.toBeInTheDocument()});
+ it('switches the configured model from the composer without opening settings',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model',reasoningEffort:null});apiMock.aiModels.mockResolvedValue({models:['test-model','analysis-model'],count:2});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'analysis-model',reasoningEffort:null});renderChat();const trigger=await screen.findByRole('button',{name:'切换模型: test-model · 自动'});expect(trigger.closest('.composer')).not.toBeNull();fireEvent.click(trigger);fireEvent.click(await screen.findByRole('option',{name:'analysis-model'}));await waitFor(()=>expect(apiMock.switchAIModel).toHaveBeenCalledWith('analysis-model',null));expect(await screen.findByRole('button',{name:'切换模型: analysis-model · 自动'})).toBeInTheDocument();expect(screen.queryByRole('heading',{name:'模型设置'})).not.toBeInTheDocument()});
+ it('changes reasoning effort beside the composer model without changing providers',async()=>{apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model',reasoningEffort:null});apiMock.aiModels.mockResolvedValue({models:['test-model'],count:1});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model',reasoningEffort:'high'});renderChat();fireEvent.click(await screen.findByRole('button',{name:'切换模型: test-model · 自动'}));fireEvent.click(screen.getByRole('button',{name:'高'}));await waitFor(()=>expect(apiMock.switchAIModel).toHaveBeenCalledWith('test-model','high'));expect(await screen.findByRole('button',{name:'切换模型: test-model · 高'})).toBeInTheDocument()});
  it('opens model settings from the compact sidebar button without translating conversation titles',async()=>{apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});renderChat();expect(await screen.findByText('数据集构建')).toBeInTheDocument();expect(screen.queryByRole('button',{name:/继承的路线记忆/})).not.toBeInTheDocument();fireEvent.click(screen.getByRole('button',{name:/设置/}));expect(await screen.findByRole('heading',{name:'模型设置'})).toBeInTheDocument();expect(screen.getByText('数据集构建')).toBeInTheDocument()});
  it('pins workflows locally and keeps pinned conversations first without changing their names',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
@@ -124,6 +126,20 @@ describe('chat delivery mode',()=>{
   fireEvent.change(screen.getByRole('textbox'),{target:{value:'测试消息'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
   await waitFor(()=>expect(apiMock.send).toHaveBeenCalledWith('wf-1','root','测试消息'));
   expect(apiMock.chat).not.toHaveBeenCalled();expect(await screen.findByText('测试消息')).toBeInTheDocument();
+ });
+ it('attaches a text file from the plus button and binds its contents to the user message',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  // Regression: attachments larger than the old 100 KB placeholder limit remain usable.
+  const file={name:'notes.md',type:'text/markdown',size:150_000,text:vi.fn().mockResolvedValue('file context')}as unknown as File;
+  renderChat();await screen.findByText('仅记录模式 · 尚未连接 AI');
+  const input=document.querySelector<HTMLInputElement>('.composer-file-input')!;
+  fireEvent.change(input,{target:{files:[file]}});
+  expect(await screen.findByText('notes.md')).toBeInTheDocument();
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'请总结附件'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  await waitFor(()=>expect(apiMock.send).toHaveBeenCalledTimes(1));
+  const stored=String(apiMock.send.mock.calls[0][2]),parsed=parseChatMessage(stored);
+  expect(parsed.prompt).toBe('请总结附件');expect(parsed.attachments).toMatchObject([{name:'notes.md',content:'file context'}]);
+  expect(screen.queryByText(/WeavePath attachments v1/)).not.toBeInTheDocument();
  });
 
  it('uses the chat endpoint and renders the assistant reply when AI is configured',async()=>{

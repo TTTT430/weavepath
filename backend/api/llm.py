@@ -15,6 +15,7 @@ CONNECT_RETRY_ATTEMPTS = 3
 CONNECT_RETRY_DELAYS = (0.25, 1.0)
 RETRYABLE_PROVIDER_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 NetworkMode = Literal["auto", "system", "direct"]
+ReasoningEffort = Literal["low", "medium", "high", "xhigh"]
 
 
 def normalize_provider_usage(response_body: dict[str, Any]) -> dict[str, int | str | None] | None:
@@ -123,6 +124,7 @@ class DisabledLLM:
             "configured": False,
             "provider": "openai-compatible",
             "model": None,
+            "reasoningEffort": None,
             "reason": self.reason,
         }
 
@@ -153,6 +155,13 @@ class OpenAICompatibleLLM:
     # environment only when the connection itself fails. HTTP responses are
     # authoritative and are never replayed through a different network path.
     network_mode: NetworkMode = "auto"
+    # Optional because not every OpenAI-compatible gateway implements this
+    # extension. Leaving it unset preserves the provider's own default.
+    reasoning_effort: ReasoningEffort | None = None
+
+    def request_options(self) -> dict[str, str]:
+        return ({"reasoning_effort": self.reasoning_effort}
+                if self.reasoning_effort is not None else {})
 
     def request_timeout(self) -> httpx.Timeout:
         timeout = max(1.0, min(float(self.timeout_seconds), 60.0))
@@ -187,8 +196,31 @@ class OpenAICompatibleLLM:
         return isinstance(exc, (httpx.TimeoutException, httpx.NetworkError,
                                 httpx.RemoteProtocolError, OSError))
 
-    @staticmethod
-    def _transport_error(exc: BaseException) -> LLMUnavailable:
+    def _transport_error(self, exc: BaseException) -> LLMUnavailable:
+        response_text = (
+            exc.response.text.lower()
+            if isinstance(exc, httpx.HTTPStatusError)
+            else ""
+        )
+        if (isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code in {400, 413, 422}
+                and any(marker in response_text for marker in (
+                    "context_length_exceeded", "maximum context length",
+                    "too many tokens", "request too large",
+                ))):
+            return LLMUnavailable(
+                "The request exceeds the selected model's context window",
+                code="aiContextTooLarge", status_code=422,
+            )
+        if (self.reasoning_effort is not None
+                and isinstance(exc, httpx.HTTPStatusError)
+                and exc.response.status_code in {400, 422}
+                and ("reasoning_effort" in response_text
+                     or "reasoning effort" in response_text)):
+            return LLMUnavailable(
+                "The selected model or provider rejected the requested reasoning effort",
+                code="reasoningEffortUnsupported", status_code=422,
+            )
         if OpenAICompatibleLLM._retryable(exc):
             return LLMUnavailable(
                 f"Unable to connect to the AI provider after {CONNECT_RETRY_ATTEMPTS} attempts",
@@ -201,6 +233,7 @@ class OpenAICompatibleLLM:
             "configured": True,
             "provider": "openai-compatible",
             "model": self.model,
+            "reasoningEffort": self.reasoning_effort,
             "reason": None,
         }
 
@@ -221,7 +254,8 @@ class OpenAICompatibleLLM:
                     response = client.post(
                         self.base_url.rstrip("/") + "/chat/completions",
                         headers=headers,
-                        json={"model": self.model, "messages": payload_messages},
+                        json={"model": self.model, "messages": payload_messages,
+                              **self.request_options()},
                     )
                     response.raise_for_status()
                     value = response.json()
@@ -298,6 +332,7 @@ class OpenAICompatibleLLM:
                             "model": self.model,
                             "messages": payload_messages,
                             "stream": True,
+                            **self.request_options(),
                             **({"stream_options": {"include_usage": True}}
                                if include_usage else {}),
                         },
@@ -405,4 +440,7 @@ def build_llm_from_env() -> LLMClient:
         network_mode=(os.getenv("WEAVEPATH_LLM_NETWORK_MODE", "auto").strip().lower()
                       if os.getenv("WEAVEPATH_LLM_NETWORK_MODE", "auto").strip().lower()
                       in {"auto", "system", "direct"} else "auto"),
+        reasoning_effort=(os.getenv("WEAVEPATH_LLM_REASONING_EFFORT", "").strip().lower()
+                          if os.getenv("WEAVEPATH_LLM_REASONING_EFFORT", "").strip().lower()
+                          in {"low", "medium", "high", "xhigh"} else None),
     )
