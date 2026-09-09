@@ -46,6 +46,11 @@ anchor and creation-time snapshot of the parent's effective messages for audit.
 Runtime context follows the parent route dynamically, so later parent messages
 and edits are visible to the child while sibling routes remain excluded. Graph
 mutations and content writes use independent revisions.
+When a concrete route exceeds `WEAVEPATH_CONTEXT_BUDGET_CHARS` (240,000 by
+default), Chat and Agent requests deterministically compact older route messages
+for that provider call. The plan is bound to the target route and ancestor
+revision vector; it never rewrites the transcript or shares branch-private
+summaries with siblings.
 Each node's `contentRevision` changes only when that instance receives a local
 message. Workflow `eventRevision` is the monotonic global content-event sequence
 formerly stored in the `workflows.content_revision` column; it is not a route

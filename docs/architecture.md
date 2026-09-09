@@ -180,12 +180,18 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 - 生产路径使用用户已配置的 OpenAI-compatible provider；`ScriptedMockAgentAdapter` 只通过测试注入。
 - 当前唯一工具是 `safe_calculator` / `1.0.0`，无 shell、文件系统或网络能力。
 - 后台 worker 最多执行有限轮 model/tool loop；run 状态、取消、审批、重试和事件由 SQLite 持久化，界面轮询权威状态。
+- 执行者通过数据库 lease/heartbeat 记录 owner 和 `model_request / tool_execution / between_steps` 边界；当前 OS 单实例锁仍限制为单 API 进程，lease 尚不授权多 worker 接管。
+- 有副作用的审批工具按 root-run lineage、tool name/version 和规范参数生成 effect key；已完成 effect 只复用结果，执行中断且结果未知的 effect 禁止自动重放。
 - completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
-- 启动时遗留且尚未调用模型的 `queued` run 会校验冻结 context 与模型配置后恢复；`running` run 因上游结果未知而转为 `interrupted`，`awaiting_approval` 保留，`cancelling` 收敛为 `cancelled`。
+- 启动时遗留且尚未调用模型的 `queued` run 会校验冻结 context 与模型配置后恢复；模型请求或副作用执行边界中的 `running` run 分别以 `modelOutcomeUnknown` / `toolOutcomeUnknown` 转为 `interrupted`，`awaiting_approval` 保留，`cancelling` 收敛为 `cancelled`。
 
 schema v3 引入且在当前 schema v7 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线；schema v7 增加 `title_is_generated`，让自动标题和用户标题在重启后仍可可靠区分。旧数据迁移时统一视为用户标题，避免升级覆盖历史名称。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 
+Runtime 辅助迁移独立记录在 `runtime_schema_migrations`，不提升 GraphStore schema v7。runtime v2 增加 run lineage/provider call journal；runtime v2 reliability 增加 lease/heartbeat/execution phase、`tool_calls.effect_key` 和 `tool_effects`。普通 Chat 的压缩计划随 assistant response details 保存，Agent 的压缩计划随不可变 context snapshot 保存，不建立第二份可变 transcript 表。
+
 聊天请求的幂等记录位于辅助表 `chat_requests`，包含请求签名、状态、用户/助手消息引用和完整结果。路线文件元数据位于辅助表 `message_attachments`，原始字节按 SHA-256 写入数据库同目录的 content-addressed `files/objects`，`attachment_chunks` 保存解析后的可检索文本分块；`attachment_chunks_fts` 以 SQLite FTS5 trigram 持久化索引，并由 insert/update/delete trigger 与分块表同步，启动 migration 会清理孤儿并回填旧分块。上传接口接收最多 50 MiB 的 UTF-8 文本/代码/数据、PDF、DOCX、XLSX 和 PPTX：大于 4 MiB 时由 `attachment_uploads` 记录 4 MiB 分片、客户端幂等键和已落盘分片，可乱序写入、重试并在服务重启后恢复；小文件继续使用单次流式写入。全文查询必须先限定当前 instance 的祖先链再返回 BM25 排序结果，不读取兄弟路线；FTS trigram 无法覆盖的一至两个字符查询只在相同授权路线内执行受限 `LIKE`。显式绑定用户消息时校验 workflow/instance/元数据并固化选中上下文。普通用户消息则从实时父路线的 ready 分块生成受预算约束的 `message_retrieval_plans`，`message_retrieval_sources` 保存精确 attachment/chunk/route/hash、排序位置和匹配词；计划一旦进入模型请求即保持不可变，所引用的原件不能删除或重新解析。Chat 在该用户消息位置物化证据，Agent Runtime 把证据放在最终 current request 内，二者都不把动态 run ID、时间戳或 UI 状态塞入稳定前缀。assistant 的 `responseDetails.sources/retrievalPlan` 与 Agent run detail 只投影当次实际使用的来源，UI 可据此打开精确分块。图片原件可以保存，但 OCR 未配置时保持 `failed` 解析状态且不能进入模型上下文。这些辅助表都不会提升 GraphStore 对外 schema 版本（仍为 v7），但会在每次打开数据库时幂等创建；启动恢复会将中断聊天请求标记为可重试、把中断的附件装配退回上传状态，并把旧版 SQLite 内联附件迁移到对象存储。
+
+模型调用前，Context builder 先按当前 parent 链动态读取一条合法路线，再在超过字符预算时对较早消息生成确定性 compaction projection。该 projection 绑定目标 instance、完整路线 revision vector 和来源消息 hash，最近消息保持完整；它不回写 `local_messages`，也不改变 checkpoint。A-B-C-D 与 A-B-E 的计划分别派生，即使共享相同 A-B 原始消息，也不能复用含 C 或 E 私有内容的摘要。父节点 revision 改变时下一次调用自然重建计划，历史回复/run 中的旧计划只承担审计。
 
 Chat SSE 与 Agent Run journal 共用 `runtime_events.py` 的事件词汇和 schema 版本。现有 Agent Run 的历史 payload 保持兼容，新的 Chat SSE payload 带 `schemaVersion`，客户端可以用同一时间线渲染 message/tool/run 事件。
 

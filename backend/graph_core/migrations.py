@@ -321,6 +321,24 @@ CREATE TABLE IF NOT EXISTS model_step_usage(
 CREATE INDEX IF NOT EXISTS idx_model_step_usage_run ON model_step_usage(run_id,created_at);
 """
 
+V10_RUNTIME_RELIABILITY = """
+CREATE TABLE IF NOT EXISTS tool_effects(
+    effect_key TEXT PRIMARY KEY,
+    root_run_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    tool_version TEXT NOT NULL,
+    arguments_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('prepared','executing','completed','failed','interrupted')),
+    output_json TEXT,
+    error_code TEXT,
+    output_sha256 TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tool_effects_root
+ON tool_effects(root_run_id,created_at);
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
@@ -512,6 +530,32 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         # safely reruns all idempotent checks on the next startup.
         conn.execute(
             "INSERT INTO runtime_schema_migrations(version,applied_at) VALUES(1,?)",
+            (_now(),),
+        )
+    if 2 not in runtime_applied:
+        run_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)")}
+        run_additions = {
+            "lease_owner": "TEXT",
+            "lease_expires_at": "TEXT",
+            "last_heartbeat_at": "TEXT",
+            "execution_phase": "TEXT",
+        }
+        for name, declaration in run_additions.items():
+            if name not in run_columns:
+                conn.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {declaration}")
+        tool_columns = {row[1] for row in conn.execute("PRAGMA table_info(tool_calls)")}
+        if "effect_key" not in tool_columns:
+            conn.execute("ALTER TABLE tool_calls ADD COLUMN effect_key TEXT")
+        conn.executescript(V10_RUNTIME_RELIABILITY)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_agent_runs_lease "
+            "ON agent_runs(status,lease_expires_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tool_calls_effect ON tool_calls(effect_key)"
+        )
+        conn.execute(
+            "INSERT INTO runtime_schema_migrations(version,applied_at) VALUES(2,?)",
             (_now(),),
         )
     conn.commit()

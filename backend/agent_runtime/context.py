@@ -22,6 +22,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
+from agent_runtime.compaction import compact_route_messages
+
 
 PROMPT_LAYOUT_VERSION = "agent-cache-v3"
 SYSTEM_POLICY = (
@@ -282,6 +284,7 @@ class AssembledAgentContext:
     tools: list[dict[str, Any]]
     stable_prefix_sha256: str
     request_sha256: str
+    compaction_plan: dict[str, Any] | None = None
     prompt_layout_version: str = PROMPT_LAYOUT_VERSION
 
 
@@ -293,11 +296,22 @@ def assemble_agent_context(
     tools: Sequence[Mapping[str, Any]],
     retrieved_evidence: str = "",
     provider_system_prompt: str = "",
+    target_instance_id: str | None = None,
+    route_instance_ids: Sequence[str] = (),
+    route_revision_vector: Sequence[Mapping[str, Any]] = (),
+    context_budget_chars: int | None = None,
 ) -> AssembledAgentContext:
     """Return canonical arguments ready for ``AgentModelPort.next``."""
     canonical_tools = canonical_tool_specs(tools)
+    compacted = compact_route_messages(
+        route_messages,
+        target_instance_id=target_instance_id,
+        route_instance_ids=route_instance_ids,
+        route_revision_vector=route_revision_vector,
+        budget_chars=context_budget_chars,
+    )
     messages = build_agent_messages(
-        route_messages=route_messages,
+        route_messages=compacted.messages,
         accepted_knowledge=accepted_knowledge,
         request=request,
         retrieved_evidence=retrieved_evidence,
@@ -308,6 +322,7 @@ def assemble_agent_context(
         tools=canonical_tools,
         stable_prefix_sha256=stable_prefix_sha256(messages[0], canonical_tools),
         request_sha256=model_request_sha256(messages, canonical_tools),
+        compaction_plan=compacted.plan,
     )
 
 

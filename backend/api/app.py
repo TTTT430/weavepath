@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from agent_runtime import (AgentModelPort, AgentRunDispatcher, AgentRunError, AgentRunRepository, AgentRuntimeService,
                            OpenAICompatibleAgentAdapter, runtime_registry)
+from agent_runtime.compaction import compact_route_messages
 from api.llm import LLMClient, LLMUnavailable, OpenAICompatibleLLM
 from api.model_settings import RuntimeModelSettings
 from engineering import EngineeringRepository
@@ -574,16 +575,31 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
 
     prefix = "/api/v1"
 
-    def route_context(workflow_id: str, instance_id: str,
-                      messages: list[dict[str, object]], *,
-                      retrieval_overrides: dict[int | str, dict[str, object] | None] | None = None,
-                      ) -> list[dict[str, object]]:
+    def route_context_with_plan(
+        workflow_id: str,
+        instance_id: str,
+        messages: list[dict[str, object]],
+        *,
+        retrieval_overrides: dict[int | str, dict[str, object] | None] | None = None,
+    ) -> tuple[list[dict[str, object]], dict[str, object] | None]:
         messages = graph_store.materialize_messages(
             workflow_id, messages, retrieval_overrides=retrieval_overrides
         )
+        identity = graph_store.context_preview(workflow_id, instance_id, max_chars=1)
+        memory_route = identity["memoryRoute"]
+        compacted = compact_route_messages(
+            messages,
+            target_instance_id=instance_id,
+            route_instance_ids=[item["instanceId"] for item in memory_route],
+            route_revision_vector=[{
+                "instanceId": item["instanceId"],
+                "contentRevision": item["contentRevision"],
+            } for item in memory_route],
+        )
+        messages = compacted.messages
         accepted = engineering.accepted_knowledge(workflow_id, instance_id)
         if not accepted:
-            return messages
+            return messages, compacted.plan
         knowledge = {"role": "system", "content": json.dumps({
             "acceptedRouteKnowledge": accepted,
             "instruction": "Use only these explicitly accepted cross-route facts; do not infer sibling transcripts.",
@@ -592,8 +608,17 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         # then the current request. The provider system policy is added by the
         # adapter before this list.
         if messages and messages[-1].get("role") == "user":
-            return [*messages[:-1], knowledge, messages[-1]]
-        return [*messages, knowledge]
+            return [*messages[:-1], knowledge, messages[-1]], compacted.plan
+        return [*messages, knowledge], compacted.plan
+
+    def route_context(workflow_id: str, instance_id: str,
+                      messages: list[dict[str, object]], *,
+                      retrieval_overrides: dict[int | str, dict[str, object] | None] | None = None,
+                      ) -> list[dict[str, object]]:
+        return route_context_with_plan(
+            workflow_id, instance_id, messages,
+            retrieval_overrides=retrieval_overrides,
+        )[0]
 
     def evidence_for_message(
         workflow_id: str, message_id: int | str, *,
@@ -618,7 +643,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def response_details(started_at: float,
                          usage: dict[str, object] | None = None,
                          sources: list[dict[str, object]] | None = None,
-                         retrieval_plan: dict[str, object] | None = None) -> dict[str, object]:
+                         retrieval_plan: dict[str, object] | None = None,
+                         compaction_plan: dict[str, object] | None = None) -> dict[str, object]:
         provider = llm.status()
         normalized = dict(usage or {})
         cached = normalized.get("cachedInputTokens")
@@ -646,11 +672,14 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             details["sources"] = sources
         if retrieval_plan:
             details["retrievalPlan"] = retrieval_plan
+        if compaction_plan:
+            details["compactionPlan"] = compaction_plan
         return details
 
     def complete_with_details(messages: list[dict[str, object]], *,
                               sources: list[dict[str, object]] | None = None,
                               retrieval_plan: dict[str, object] | None = None,
+                              compaction_plan: dict[str, object] | None = None,
                               ) -> tuple[str, dict[str, object]]:
         started_at = perf_counter()
         complete_detailed = getattr(llm, "complete_with_details", None)
@@ -658,7 +687,9 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             answer, usage = complete_detailed(messages)
         else:
             answer, usage = llm.complete(messages), None
-        return answer, response_details(started_at, usage, sources, retrieval_plan)
+        return answer, response_details(
+            started_at, usage, sources, retrieval_plan, compaction_plan
+        )
 
     @app.get(prefix + "/health")
     def health():
@@ -999,7 +1030,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     )
                     if key is not None:
                         graph_store.record_chat_user_message(workflow_id, instance_id, key, user_message["id"])
-                context = route_context(
+                context, compaction_plan = route_context_with_plan(
                     workflow_id, instance_id,
                     graph_store.list_messages(workflow_id, instance_id)["messages"],
                 )
@@ -1051,7 +1082,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 assistant_message = graph_store.append_message(
                     workflow_id, instance_id, role="assistant", content=answer,
                     response_details=response_details(
-                        response_started_at, usage, evidence_sources, retrieval_plan
+                        response_started_at, usage, evidence_sources, retrieval_plan,
+                        compaction_plan,
                     ),
                 )
                 result = {"userMessage": user_message, "assistantMessage": assistant_message}
@@ -1094,12 +1126,16 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 user_message = graph_store.append_message(workflow_id, instance_id, role="user", content=body.content)
                 if key is not None:
                     graph_store.record_chat_user_message(workflow_id, instance_id, key, user_message["id"])
-            context = route_context(workflow_id, instance_id, graph_store.list_messages(workflow_id, instance_id)["messages"])
+            context, compaction_plan = route_context_with_plan(
+                workflow_id, instance_id,
+                graph_store.list_messages(workflow_id, instance_id)["messages"],
+            )
             evidence_sources, retrieval_plan = evidence_for_message(
                 workflow_id, user_message["id"]
             )
             assistant_text, details = complete_with_details(
-                context, sources=evidence_sources, retrieval_plan=retrieval_plan
+                context, sources=evidence_sources, retrieval_plan=retrieval_plan,
+                compaction_plan=compaction_plan,
             )
             assistant_message = graph_store.append_message(
                 workflow_id, instance_id, role="assistant", content=assistant_text,
@@ -1143,13 +1179,15 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             retrieval_override=retrieval_plan,
             use_override=True,
         )
-        assistant_text, details = complete_with_details(
-            route_context(
+        regenerated_context, compaction_plan = route_context_with_plan(
                 workflow_id, instance_id, prepared["messages"],
                 retrieval_overrides={message_id: retrieval_plan},
-            ),
+            )
+        assistant_text, details = complete_with_details(
+            regenerated_context,
             sources=evidence_sources,
             retrieval_plan=public_retrieval_plan,
+            compaction_plan=compaction_plan,
         )
         return graph_store.commit_latest_local_user_edit(
             workflow_id, instance_id, message_id, content=body.content,
@@ -1275,7 +1313,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             reply_status = "completed"
         elif body.initial_message and body.initial_message.strip() and llm.status()["configured"]:
             try:
-                context = route_context(
+                context, compaction_plan = route_context_with_plan(
                     workflow_id, child_id,
                     graph_store.list_messages(workflow_id, child_id, scope="effective")["messages"],
                 )
@@ -1288,7 +1326,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 else:
                     sources, retrieval_plan = [], None
                 answer, details = complete_with_details(
-                    context, sources=sources, retrieval_plan=retrieval_plan
+                    context, sources=sources, retrieval_plan=retrieval_plan,
+                    compaction_plan=compaction_plan,
                 )
                 assistant_message = graph_store.append_message(
                     workflow_id, child_id, role="assistant", content=answer,

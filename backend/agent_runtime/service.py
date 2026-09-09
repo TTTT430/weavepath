@@ -95,6 +95,39 @@ class AgentRuntimeService:
         self._claim_locks: dict[tuple[str, str, str], tuple[threading.Lock, int]] = {}
 
     @contextmanager
+    def _lease_heartbeat(self, run_id: str, owner_id: str) -> Iterator[None]:
+        """Renew durable ownership while a provider or tool call is blocked."""
+        stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not stop.wait(5.0):
+                try:
+                    if not self.repository.renew_lease(run_id, owner_id):
+                        return
+                except Exception:
+                    # The active execution path verifies ownership before the
+                    # next boundary. A heartbeat failure cannot grant itself
+                    # authority or manufacture a successful result.
+                    return
+
+        thread = threading.Thread(
+            target=heartbeat, name=f"weavepath-lease-{run_id}", daemon=True,
+        )
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=0.2)
+            self.repository.release_lease(run_id, owner_id)
+
+    def _require_lease_phase(self, run_id: str, owner_id: str, phase: str) -> None:
+        if not self.repository.renew_lease(run_id, owner_id, phase=phase):
+            raise AgentRunError(
+                "runLeaseLost", "Agent run execution ownership was lost", 409, run_id
+            )
+
+    @contextmanager
     def _claim(self, key: tuple[str, str, str]) -> Iterator[None]:
         """Serialize one idempotency key through bind, claim, and execution.
 
@@ -215,10 +248,20 @@ class AgentRuntimeService:
                 tools=context["availableTools"],
                 retrieved_evidence=context.get("retrievedEvidence", ""),
                 provider_system_prompt=current_snapshot.get("systemPrompt", ""),
+                target_instance_id=context.get("instanceId"),
+                route_instance_ids=[
+                    item.get("instanceId") for item in context.get("memoryRoute", [])
+                    if isinstance(item, dict) and isinstance(item.get("instanceId"), str)
+                ],
+                route_revision_vector=context.get("routeRevisionVector", []),
+                context_budget_chars=(context.get("compactionPlan") or {}).get(
+                    "budgetCharacters"
+                ),
             )
             if (assembled.prompt_layout_version != context.get("promptLayoutVersion")
                     or assembled.stable_prefix_sha256 != context.get("stablePrefixSha256")
-                    or assembled.request_sha256 != context.get("modelRequestSha256")):
+                    or assembled.request_sha256 != context.get("modelRequestSha256")
+                    or assembled.compaction_plan != context.get("compactionPlan")):
                 raise AgentRunError(
                     "runContextIntegrityFailed", "Queued run context could not be verified",
                     409, run_id,
@@ -270,20 +313,51 @@ class AgentRuntimeService:
             if matching_call["status"] == "completed":
                 return self.repository.get(run_id)
             arguments = approval["arguments"]
+            owner_id = "approval_" + uuid.uuid4().hex
             try:
-                self.repository.claim_approved_tool(run_id, approval_id)
+                claim = self.repository.claim_approved_tool(
+                    run_id, approval_id, owner_id=owner_id
+                )
             except Conflict as exc:
                 cancelled = self._finish_cancel_if_requested(run_id)
                 if cancelled is not None:
                     return cancelled
+                if "outcome is unknown" in str(exc).lower():
+                    cancelled = self._fail_or_finish_cancel(run_id, "toolOutcomeUnknown")
+                    if cancelled is not None:
+                        return cancelled
+                    raise AgentRunError(
+                        "toolOutcomeUnknown",
+                        "The approved tool may already have executed; automatic replay was blocked",
+                        409, run_id,
+                    ) from exc
                 raise AgentRunError(
                     "approvalConflict", "Approved tool call could not be claimed", 409, run_id
                 ) from exc
+            if claim["state"] == "reused":
+                output = claim.get("output") or {}
+                try:
+                    self.repository.complete(
+                        run_id,
+                        f"The previously completed side effect was reused from this retry lineage"
+                        + (f" for {output['path']}." if output.get("path") else "."),
+                    )
+                    return self.repository.get(run_id)
+                finally:
+                    self.repository.release_lease(run_id, owner_id)
+            return self._execute_approved_effect(
+                run_id, approval_id, approval, current, arguments, owner_id
+            )
+
+    def _execute_approved_effect(
+        self, run_id: str, approval_id: str, approval: dict[str, Any],
+        current: dict[str, Any], arguments: dict[str, Any], owner_id: str,
+    ) -> dict[str, Any]:
+        with self._lease_heartbeat(run_id, owner_id):
             tool = self.tools.resolve(approval["toolName"])
             # Approval is necessary but not sufficient authority. Revalidate
             # the exact persisted tool contract against the small executor
-            # allowlist *before* invoking any implementation. Future tools
-            # cannot become executable merely by declaring a side effect.
+            # allowlist *before* invoking any implementation.
             if (tool is None or tool.name != "propose_patch" or tool.version != "1.0.0"
                     or tool.side_effect != "artifact"
                     or approval["toolVersion"] != tool.version
@@ -300,6 +374,7 @@ class AgentRuntimeService:
                 )
             started = time.monotonic()
             try:
+                self._require_lease_phase(run_id, owner_id, "tool_execution")
                 self.tools.validate(tool, arguments)
                 output = tool.execute(arguments)
                 artifact = self.engineering.create_artifact(
@@ -324,10 +399,10 @@ class AgentRuntimeService:
                     )
                     return self.repository.get(run_id)
                 except Conflict as exc:
-                    current = self.repository.get(run_id, details=False)
-                    if current["status"] == "cancelled":
+                    latest = self.repository.get(run_id, details=False)
+                    if latest["status"] == "cancelled":
                         return self.repository.get(run_id)
-                    if current["status"] == "cancelling":
+                    if latest["status"] == "cancelling":
                         return self.repository.finish_cancel(run_id)
                     cancelled = self._fail_or_finish_cancel(run_id, "runRevisionConflict")
                     if cancelled is not None:
@@ -433,6 +508,9 @@ class AgentRuntimeService:
             request=request, tools=self.tools.specs(),
             retrieved_evidence=retrieved_evidence,
             provider_system_prompt=model_snapshot.get("systemPrompt", ""),
+            target_instance_id=instance_id,
+            route_instance_ids=[item["instanceId"] for item in memory_route],
+            route_revision_vector=route_revision_vector,
         )
         tool_specs, prompt_messages = assembled.tools, assembled.messages
         context = {"workflowId": workflow_id, "instanceId": instance_id,
@@ -444,6 +522,7 @@ class AgentRuntimeService:
                                       if key != "contextText"}
                                      if retrieval_plan else None),
                    "retrievedEvidence": retrieved_evidence,
+                   "compactionPlan": assembled.compaction_plan,
                    "availableTools": tool_specs,
                    "promptLayoutVersion": assembled.prompt_layout_version,
                    "stablePrefixSha256": assembled.stable_prefix_sha256,
@@ -478,8 +557,12 @@ class AgentRuntimeService:
     def _run_created(self, run_id: str, bound_model: Any,
                      prompt_messages: list[dict[str, Any]],
                      tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
+        owner_id: str | None = None
+        lease_manager: Any = None
         try:
-            self.repository.start(run_id)
+            owner_id = self.repository.start(run_id)
+            lease_manager = self._lease_heartbeat(run_id, owner_id)
+            lease_manager.__enter__()
             messages = list(prompt_messages)
             step_sequence = 0
             for _ in range(self.max_steps):
@@ -487,6 +570,7 @@ class AgentRuntimeService:
                 if cancelled is not None:
                     return cancelled
                 step_sequence += 1
+                self._require_lease_phase(run_id, owner_id, "model_request")
                 self.repository.event(run_id, "model.started", {"stepSequence": step_sequence})
                 turn = None
                 try:
@@ -514,6 +598,7 @@ class AgentRuntimeService:
                 self.repository.record_model(
                     run_id, step_sequence, turn_kind, getattr(turn, "usage", None)
                 )
+                self._require_lease_phase(run_id, owner_id, "between_steps")
                 cancelled = self._finish_cancel_if_requested(run_id)
                 if cancelled is not None:
                     return cancelled
@@ -550,6 +635,7 @@ class AgentRuntimeService:
                         provider_call_id=turn.tool_call_id,
                     )
                 tool_sequence = step_sequence + 1
+                self._require_lease_phase(run_id, owner_id, "tool_execution")
                 self.repository.event(run_id, "tool.started", {
                     "toolName": tool.name, "toolVersion": tool.version,
                     "stepSequence": tool_sequence,
@@ -600,3 +686,6 @@ class AgentRuntimeService:
             if cancelled is not None:
                 return cancelled
             raise AgentRunError("aiUnavailable", "Agent run failed", 503, run_id) from exc
+        finally:
+            if lease_manager is not None:
+                lease_manager.__exit__(None, None, None)

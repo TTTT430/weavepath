@@ -18,7 +18,7 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 - `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
 - 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
 
-当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，每张卡片根据该节点最近一轮本地问答生成轻量概览，双击节点进入该对话内部的 Turn Tree。概览不调用模型、不混入父节点或兄弟路线，并随消息更新。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 180 项通过，并完成 compileall；前端 151 项测试、typecheck 和 production build 通过。`/graph` 只保留为兼容入口。
+当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，每张卡片根据该节点最近一轮本地问答生成轻量概览，双击节点进入该对话内部的 Turn Tree。概览不调用模型、不混入父节点或兄弟路线，并随消息更新。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 187 项通过，并完成 compileall；前端 153 项测试、typecheck 和 production build 通过。`/graph` 只保留为兼容入口。
 
 第一版 OpenAI-compatible AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。输入框底部可直接打开当前服务商的模型列表，切换模型和自动/低/中/高/极高推理强度；服务地址、API 密钥、安全保存和网络方式保持不变，完整连接配置仍在设置中管理。同一行的 `＋` 支持把 UTF-8 文本/代码/数据、PDF、DOCX、XLSX 和 PPTX 作为持久化消息上下文发送：当前边界为单文件 50 MiB、每条消息最多 5 个。超过 4 MiB 的文件使用 4 MiB 分片、逐片自动重试和可跨页面/服务重启继续的上传会话，并在输入框中显示进度；较小文件继续使用一次流式请求。文件写入本机 content-addressed object store，聊天消息只保存路线受限的附件引用；解析器生成带页码、工作表或幻灯片定位的派生分块，SQLite FTS5 trigram 索引持久化这些分块。路线文件面板可以查询当前路线及父路线的匹配内容、显示索引覆盖状态，但不会读取兄弟路线；一至两个字符的查询使用同一路线内的受限兼容查询。显式随消息添加的文件会确定性固化最多约 96,000 字符；未手动选择文件时，Chat 与 Agent Runtime 会在当前父路线中自动建立最多 6 个分块、约 24,000 字符的预算化检索计划。计划保存精确分块、路线、hash、匹配词和截断状态，回复或运行详情可检查并打开引用；历史请求复用已冻结的计划，父路线后续消息仍按实时 parent 链进入子节点。常见图片可安全保存，但在 OCR 配置完成前会明确标记为不可用于模型上下文。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。聊天请求已支持 SSE 逐 token 输出、停止生成、失败回答独立重试和幂等键；连接中、等待模型、接收回答和自动重连以统一活动状态组件显示，并持续显示已处理时长。生成阶段没有固定回答时限，建立连接或传输中断会自动尝试三次；流中断时先清除未持久化的半截草稿再重建请求，只有完整回答才写入 assistant 消息。模型设置可显式选择自动、系统代理或直连；自动模式先直连，只在连接无法建立时尝试系统代理，并把每条路线的结果与耗时结构化显示。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。migration rollback/发布策略、正式 host adapter 层和 failure/approval 完整事件投影仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
 
@@ -28,9 +28,15 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 
 Runtime v2 还加入持久化取消、重试 lineage、`awaiting_approval` 审批状态和安全工具边界。正式本机 app 使用单进程后台队列：创建 run 后 HTTP 立即返回，关闭面板或刷新页面不影响运行；进程重启会恢复尚未开始模型调用的 `queued` run、保留等待审批的 run，并将取消中的 run 收敛为已取消。已进入未知供应商调用边界的 `running` run 仍安全标记为中断，避免推测其结果或重复副作用。`safe_calculator` 无副作用；`propose_patch` 必须经用户批准，批准后只生成可审查的版本化 Artifact，不修改工作区文件；`read_file` 与 `workspace_search` 仅在显式配置 `WEAVEPATH_WORKSPACE_ROOT` 时开放。界面可查看审批、事件、Artifact、缓存复用率与数据覆盖率。完整合同、限制和测试路径见 [Runtime v2 P0](docs/runtime-v2-p0.md) 与 [Prompt cache / KV cache 策略](docs/prompt-cache-observability.md)。
 
-该 preview 当前是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。官方 app factory 已用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；跨进程 run owner/lease 仍属于后续运行时硬化范围。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
+### Runtime v2 P2（可靠执行与自动上下文压缩）
 
-2026-09-09 的当前统一本机自动化基线包括后端 180 项测试、Python compileall、前端 151 项测试、TypeScript typecheck 和 production build；既有双层画布/Route-to-Agent Run/Engineering Lab 浏览器验收仍保留。Runtime v2 P0 新增的审批、取消、重试、cache-aware context 和 usage 可观测性，以及 P1 预算化路线文件自动检索与可检查计划，目前完成自动化验证，尚未宣称完成新的真实供应商浏览器 E2E。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，schema v7 为自动分支标题增加持久化来源标记；Runtime 与检索计划表使用独立的辅助迁移，不改变 graph schema v7。Local Chat 的 SSE/取消/回答重试已完成；普通回复也会持久化实际用时和供应商返回的 OpenAI/DeepSeek 缓存 usage，并在回复下方的可展开详情中显示，供应商未报告时明确标记不可用。任意 shell、写文件、网络工具、自动 evaluator/scorer、多 Agent、跨进程 run lease，以及正式 Codex/Claude adapter 仍未包含。
+当前 P2 切片增加了持久化 run owner/lease、心跳与执行阶段，并为审批后的有副作用工具建立 root-run lineage 级 effect journal。相同重试链中，已经完成的完全相同 effect 会复用既有结果而不再执行；进程中断时仍处于执行中的 effect 被标记为 `toolOutcomeUnknown`，后续自动重放会被阻止。模型请求边界中断则标记为 `modelOutcomeUnknown`，不会把迟到响应写回路线。
+
+Chat 与 Agent Runtime 还会在实际路线内容超过预算时自动压缩较早消息。压缩是针对“具体目标路线 + 当前祖先 revision vector”的确定性请求投影，不删除、不替换、不改写 A/B/C 的原始消息；最近 8 条消息保持完整，较早消息以带 message ID、来源 instance、内容 hash 和摘录的审计摘要进入当次模型请求。父节点更新后下一次请求会沿 parent 链读取最新消息并生成新计划；`A-B-C-D` 与 `A-B-E` 可以共享原始 A-B，但各自的压缩计划与分支私有内容完全隔离。回复详情与 Agent run detail 会显示原始、压缩、完整保留消息数和压缩比例。默认预算为 240,000 字符，可用 `WEAVEPATH_CONTEXT_BUDGET_CHARS` 调整。完整边界见 [Runtime v2 P2](docs/runtime-v2-p2.md)。
+
+该 preview 当前仍是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。数据库内的 lease 用于当前执行者所有权、心跳审计与安全恢复，官方 app factory 仍用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；它尚不代表多个 API 进程可以接管同一 run。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
+
+2026-09-09 的当前统一本机自动化基线包括后端 187 项测试、Python compileall、前端 153 项测试、TypeScript typecheck 和 production build；既有双层画布/Route-to-Agent Run/Engineering Lab 浏览器验收仍保留。Runtime v2 P0 的审批、取消、重试、cache-aware context 和 usage 可观测性，P1 的预算化路线文件自动检索，以及 P2 的路线级自动压缩、run lease/heartbeat 和 effect 幂等 journal 已完成自动化验证，尚未宣称完成新的真实供应商浏览器 E2E。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，schema v7 为自动分支标题增加持久化来源标记；Runtime、effect journal、压缩计划和检索计划使用独立的辅助迁移或既有运行记录，不改变 graph schema v7。Local Chat 的 SSE/取消/回答重试已完成；普通回复也会持久化实际用时、自动压缩计划和供应商返回的 OpenAI/DeepSeek 缓存 usage，并在回复下方的可展开详情中显示。任意 shell、自动写工作区、网络工具、自动 evaluator/scorer、多 Agent、多进程接管，以及正式 Codex/Claude adapter 仍未包含。
 
 Chat 与 Turn Canvas 的跨 surface 生命周期同步仅用于本机 Web 界面的即时反馈：`BroadcastChannel`（兼容窗口另加同源 `postMessage`）携带按 workflow、route 和 `requestId` 隔离的刷新提示，接收方仍会重新读取当前路线的 SQLite/local snapshot。事件本身不是数据真源，也不保存 transcript；刷新页面后不保证恢复此前的连接阶段、自动重连和已处理时长等界面瞬时状态。该机制不是 WebSocket、跨进程消息总线或跨设备同步；持久化的聊天请求记录只承担幂等、重试和结果重放，不应被解释为完整的前端生命周期恢复。
 
@@ -225,6 +231,7 @@ $env:WEAVEPATH_LLM_MODEL = "模型名称"
 $env:WEAVEPATH_LLM_API_KEY = "可选；本地服务通常不需要"
 $env:WEAVEPATH_LLM_CONNECT_TIMEOUT = "15" # 可选；只限制建连/写入，不限制模型生成时长
 $env:WEAVEPATH_LLM_NETWORK_MODE = "auto" # auto / system / direct
+$env:WEAVEPATH_CONTEXT_BUDGET_CHARS = "240000" # 可选；超出时按具体路线自动压缩较早消息
 .\scripts\dev.ps1
 ```
 
@@ -242,6 +249,7 @@ $env:WEAVEPATH_LLM_NETWORK_MODE = "auto" # auto / system / direct
 - [Agent 工程路线图](docs/agent-engineering-roadmap.md)
 - [Codex 对话交互借鉴路线](docs/codex-interaction-roadmap.md)
 - [Route-to-Agent Run v1 契约与本机验收记录](docs/route-to-agent-run-v1.md)
+- [Runtime v2 P2：可靠执行与路线级自动压缩](docs/runtime-v2-p2.md)
 - [ADR-0001：全局 SQLite 为长期真源](docs/adr/0001-global-sqlite-source-of-truth.md)
 - [ADR-0002：同 topic 使用多个路线实例](docs/adr/0002-topic-route-instances.md)
 - [ADR-0003：HostAdapter 与 operation saga](docs/adr/0003-host-adapter-operation-saga.md)

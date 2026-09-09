@@ -17,9 +17,11 @@ WeavePath 保存完成 Agent 工作路线所需的最小数据。图元数据由
 | Foundation、route digest | 全局 SQLite（planned） | 尚未实现 | 未来必须绑定具体 instance/checkpoint |
 | Agent run brief、状态、step、event | 全局 SQLite | 是 | Runtime v2 本机 preview；run 绑定具体 instance/revision，并保存取消、重试 lineage 与审批状态 |
 | Agent frozen context snapshot | 全局 SQLite | 是 | 启动 run 时复制该刻最新 effective route、memory route、工具规格与 brief；用于审计和 revision 防护，不是分支记忆或应用层 KV cache |
+| 路线压缩计划 | assistant response details / Agent frozen context | 是 | 超预算时保存具体目标路线、祖先 revision vector、来源 message/hash、摘要/hash 和计数；它是可重建的 provider-input 投影，不删除或替换原始 transcript，也不能跨兄弟路线共享私有摘要 |
 | Model step usage | 全局 SQLite | 是 | 只持久化 allowlist token/cache 字段；provider 未报告时保持不可用，不保存未知原始 usage 对象 |
 | Local Chat response details | 全局 SQLite | 是 | 按 assistant message 保存实际用时、模型标识和 allowlist token/cache 字段；旧消息不回填伪造值 |
 | Tool call 参数与 tool result | 全局 SQLite | 是 | `safe_calculator` 无副作用；`propose_patch` 审批后只生成 Artifact；可选工作区读取工具必须显式配置根目录 |
+| Run lease 与 tool effect journal | 全局 SQLite | 是 | lease 记录当前执行者、心跳和执行阶段；effect journal 按 root-run lineage + 工具版本 + 规范参数防止已完成副作用被重试执行，并阻止结果未知的自动重放 |
 | Agent final answer | 全局 SQLite | 是 | 同时写入节点 assistant message；run 内另存不可变副本，后续重新生成聊天不改写它 |
 | Agent model snapshot | 全局 SQLite | 是 | 仅 allowlist 的 provider/model/base URL/建连超时/无响应时限/重试次数/system prompt 等非凭据字段 |
 | 临时任务摘要 | 宿主或派生缓存 | 可选 | 不能混入兄弟路线记忆 |
@@ -45,6 +47,7 @@ context snapshot 当前包含：
 - 从根到目标 instance 的 `memoryRoute`；
 - 当次 `availableTools` 规格；
 - 该具体路线的完整 effective messages；
+- 超预算时该路线的确定性 compaction plan；原始 effective messages 仍保留在冻结审计快照和规范 transcript 中；
 - `objective`、`constraints`、`deliverables`、`acceptanceChecks`；
 - 当次自动检索计划及精确证据文本；对外 detail 隐藏完整证据正文，只显示可审计来源和 hash。
 
@@ -68,6 +71,18 @@ Context builder 只可读取：
 - 另一个 workspace 的内容。
 
 显式 transfer 必须保存 source instance、source checkpoint、target instance、用户确认和摘要/hash，以便审计其来源。
+
+## 自动压缩的所有权
+
+自动压缩不拥有消息，也不把消息从一个节点“搬到”某条支线。原始 A、B、C 等本地消息仍由各自 `ConversationInstance` 的 transcript 拥有；运行时沿 parent 链组装选定路线。
+
+例如 `A-B-C-D` 和 `A-B-E`：
+
+- A、B 原始消息各保存一份，两条路线动态读取相同的 A-B；
+- D 的压缩计划绑定 A-B-C-D 及其 revision vector；E 的计划绑定 A-B-E；
+- D 的摘要不能被 E 直接采用，因为它可能含 C 私有内容；
+- B 更新后，两个旧计划只作为历史审计记录存在，下一次请求分别从最新 B 重新派生；
+- 删除旧压缩计划不能删除 A/B 原始消息，归档 D 也不能改变 E 的有效路线。
 
 ## 本地数据库与备份
 

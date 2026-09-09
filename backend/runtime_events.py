@@ -13,9 +13,11 @@ EVENT_TYPES = frozenset({
     "message.reset", "connection.status",
     "run.created", "run.started", "run.completed", "run.failed", "run.interrupted",
     "run.cancel_requested", "run.cancelled", "run.retry_created", "run.resumed",
+    "run.lease_acquired", "run.lease_released", "run.lease_expired",
     "context.frozen", "model.started", "model.completed", "model.failed",
     "tool.requested", "tool.started", "tool.completed", "tool.failed",
     "tool.cancelled", "tool.interrupted",
+    "tool.reused",
     "approval.required", "approval.approved", "approval.rejected",
 })
 

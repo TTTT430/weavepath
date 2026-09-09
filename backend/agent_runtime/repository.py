@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from graph_core import Conflict, NotFound
@@ -17,6 +17,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _lease_deadline(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(
+        timespec="milliseconds"
+    ).replace("+00:00", "Z")
+
+
 def _json(value: Any) -> str:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -25,6 +31,16 @@ def _json(value: Any) -> str:
 
 def _hash(value: Any) -> str:
     return hashlib.sha256(_json(value).encode()).hexdigest()
+
+
+def _effect_key(root_run_id: str, name: str, version: str,
+                arguments: dict[str, Any]) -> str:
+    return "effect_" + _hash({
+        "rootRunId": root_run_id,
+        "toolName": name,
+        "toolVersion": version,
+        "arguments": arguments,
+    })
 
 
 class AgentRunRepository:
@@ -197,15 +213,64 @@ class AgentRunRepository:
             raise Conflict("idempotency key was already used with a different request")
         return self.get(row["id"])
 
-    def start(self, run_id: str) -> None:
+    def start(self, run_id: str, owner_id: str | None = None,
+              lease_seconds: int = 15) -> str:
+        owner = owner_id or ("owner_" + uuid.uuid4().hex)
+        now = _now()
         with self.tx() as cx:
             changed = cx.execute(
-                "UPDATE agent_runs SET status='running',updated_at=? WHERE id=? AND status='queued'",
-                (_now(), run_id),
+                "UPDATE agent_runs SET status='running',lease_owner=?,lease_expires_at=?,"
+                "last_heartbeat_at=?,execution_phase='starting',updated_at=? "
+                "WHERE id=? AND status='queued'",
+                (owner, _lease_deadline(lease_seconds), now, now, run_id),
             ).rowcount
             if changed != 1:
                 raise Conflict("agent run cannot be started")
+            self._event(cx, run_id, "run.lease_acquired", {
+                "ownerId": owner, "leaseSeconds": lease_seconds,
+            })
             self._event(cx, run_id, "run.started")
+        return owner
+
+    def renew_lease(self, run_id: str, owner_id: str, *,
+                    phase: str | None = None, lease_seconds: int = 15) -> bool:
+        """Renew only the lease owned by this executor.
+
+        A false return means ownership or run state changed; the caller must
+        stop before beginning another provider/tool boundary.
+        """
+        now = _now()
+        with self.tx() as cx:
+            assignments = (
+                "lease_expires_at=?,last_heartbeat_at=?,updated_at=?"
+                + (",execution_phase=?" if phase is not None else "")
+            )
+            values: list[Any] = [_lease_deadline(lease_seconds), now, now]
+            if phase is not None:
+                values.append(phase)
+            values.extend([run_id, owner_id])
+            changed = cx.execute(
+                f"UPDATE agent_runs SET {assignments} WHERE id=? AND lease_owner=? "
+                "AND status IN ('running','cancelling')",
+                values,
+            ).rowcount
+        return changed == 1
+
+    def release_lease(self, run_id: str, owner_id: str) -> None:
+        with self.tx() as cx:
+            row = cx.execute(
+                "SELECT status FROM agent_runs WHERE id=? AND lease_owner=?",
+                (run_id, owner_id),
+            ).fetchone()
+            if row is None:
+                return
+            cx.execute(
+                "UPDATE agent_runs SET lease_owner=NULL,lease_expires_at=NULL,"
+                "last_heartbeat_at=NULL,execution_phase=NULL WHERE id=? AND lease_owner=?",
+                (run_id, owner_id),
+            )
+            if row["status"] in {"running", "cancelling"}:
+                self._event(cx, run_id, "run.lease_released", {"ownerId": owner_id})
 
     def event(self, run_id: str, event_type: str,
               payload: dict[str, Any] | None = None) -> None:
@@ -282,7 +347,8 @@ class AgentRunRepository:
     def fail(self, run_id: str, code: str) -> None:
         with self.tx() as cx:
             changed = cx.execute(
-                "UPDATE agent_runs SET status='failed',error_code=?,updated_at=? "
+                "UPDATE agent_runs SET status='failed',error_code=?,lease_owner=NULL,"
+                "lease_expires_at=NULL,last_heartbeat_at=NULL,execution_phase=NULL,updated_at=? "
                 "WHERE id=? AND status IN ('queued','running','awaiting_approval')",
                 (code, _now(), run_id),
             ).rowcount
@@ -335,7 +401,9 @@ class AgentRunRepository:
                     (now, run_id),
                 )
                 changed = cx.execute(
-                    "UPDATE agent_runs SET status='cancelled',error_code='runCancelled',updated_at=? "
+                    "UPDATE agent_runs SET status='cancelled',error_code='runCancelled',"
+                    "lease_owner=NULL,lease_expires_at=NULL,last_heartbeat_at=NULL,"
+                    "execution_phase=NULL,updated_at=? "
                     "WHERE id=? AND status='cancelling'", (now, run_id),
                 ).rowcount
                 if changed != 1:
@@ -381,7 +449,9 @@ class AgentRunRepository:
                 (now, run_id),
             )
             changed = cx.execute(
-                "UPDATE agent_runs SET status='cancelled',error_code='runCancelled',updated_at=? "
+                "UPDATE agent_runs SET status='cancelled',error_code='runCancelled',"
+                "lease_owner=NULL,lease_expires_at=NULL,last_heartbeat_at=NULL,"
+                "execution_phase=NULL,updated_at=? "
                 "WHERE id=? AND status=?", (now, run_id, row["status"]),
             ).rowcount
             if changed != 1:
@@ -390,7 +460,9 @@ class AgentRunRepository:
             self._terminal.notify_all()
         return self.get(run_id)
 
-    def claim_approved_tool(self, run_id: str, approval_id: str) -> None:
+    def claim_approved_tool(self, run_id: str, approval_id: str,
+                            owner_id: str | None = None,
+                            lease_seconds: int = 15) -> dict[str, Any]:
         """Atomically linearize an approved side-effect call before execution.
 
         If cancellation wins the database race, the run is no longer
@@ -398,6 +470,7 @@ class AgentRunRepository:
         wins, a later cancellation is cooperative and the call is journaled
         before the run reaches its terminal cancelled state.
         """
+        owner = owner_id or ("owner_" + uuid.uuid4().hex)
         with self.tx() as cx:
             self._require_running(cx, run_id)
             row = cx.execute(
@@ -407,6 +480,54 @@ class AgentRunRepository:
             ).fetchone()
             if not row or row["approval_status"] != "approved":
                 raise Conflict("tool call is not approved")
+            effect = cx.execute(
+                "SELECT * FROM tool_effects WHERE effect_key=?", (row["effect_key"],)
+            ).fetchone() if row["effect_key"] else None
+            if effect is None:
+                raise Conflict("approved tool effect journal is missing")
+            now = _now()
+            cx.execute(
+                "UPDATE agent_runs SET lease_owner=?,lease_expires_at=?,last_heartbeat_at=?,"
+                "execution_phase='tool_execution',updated_at=? WHERE id=? AND status='running'",
+                (owner, _lease_deadline(lease_seconds), now, now, run_id),
+            )
+            if effect["status"] == "completed":
+                changed = cx.execute(
+                    "UPDATE tool_calls SET status='completed',completed_at=? "
+                    "WHERE id=? AND status='approved'", (now, row["id"]),
+                ).rowcount
+                if changed != 1:
+                    raise Conflict("approved tool call was already consumed")
+                cx.execute(
+                    "UPDATE run_steps SET status='completed',completed_at=? "
+                    "WHERE id=? AND status='awaiting_approval'", (now, row["step_id"]),
+                )
+                output = json.loads(effect["output_json"]) if effect["output_json"] else None
+                cx.execute("INSERT INTO tool_results VALUES(?,?,?,?,?,?,?)", (
+                    "result_" + uuid.uuid4().hex, row["id"], effect["output_json"],
+                    effect["error_code"], 0, effect["output_sha256"], now,
+                ))
+                cx.execute(
+                    "UPDATE agent_runs SET execution_phase='between_steps' WHERE id=?",
+                    (run_id,),
+                )
+                self._event(cx, run_id, "tool.reused", {
+                    "toolCallId": row["id"], "toolName": row["tool_name"],
+                    "toolVersion": row["tool_version"], "approvalId": approval_id,
+                    "effectKey": row["effect_key"], "sourceRootRunId": effect["root_run_id"],
+                })
+                return {
+                    "state": "reused", "ownerId": owner, "output": output,
+                    "toolCallId": row["id"], "effectKey": row["effect_key"],
+                }
+            if effect["status"] != "prepared":
+                raise Conflict("approved tool effect outcome is unknown")
+            effect_changed = cx.execute(
+                "UPDATE tool_effects SET status='executing',updated_at=? "
+                "WHERE effect_key=? AND status='prepared'", (now, row["effect_key"]),
+            ).rowcount
+            if effect_changed != 1:
+                raise Conflict("approved tool effect was already claimed")
             changed = cx.execute(
                 "UPDATE tool_calls SET status='executing' WHERE id=? AND status='approved'",
                 (row["id"],),
@@ -422,7 +543,12 @@ class AgentRunRepository:
             self._event(cx, run_id, "tool.started", {
                 "toolCallId": row["id"], "toolName": row["tool_name"],
                 "toolVersion": row["tool_version"], "approvalId": approval_id,
+                "effectKey": row["effect_key"],
             })
+        return {
+            "state": "claimed", "ownerId": owner, "output": None,
+            "toolCallId": row["id"], "effectKey": row["effect_key"],
+        }
 
     def status(self, run_id: str) -> str:
         with self.lock:
@@ -449,14 +575,23 @@ class AgentRunRepository:
             _now(),
         )
         with self.tx() as cx:
-            self._require_running(cx, run_id)
+            run = self._require_running(cx, run_id)
+            root_run_id = run["root_run_id"] or run["id"]
+            effect_key = _effect_key(root_run_id, name, version, arguments)
+            cx.execute(
+                "INSERT OR IGNORE INTO tool_effects(effect_key,root_run_id,tool_name,"
+                "tool_version,arguments_sha256,status,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,'prepared',?,?)",
+                (effect_key, root_run_id, name, version, _hash(arguments), now, now),
+            )
             cx.execute("INSERT INTO run_steps VALUES(?,?,?,?,?,?,?,?)",
                        (step_id, run_id, sequence, "tool", "awaiting_approval", 1, now, None))
             cx.execute(
                 "INSERT INTO tool_calls(id,run_id,step_id,tool_name,tool_version,arguments_json,"
-                "status,created_at,completed_at,provider_call_id) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "status,created_at,completed_at,provider_call_id,effect_key) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (call_id, run_id, step_id, name, version, _json(arguments), "awaiting_approval",
-                 now, None, provider_call_id),
+                 now, None, provider_call_id, effect_key),
             )
             cx.execute(
                 "INSERT INTO run_approvals(id,run_id,tool_call_id,side_effect,status,created_at,decided_at) "
@@ -464,14 +599,16 @@ class AgentRunRepository:
                 (approval_id, run_id, call_id, side_effect, "pending", now, None),
             )
             changed = cx.execute(
-                "UPDATE agent_runs SET status='awaiting_approval',updated_at=? "
+                "UPDATE agent_runs SET status='awaiting_approval',lease_owner=NULL,"
+                "lease_expires_at=NULL,last_heartbeat_at=NULL,"
+                "execution_phase='awaiting_approval',updated_at=? "
                 "WHERE id=? AND status='running'", (now, run_id)
             ).rowcount
             if changed != 1:
                 raise Conflict("agent run is no longer running")
             self._event(cx, run_id, "approval.required", {
                 "approvalId": approval_id, "toolCallId": call_id, "toolName": name,
-                "toolVersion": version, "sideEffect": side_effect,
+                "toolVersion": version, "sideEffect": side_effect, "effectKey": effect_key,
             })
             self._terminal.notify_all()
         return self.get(run_id)
@@ -508,7 +645,8 @@ class AgentRunRepository:
                 if changed != 1:
                     raise Conflict("tool call status changed")
                 changed = cx.execute(
-                    "UPDATE agent_runs SET status='running',updated_at=? "
+                    "UPDATE agent_runs SET status='running',execution_phase='approval_decided',"
+                    "updated_at=? "
                     "WHERE id=? AND status='awaiting_approval'", (now, run["id"]),
                 ).rowcount
                 if changed != 1:
@@ -585,6 +723,19 @@ class AgentRunRepository:
                 result_id, row["id"], _json(output) if output is not None else None,
                 error_code, duration_ms, _hash(output) if output is not None else None, now,
             ))
+            effect_status = "failed" if error_code else "completed"
+            effect_changed = cx.execute(
+                "UPDATE tool_effects SET status=?,output_json=?,error_code=?,output_sha256=?,"
+                "updated_at=? WHERE effect_key=? AND status='executing'",
+                (effect_status, _json(output) if output is not None else None, error_code,
+                 _hash(output) if output is not None else None, now, row["effect_key"]),
+            ).rowcount
+            if effect_changed != 1:
+                raise Conflict("approved tool effect journal changed during execution")
+            cx.execute(
+                "UPDATE agent_runs SET execution_phase='between_steps',updated_at=? WHERE id=?",
+                (now, run_id),
+            )
             self._event(cx, run_id, "tool.failed" if error_code else "tool.completed", {
                 "toolCallId": row["id"], "toolName": row["tool_name"],
                 "toolVersion": row["tool_version"],
@@ -613,7 +764,9 @@ class AgentRunRepository:
             cx.execute("UPDATE workflows SET content_revision=content_revision+1,updated_at=? WHERE id=?",
                        (now, run["workflow_id"]))
             changed = cx.execute(
-                "UPDATE agent_runs SET status='completed',final_message_id=?,final_answer=?,updated_at=? "
+                "UPDATE agent_runs SET status='completed',final_message_id=?,final_answer=?,"
+                "lease_owner=NULL,lease_expires_at=NULL,last_heartbeat_at=NULL,"
+                "execution_phase=NULL,updated_at=? "
                 "WHERE id=? AND status='running'",
                 (message_id, answer, now, run_id),
             ).rowcount
@@ -654,7 +807,7 @@ class AgentRunRepository:
             ).fetchall()
             for row in cancelling:
                 unfinished_calls = cx.execute(
-                    "SELECT id,tool_name,tool_version,status FROM tool_calls "
+                    "SELECT id,tool_name,tool_version,status,effect_key FROM tool_calls "
                     "WHERE run_id=? AND status IN ('awaiting_approval','approved','executing')",
                     (row["id"],),
                 ).fetchall()
@@ -699,6 +852,13 @@ class AgentRunRepository:
                 )
                 for call in unfinished_calls:
                     executing = call["status"] == "executing"
+                    if executing and call["effect_key"]:
+                        cx.execute(
+                            "UPDATE tool_effects SET status='interrupted',"
+                            "error_code='toolOutcomeUnknown',updated_at=? "
+                            "WHERE effect_key=? AND status='executing'",
+                            (now, call["effect_key"]),
+                        )
                     self._event(
                         cx, row["id"],
                         "tool.interrupted" if executing else "tool.cancelled",
@@ -711,7 +871,9 @@ class AgentRunRepository:
                         },
                     )
                 changed = cx.execute(
-                    "UPDATE agent_runs SET status='cancelled',error_code='runCancelled',updated_at=? "
+                    "UPDATE agent_runs SET status='cancelled',error_code='runCancelled',"
+                    "lease_owner=NULL,lease_expires_at=NULL,last_heartbeat_at=NULL,"
+                    "execution_phase=NULL,updated_at=? "
                     "WHERE id=? AND status='cancelling'", (now, row["id"]),
                 ).rowcount
                 if changed == 1:
@@ -720,12 +882,19 @@ class AgentRunRepository:
             recoverable_statuses = ("running",) if preserve_queued else ("queued", "running")
             placeholders = ",".join("?" for _ in recoverable_statuses)
             rows = cx.execute(
-                f"SELECT id FROM agent_runs WHERE status IN ({placeholders})",
+                f"SELECT id,lease_owner,lease_expires_at,execution_phase FROM agent_runs "
+                f"WHERE status IN ({placeholders})",
                 recoverable_statuses,
             ).fetchall()
             for row in rows:
+                if row["lease_owner"]:
+                    self._event(cx, row["id"], "run.lease_expired", {
+                        "ownerId": row["lease_owner"],
+                        "leaseExpiresAt": row["lease_expires_at"],
+                        "executionPhase": row["execution_phase"],
+                    })
                 unfinished_calls = cx.execute(
-                    "SELECT id,tool_name,tool_version,status FROM tool_calls "
+                    "SELECT id,tool_name,tool_version,status,effect_key FROM tool_calls "
                     "WHERE run_id=? AND status IN ('awaiting_approval','approved','executing')",
                     (row["id"],),
                 ).fetchall()
@@ -741,6 +910,13 @@ class AgentRunRepository:
                     (now, row["id"]),
                 )
                 for call in unfinished_calls:
+                    if call["status"] == "executing" and call["effect_key"]:
+                        cx.execute(
+                            "UPDATE tool_effects SET status='interrupted',"
+                            "error_code='toolOutcomeUnknown',updated_at=? "
+                            "WHERE effect_key=? AND status='executing'",
+                            (now, call["effect_key"]),
+                        )
                     self._event(cx, row["id"], "tool.interrupted", {
                         "toolCallId": call["id"],
                         "toolName": call["tool_name"],
@@ -750,13 +926,27 @@ class AgentRunRepository:
                         ),
                         "errorCode": "runInterrupted",
                     })
+                error_code = (
+                    "modelOutcomeUnknown"
+                    if row["execution_phase"] == "model_request"
+                    else "toolOutcomeUnknown"
+                    if any(call["status"] == "executing" for call in unfinished_calls)
+                    else "runInterrupted"
+                )
                 changed = cx.execute(
-                    "UPDATE agent_runs SET status='interrupted',error_code='runInterrupted',updated_at=? "
+                    "UPDATE agent_runs SET status='interrupted',error_code=?,"
+                    "lease_owner=NULL,lease_expires_at=NULL,last_heartbeat_at=NULL,"
+                    "execution_phase=NULL,updated_at=? "
                     f"WHERE id=? AND status IN ({placeholders})",
-                    (now, row["id"], *recoverable_statuses),
+                    (error_code, now, row["id"], *recoverable_statuses),
                 ).rowcount
                 if changed == 1:
-                    self._event(cx, row["id"], "run.interrupted", {"errorCode": "runInterrupted"})
+                    self._event(cx, row["id"], "run.interrupted", {
+                        "errorCode": error_code,
+                        "executionOutcome": (
+                            "unknown" if error_code != "runInterrupted" else "notStarted"
+                        ),
+                    })
                     count += 1
             if count:
                 self._terminal.notify_all()
@@ -825,6 +1015,7 @@ class AgentRunRepository:
                 "routeRevisionVector": context.get("routeRevisionVector"),
                 "acceptedKnowledge": context.get("acceptedKnowledge", []),
                 "retrievalPlan": context.get("retrievalPlan"),
+                "compactionPlan": context.get("compactionPlan"),
                 "availableTools": context.get("availableTools", []),
                 "promptLayoutVersion": context.get("promptLayoutVersion"),
                 "stablePrefixSha256": context.get("stablePrefixSha256"),
@@ -835,6 +1026,9 @@ class AgentRunRepository:
                 "attemptNumber": row["attempt_number"], "rootRunId": row["root_run_id"] or row["id"],
                 "parentRunId": row["parent_run_id"],
                 "finalMessageId": row["final_message_id"], "errorCode": row["error_code"],
+                "executionPhase": row["execution_phase"],
+                "leaseExpiresAt": row["lease_expires_at"],
+                "lastHeartbeatAt": row["last_heartbeat_at"],
                 "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
 
     def _metrics(self, row: sqlite3.Row, steps: list[dict[str, Any]],
@@ -940,7 +1134,8 @@ class AgentRunRepository:
     def _call(row: sqlite3.Row) -> dict[str, Any]:
         return {"toolCallId": row["id"], "stepId": row["step_id"], "toolName": row["tool_name"],
                 "toolVersion": row["tool_version"], "arguments": json.loads(row["arguments_json"]),
-                "status": row["status"], "providerCallId": row["provider_call_id"]}
+                "status": row["status"], "providerCallId": row["provider_call_id"],
+                "effectKey": row["effect_key"]}
 
     @staticmethod
     def _result(row: sqlite3.Row) -> dict[str, Any]:

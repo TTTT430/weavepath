@@ -104,10 +104,11 @@ describe('agent runtime API contract',()=>{
 
  it('normalizes structured memory route provenance without stringifying objects',async()=>{
   vi.stubGlobal('fetch',vi.fn().mockResolvedValue(response(200,{
-   runId:'run-7',workflowId:'wf',instanceId:'b',status:'completed',inputContentRevision:2,
+   runId:'run-7',workflowId:'wf',instanceId:'b',status:'completed',inputContentRevision:2,executionPhase:'between_steps',leaseExpiresAt:'2026-09-09T00:00:30Z',lastHeartbeatAt:'2026-09-09T00:00:15Z',
    objective:'test',constraints:[],deliverables:[],acceptanceChecks:[],
    memoryRoute:[{instanceId:'a',topicId:'ta',title:'数据集'},{instanceId:'b',topicId:'tb',title:'实验'}],
    retrievalPlan:{planVersion:1,mode:'automatic',query:'sentiment',engine:'fts5-trigram',budgetCharacters:24000,candidateCount:2,selectedCharacters:80,selectedChunks:1,truncated:false,routeInstanceIds:['a','b'],contextSha256:'abc',sources:[{attachmentId:'att-1',name:'notes.txt',chunkOrdinal:1,locator:'lines 1-2'}]},
+   compactionPlan:{planVersion:1,mode:'automatic',compactorVersion:'route-extractive-v1',targetInstanceId:'b',routeInstanceIds:['a','b'],prefixRouteInstanceIds:['a'],routeRevisionVector:[{instanceId:'a',contentRevision:3},{instanceId:'b',contentRevision:2}],budgetCharacters:16000,originalCharacters:32000,resultCharacters:8000,originalMessages:16,compactedMessages:8,retainedMessages:8,summaryCharacters:2000,sourceMessageIds:[1],sourceMessageSetSha256:'source',summarySha256:'summary',contextSha256:'compact',compressionRatio:.25,budgetExceededByProtectedTail:false},
    availableTools:[{name:'safe_calculator',version:'1.0.0',description:'Arithmetic'}],
   })));
   const run=await api.agentRun('run-7');
@@ -116,6 +117,8 @@ describe('agent runtime API contract',()=>{
    {instanceId:'b',topicId:'tb',title:'实验'},
  ]);
  expect(run.retrievalPlan).toMatchObject({mode:'automatic',selectedChunks:1,contextSha256:'abc'});
+ expect(run.compactionPlan).toMatchObject({targetInstanceId:'b',routeInstanceIds:['a','b'],compactedMessages:8,contextSha256:'compact'});
+ expect(run).toMatchObject({executionPhase:'between_steps',leaseExpiresAt:'2026-09-09T00:00:30Z',lastHeartbeatAt:'2026-09-09T00:00:15Z'});
  expect(run.availableTools).toEqual([{name:'safe_calculator',version:'1.0.0',description:'Arithmetic'}]);
  });
 

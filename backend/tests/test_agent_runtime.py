@@ -19,7 +19,7 @@ from agent_runtime.tools import Tool, ToolRegistry
 from api.app import create_app
 from api.llm import LLMUnavailable, OpenAICompatibleLLM
 from engineering import EngineeringRepository
-from graph_core import GraphStore
+from graph_core import Conflict, GraphStore
 from graph_core.migrations import V1, V2
 
 
@@ -638,6 +638,34 @@ def test_startup_recovery_marks_running_once_and_event_sequence_remains_stable()
     store.close()
 
 
+def test_runtime_lease_has_one_owner_and_records_heartbeat_phase():
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    repository = AgentRunRepository(store._conn, store._lock)
+    run, _ = repository.create(
+        workflow_id=graph["workflowId"], instance_id="A", request=request(0),
+        context={"messages": []}, model_snapshot={"provider": "mock", "model": "x"},
+    )
+
+    owner = repository.start(run["runId"], owner_id="worker-one", lease_seconds=30)
+    assert owner == "worker-one"
+    detail = repository.get(run["runId"], details=False)
+    assert detail["executionPhase"] == "starting"
+    assert detail["leaseExpiresAt"] is not None
+    assert detail["lastHeartbeatAt"] is not None
+    assert repository.renew_lease(
+        run["runId"], owner, phase="model_request", lease_seconds=30
+    ) is True
+    assert repository.renew_lease(run["runId"], "worker-two") is False
+    with pytest.raises(Conflict, match="cannot be started"):
+        repository.start(run["runId"], owner_id="worker-two")
+    detail = repository.get(run["runId"], details=False)
+    assert detail["executionPhase"] == "model_request"
+    events = repository.events(run["runId"], 0, 100)["events"]
+    assert [event["type"] for event in events].count("run.lease_acquired") == 1
+    store.close()
+
+
 def test_schema_v1_database_upgrades_to_latest_without_losing_graph_data(tmp_path):
     path = tmp_path / "legacy.db"
     conn = sqlite3.connect(path)
@@ -713,6 +741,18 @@ def test_schema_v2_upgrade_backfills_immutable_completed_run_result(tmp_path):
     assert [row[0] for row in store._conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
     )] == [1, 2, 3, 4, 5, 6, 7]
+    assert [row[0] for row in store._conn.execute(
+        "SELECT version FROM runtime_schema_migrations ORDER BY version"
+    )] == [1, 2]
+    assert {
+        "lease_owner", "lease_expires_at", "last_heartbeat_at", "execution_phase"
+    } <= {row[1] for row in store._conn.execute("PRAGMA table_info(agent_runs)")}
+    assert "effect_key" in {
+        row[1] for row in store._conn.execute("PRAGMA table_info(tool_calls)")
+    }
+    assert store._conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tool_effects'"
+    ).fetchone()
     store.close()
     reopened = GraphStore(path)
     assert AgentRunRepository(reopened._conn, reopened._lock).get("run_legacy")["finalAnswer"] == "durable answer"
@@ -1025,7 +1065,10 @@ def test_late_model_completion_cannot_revive_an_interrupted_run():
         wf, revision = workflow(client)
         response = client.post(f"/api/v1/workflows/{wf}/instances/A/runs", json=request(revision))
         assert response.status_code == 409
-        assert response.json()["code"] == "runInterrupted"
+        # Recovery occurred while an upstream model request was in flight. Its
+        # completion is therefore unknown and must never be replayed or
+        # presented as an ordinary pre-execution interruption.
+        assert response.json()["code"] == "modelOutcomeUnknown"
         run_id = response.json()["runId"]
         run = app.state.agent_runs.get(run_id)
         assert run["status"] == "interrupted"
@@ -1107,6 +1150,55 @@ def test_runtime_v2_retry_persists_attempt_lineage():
         assert client.get(f"/api/v1/runs/{first['runId']}").json()["attemptNumber"] == 1
         events = client.get(f"/api/v1/runs/{second['runId']}/events").json()["events"]
         assert any(event["type"] == "run.retry_created" for event in events)
+    store.close()
+
+
+def test_retry_reuses_completed_side_effect_in_root_lineage_exactly_once():
+    executions = 0
+
+    def proposal(arguments):
+        nonlocal executions
+        executions += 1
+        return {**arguments, "filesystemChanged": False}
+
+    arguments = {"path": "src/safe.py", "patch": "+reliable"}
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    repository = AgentRunRepository(store._conn, store._lock)
+    engineering = EngineeringRepository(store._conn, store._lock)
+    service = AgentRuntimeService(
+        store,
+        repository,
+        ScriptedMockAgentAdapter([
+            ModelTurn(tool_name="propose_patch", tool_arguments=arguments),
+            ModelTurn(tool_name="propose_patch", tool_arguments=arguments),
+        ]),
+        ToolRegistry([Tool(
+            name="propose_patch", version="1.0.0", description="Proposal only.",
+            schema={"type": "object"}, execute=proposal, side_effect="artifact",
+        )]),
+        engineering=engineering,
+    )
+
+    first = service.execute(graph["workflowId"], "A", request(0, "first-effect"))
+    first_approval = first["approvalRequests"][0]["approvalId"]
+    completed = service.decide_approval(first["runId"], first_approval, "approved")
+    assert completed["status"] == "completed"
+    assert executions == 1
+    assert len(engineering.list_artifacts(graph["workflowId"])) == 1
+
+    retry = service.retry(first["runId"], {"idempotencyKey": "same-effect-retry"})
+    assert retry["status"] == "awaiting_approval"
+    retry_approval = retry["approvalRequests"][0]["approvalId"]
+    reused = service.decide_approval(retry["runId"], retry_approval, "approved")
+    assert reused["status"] == "completed"
+    assert executions == 1
+    assert len(engineering.list_artifacts(graph["workflowId"])) == 1
+    retry_events = repository.events(retry["runId"], 0, 100)["events"]
+    assert [event["type"] for event in retry_events].count("tool.reused") == 1
+    first_key = repository.get(first["runId"])["toolCalls"][0]["effectKey"]
+    retry_key = repository.get(retry["runId"])["toolCalls"][0]["effectKey"]
+    assert retry_key == first_key
     store.close()
 
 
@@ -1286,10 +1378,10 @@ def test_cancel_winning_before_the_side_effect_claim_creates_no_artifact():
     repository = AgentRunRepository(store._conn, store._lock)
     original_claim = repository.claim_approved_tool
 
-    def delayed_claim(run_id, approval_id):
+    def delayed_claim(run_id, approval_id, **kwargs):
         claim_entered.set()
         assert release_claim.wait(2)
-        original_claim(run_id, approval_id)
+        return original_claim(run_id, approval_id, **kwargs)
 
     repository.claim_approved_tool = delayed_claim  # type: ignore[method-assign]
     service = AgentRuntimeService(
@@ -1595,6 +1687,7 @@ def test_recovery_journals_unfinished_approved_tools_without_replaying_them():
     assert repo.recover_interrupted() == 3
     detail = repo.get(run["runId"])
     assert detail["status"] == "interrupted"
+    assert detail["errorCode"] == "toolOutcomeUnknown"
     assert detail["toolCalls"][0]["status"] == "interrupted"
     assert detail["steps"][0]["status"] == "interrupted"
     events = repo.events(run["runId"], 0, 100)["events"]
@@ -1602,6 +1695,7 @@ def test_recovery_journals_unfinished_approved_tools_without_replaying_them():
     assert interrupted["payload"]["executionOutcome"] == "unknown"
     preclaim_detail = repo.get(preclaim["runId"])
     assert preclaim_detail["status"] == "interrupted"
+    assert preclaim_detail["errorCode"] == "runInterrupted"
     assert preclaim_detail["toolCalls"][0]["status"] == "interrupted"
     assert next(
         event for event in repo.events(preclaim["runId"], 0, 100)["events"]
@@ -1614,6 +1708,64 @@ def test_recovery_journals_unfinished_approved_tools_without_replaying_them():
         event for event in repo.events(cancelling["runId"], 0, 100)["events"]
         if event["type"] == "tool.interrupted"
     )["payload"]["executionOutcome"] == "unknown"
+    effect = store._conn.execute(
+        "SELECT status,error_code FROM tool_effects WHERE effect_key=?",
+        (detail["toolCalls"][0]["effectKey"],),
+    ).fetchone()
+    assert tuple(effect) == ("interrupted", "toolOutcomeUnknown")
+    store.close()
+
+
+def test_retry_blocks_an_interrupted_side_effect_with_unknown_outcome():
+    invoked = False
+
+    def proposal(arguments):
+        nonlocal invoked
+        invoked = True
+        return {**arguments, "filesystemChanged": False}
+
+    arguments = {"path": "unknown.py", "patch": "+maybe"}
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    wf = graph["workflowId"]
+    repository = AgentRunRepository(store._conn, store._lock)
+    source, _ = repository.create(
+        workflow_id=wf,
+        instance_id="A",
+        request=request(0, "unknown-source"),
+        context={"messages": []},
+        model_snapshot={"provider": "test", "model": "recovery"},
+    )
+    repository.start(source["runId"])
+    waiting = repository.request_approval(
+        source["runId"], 1, name="propose_patch", version="1.0.0",
+        arguments=arguments, side_effect="artifact",
+    )
+    approval_id = waiting["approvalRequests"][0]["approvalId"]
+    repository.decide_approval(source["runId"], approval_id, "approved")
+    repository.claim_approved_tool(source["runId"], approval_id)
+    assert repository.recover_interrupted() == 1
+
+    service = AgentRuntimeService(
+        store,
+        repository,
+        ScriptedMockAgentAdapter([
+            ModelTurn(tool_name="propose_patch", tool_arguments=arguments),
+        ]),
+        ToolRegistry([Tool(
+            name="propose_patch", version="1.0.0", description="Proposal only.",
+            schema={"type": "object"}, execute=proposal, side_effect="artifact",
+        )]),
+        engineering=EngineeringRepository(store._conn, store._lock),
+    )
+    retry = service.retry(source["runId"], {"idempotencyKey": "unknown-retry"})
+    retry_approval = retry["approvalRequests"][0]["approvalId"]
+    with pytest.raises(Exception) as caught:
+        service.decide_approval(retry["runId"], retry_approval, "approved")
+    assert getattr(caught.value, "code", None) == "toolOutcomeUnknown"
+    assert repository.get(retry["runId"])["errorCode"] == "toolOutcomeUnknown"
+    assert invoked is False
+    assert EngineeringRepository(store._conn, store._lock).list_artifacts(wf) == []
     store.close()
 
 

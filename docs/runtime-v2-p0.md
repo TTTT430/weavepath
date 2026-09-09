@@ -1,6 +1,8 @@
 # Agent Runtime v2：P0 验收边界
 
-更新日期：2026-09-08
+更新日期：2026-09-09
+
+> 后续状态：P0 已保持不变；P1 路线文件检索与 P2 lease/effect journal、路线级自动压缩已继续实现。最新边界见 [Runtime v2 P2](runtime-v2-p2.md)。
 
 ## 已实现
 
@@ -44,11 +46,11 @@ POST /api/v1/runs/{runId}/approvals/{approvalId}/decision
 ## 当前限制
 
 - 正式本机 app 已使用单进程后台 worker；关闭面板或刷新页面不影响运行。进程重启只自动恢复尚未进入模型调用的 queued run；未知上游边界中的 running run 会安全中断，等待审批保持可恢复，cancelling 收敛为 cancelled。
-- 尚无跨进程 owner/lease 或多个 Uvicorn worker 的接管能力。
+- 已有持久化 owner/lease、心跳和执行阶段，但当前仍由 OS 单实例锁限制为一个 Uvicorn worker；尚无多进程安全接管能力。
 - 不应以多个 Uvicorn worker 连接同一个 SQLite 文件运行当前 preview。
 - 缓存复用由 provider 决定；相同输入只提供命中条件，不保证命中。
 - 第三方 OpenAI-compatible 网关可能不返回任何缓存字段，此时只能显示不可用。
-- 本轮 usage 合同覆盖 Agent Runtime model step；Local Chat 的流式 usage 归一化仍是后续独立工作。
+- 同一 usage 合同已经用于 Local Chat JSON/SSE 回复详情；它与 Agent Runtime 的逐 model-step journal 分开持久化。
 - 没有任意 shell、网络工具或自动写文件工具。
 
 ## 自动化验收
@@ -64,4 +66,4 @@ POST /api/v1/runs/{runId}/approvals/{approvalId}/decision
 - 审批幂等、拒绝、取消晚响应、重试 lineage、重启恢复、revision 冲突和 Artifact 保留；
 - 工作区工具的显式根目录和路径安全。
 
-当前基线：后端 160 项、前端 133 项、Python compileall、TypeScript typecheck 和 production build 通过。
+当前基线：后端 187 项、前端 153 项、Python compileall、TypeScript typecheck 和 production build 通过。

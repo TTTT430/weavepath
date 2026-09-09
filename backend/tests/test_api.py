@@ -318,6 +318,70 @@ def test_chat_automatically_retrieves_current_route_files_and_reports_the_plan()
     store.close()
 
 
+def test_chat_auto_compaction_is_route_local_dynamic_and_persisted(monkeypatch):
+    monkeypatch.setenv("WEAVEPATH_CONTEXT_BUDGET_CHARS", "16000")
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(
+        name="Workflow", root_title="A", root_instance_id="A"
+    )
+    workflow_id = graph["workflowId"]
+    for index in range(5):
+        store.append_message(
+            workflow_id, "A", role="user",
+            content=f"A shared {index} " + ("a" * 2400),
+        )
+    store.fork(workflow_id, "A", title="B", instance_id="B")
+    for index in range(4):
+        store.append_message(
+            workflow_id, "B", role="assistant",
+            content=f"B shared {index} " + ("b" * 1800),
+        )
+    store.fork(workflow_id, "B", title="C", instance_id="C")
+    store.fork(workflow_id, "B", title="E", instance_id="E")
+    store.append_message(workflow_id, "C", role="user", content="C private marker")
+    store.append_message(workflow_id, "E", role="user", content="E sibling secret")
+    # This update happens after both forks. Dynamic route memory must include it
+    # and the compaction revision vector must bind the rebuilt projection to it.
+    store.append_message(workflow_id, "B", role="assistant", content="B newest after fork")
+
+    llm = FakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        response = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/C/chat",
+            json={"content": "C current request"},
+        )
+        assert response.status_code == 200
+        details = response.json()["assistantMessage"]["responseDetails"]
+        plan = details["compactionPlan"]
+        assert plan["mode"] == "automatic"
+        assert plan["targetInstanceId"] == "C"
+        assert plan["routeInstanceIds"] == ["A", "B", "C"]
+        assert plan["compactedMessages"] > 0
+        assert plan["originalMessages"] > plan["retainedMessages"]
+        assert [item["instanceId"] for item in plan["routeRevisionVector"]] == [
+            "A", "B", "C"
+        ]
+        provider_text = "\n".join(str(item["content"]) for item in llm.messages)
+        assert "Compressed route history" in provider_text
+        assert "B newest after fork" in provider_text
+        assert "C private marker" in provider_text
+        assert "E sibling secret" not in provider_text
+        listed = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/C/messages?scope=local"
+        ).json()["messages"]
+        assert listed[-1]["responseDetails"]["compactionPlan"] == plan
+
+    # Compaction is only a provider-input projection; the canonical A/B source
+    # messages remain unchanged and are still shared dynamically by E.
+    assert "B newest after fork" in [
+        item["content"] for item in store.list_messages(workflow_id, "E")["messages"]
+    ]
+    assert "C private marker" not in [
+        item["content"] for item in store.list_messages(workflow_id, "E")["messages"]
+    ]
+    store.close()
+
+
 def test_ordinary_chat_persists_response_duration_and_provider_cache_usage():
     store = GraphStore(":memory:")
     llm = DetailedFakeLLM()

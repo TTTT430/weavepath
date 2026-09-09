@@ -191,7 +191,17 @@ describe('chat delivery mode',()=>{
   expect(within(details).getByText('750')).toBeInTheDocument();
   expect(within(details).getByText('250')).toBeInTheDocument();
   expect(within(details).getByText('75%')).toBeInTheDocument();
-  expect(within(details).getByText('100%')).toBeInTheDocument();
+ expect(within(details).getByText('100%')).toBeInTheDocument();
+ });
+ it('shows the automatic route compaction plan in ordinary reply details',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'a1',role:'assistant',content:'压缩后的回答',responseDetails:{durationMs:1200,cacheStatus:'not_reported',compactionPlan:{planVersion:1,mode:'automatic',compactorVersion:'route-extractive-v1',targetInstanceId:'c',routeInstanceIds:['a','b','c'],prefixRouteInstanceIds:['a','b'],routeRevisionVector:[{instanceId:'a',contentRevision:5},{instanceId:'b',contentRevision:4},{instanceId:'c',contentRevision:2}],budgetCharacters:16000,originalCharacters:48000,resultCharacters:12000,originalMessages:18,compactedMessages:10,retainedMessages:8,summaryCharacters:3000,sourceMessageIds:[1,2],sourceMessageSetSha256:'source',summarySha256:'summary',contextSha256:'context',compressionRatio:.25,budgetExceededByProtectedTail:false}}}],contentRevision:1});
+  renderChat();await screen.findByText('压缩后的回答');fireEvent.click(screen.getByLabelText('回复详情'));
+  const plan=screen.getByText('上下文压缩').closest('.response-compaction-plan') as HTMLElement;
+  expect(within(plan).getByText('18')).toBeInTheDocument();
+  expect(within(plan).getByText('10')).toBeInTheDocument();
+  expect(within(plan).getByText('8')).toBeInTheDocument();
+  expect(within(plan).getByText('25%')).toBeInTheDocument();
  });
  it('opens the exact file evidence from ordinary reply details',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});

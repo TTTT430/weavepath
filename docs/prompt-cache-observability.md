@@ -33,6 +33,7 @@ WeavePath 现在**不需要实现自己的推理引擎 KV cache**；Agent Runtim
 - 普通 Local Chat 回复同样保存单次模型调用的用时与 allowlist usage，并在回答下方提供可展开详情；
 - Tool Registry 规格按 `name + version` 排序，JSON Schema 递归规范化；
 - context snapshot 保存审计所需的完整 envelope，但模型输入只使用白名单投影。
+- 超过路线预算时，Chat 与 Agent 对较早路线消息生成确定性 compaction projection；计划保存目标路线、revision vector、来源 hash 和压缩统计，原始 transcript 不变。
 
 普通 Local Chat 的 usage 不混入 Agent Runtime 的逐 step journal，而是按 assistant message 存入独立元数据表。
 一条普通回答对应一次模型调用：返回有效缓存字段时覆盖率为 `100%`；未返回、不支持或字段矛盾时，
@@ -128,6 +129,7 @@ WeavePath 的缓存策略必须服从当前产品语义，而不是反过来改�
 - 编辑 A 或 B 的早期消息会使修改点之后的 token 前缀失效，这是正确性所需的正常失效；
 - 只在 C 末尾追加消息通常最有利于前缀复用；
 - checkpoint 仍用于审计，不应被误用为 provider cache key，也不应恢复“冻结父路线”的旧语义。
+- 自动压缩按具体目标路线派生。A-B 公共原始前缀可以相同，但包含 C 的压缩摘要不能发送给 E；B 更新后两条路线分别重建自己的计划。
 
 因此分支越多不代表应用需要复制 KV cache。远程 provider 会自行判断公共前缀是否可复用；WeavePath 只需
 保证输入确定、路线正确，并记录 provider 实际报告的数据。
@@ -172,7 +174,7 @@ current request 内。更换证据会改变完整 request hash，但不会改变
 4. Run metrics 和前端显示缓存 token、复用率、数据覆盖率与不可用状态。
 5. 稳定 prompt builder 通过 snapshot/hash、动态父路线和兄弟隔离测试。
 
-后续再把同一个 usage normalizer 接入 Local Chat JSON/SSE；这不阻塞本轮 Runtime P0。
+同一个 usage normalizer 已接入 Local Chat JSON/SSE；普通回复与 Agent run 都能在各自详情中显示真实缓存字段或“不可用”。后续优化应以真实 provider 的长路线样本为依据，同时比较压缩比例、输入 token、缓存 coverage、延迟和回答质量。
 
 ## 验收标准
 
@@ -185,7 +187,7 @@ current request 内。更换证据会改变完整 request hash，但不会改变
 - usage 缺失时返回 `not_reported` 和 `null`，而不是零。
 - 第三方只返回总 token 或使用未知扩展字段时安全降级。
 - 负数、字符串、布尔值、NaN、cached 大于 input 时标记 `invalid`，不污染汇总。
-- Local Chat SSE 最终 usage chunk 的处理属于后续验收，不计入本轮 Runtime model-step 合同。
+- Local Chat SSE 最终 usage chunk 使用同一 normalizer，并在普通回复详情中独立持久化和展示。
 
 ### 前缀稳定性测试
 

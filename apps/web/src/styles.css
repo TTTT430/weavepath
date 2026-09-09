@@ -571,6 +571,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .run-artifacts { display: grid; gap: 7px; }.run-artifacts article { display: grid; gap: 3px; padding: 8px; background: #f2f6f7; border: 1px solid #d9e3e7; border-radius: 7px; }.run-artifacts article small { color: #64757c; }.event-tool,.event-artifact { margin: 4px 0; color: #64757c; font-size: 11px; }.event-diff pre { max-height: 240px; padding: 8px; background: #172126; color: #f5f7f7; border-radius: 7px; }.timeline-empty { padding: 10px; color: #64757c; background: #f2f6f7; border: 1px dashed #cbd7dc; border-radius: 8px; }
 .accepted-knowledge { margin: 10px 0; padding: 10px; background: #f1f4ff; border: 1px solid #d5dcf5; border-radius: 8px; }.accepted-knowledge h4 { margin-top: 0; }.accepted-knowledge article { margin-top: 7px; }.accepted-knowledge p { margin: 3px 0; color: #53626f; }
 .run-retrieval-plan { display: grid; gap: 7px; margin: 10px 0; padding: 10px; background: #f5f8ff; border: 1px solid #d5e0f2; border-radius: 8px; }.run-retrieval-plan > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.run-retrieval-plan h4,.run-retrieval-plan p { margin: 0; }.run-retrieval-plan > div > span { color: #3568ad; font-size: 10px; font-weight: 650; }.run-retrieval-plan ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }.run-retrieval-plan li { display: grid; gap: 2px; padding: 7px; background: #fff; border-radius: 6px; }.run-retrieval-plan li strong { font-size: 10px; }.run-retrieval-plan li small,.run-retrieval-plan > small,.run-retrieval-plan p { color: #64757c; font-size: 9px; }
+.run-compaction-plan { display: grid; gap: 7px; margin: 10px 0; padding: 10px; background: #f5f4ff; border: 1px solid #ddd8f1; border-radius: 8px; }.run-compaction-plan > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }.run-compaction-plan h4,.run-compaction-plan p { margin: 0; }.run-compaction-plan > div > span { color: #6657ad; font-size: 10px; font-weight: 650; }.run-compaction-plan dl { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; margin: 0; }.run-compaction-plan dl div { padding: 7px; background: #fff; border-radius: 6px; }.run-compaction-plan dt,.run-compaction-plan p,.run-compaction-plan > small { color: #64757c; font-size: 9px; }.run-compaction-plan dd { margin: 3px 0 0; font-weight: 650; }
 .run-events.timeline { position: relative; padding-left: 0; list-style: none; }.run-events.timeline::before { position: absolute; top: 8px; bottom: 8px; left: 13px; width: 1px; background: #cbd7dc; content: ""; }.run-events.timeline li { position: relative; z-index: 1; display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 8px; padding: 0; background: transparent; border: 0; }.run-events.timeline li > i { display: grid; place-items: center; width: 27px; height: 27px; color: #526b72; font-style: normal; background: #eef3f5; border: 1px solid #cbd7dc; border-radius: 50%; }.run-events.timeline li.completed > i { color: #32642d; background: #e5f2e1; border-color: #bcd6b4; }.run-events.timeline li.failed > i { color: #963b2e; background: #fff0ed; border-color: #e5b5ad; }.run-events.timeline li > div { min-width: 0; padding: 4px 0 9px; }.run-events.timeline time { float: right; color: #7b898f; font-size: 9px; }.run-events.timeline details { margin-top: 4px; }.run-events.timeline summary { color: #667980; font-size: 10px; cursor: pointer; }.run-result-heading { display: flex; align-items: center; gap: 8px; }.run-result-heading h4 { flex: 1; }
 
 .engineering-workbench { display: grid; grid-template-rows: auto auto minmax(0,1fr); width: 100%; height: 100%; min-height: 0; background: #f3f6f8; }
@@ -1223,11 +1224,17 @@ html .response-details-grid > div { display: grid; min-width: 0; gap: 3px; }
 html .response-details-grid small { color: var(--ui-subtle); }
 html .response-details-grid strong { color: var(--ui-muted); font-size: 12px; font-weight: 600; }
 html .response-retrieval-plan { display: grid; max-width: 680px; gap: 7px; margin-top: 8px; padding: 9px; background: color-mix(in srgb,var(--ui-accent-soft) 55%,var(--ui-panel-muted)); border: 1px solid color-mix(in srgb,var(--ui-accent) 20%,var(--ui-border)); border-radius: 8px; }
+html .response-compaction-plan { display: grid; max-width: 680px; gap: 7px; margin-top: 8px; padding: 9px; background: color-mix(in srgb,#7867c4 9%,var(--ui-panel-muted)); border: 1px solid color-mix(in srgb,#7867c4 24%,var(--ui-border)); border-radius: 8px; }
 html .response-retrieval-title { display: flex; align-items: center; gap: 7px; color: var(--ui-accent); }
 html .response-retrieval-title > div { display: grid; gap: 1px; }
 html .response-retrieval-title strong { color: var(--ui-text); font-size: 11px; }
 html .response-retrieval-title small { color: var(--ui-subtle); font-size: 9px; }
 html .response-retrieval-plan dl { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; margin: 0; }
+html .response-compaction-plan dl { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 6px; margin: 0; }
+html .response-compaction-plan dl > div { display: grid; gap: 2px; min-width: 0; }
+html .response-compaction-plan dt { color: var(--ui-subtle); font-size: 9px; }
+html .response-compaction-plan dd { margin: 0; color: var(--ui-muted); font-size: 11px; font-weight: 650; }
+html .response-compaction-plan p { margin: 0; color: var(--ui-danger); font-size: 9px; }
 html .response-retrieval-plan dl > div { display: grid; gap: 2px; min-width: 0; }
 html .response-retrieval-plan dt { color: var(--ui-subtle); font-size: 9px; }
 html .response-retrieval-plan dd { margin: 0; color: var(--ui-muted); font-size: 11px; font-weight: 650; }
@@ -1620,6 +1627,10 @@ html .run-retrieval-plan { color: var(--ui-text); background: color-mix(in srgb,
 html .run-retrieval-plan li { background: var(--ui-panel-raised); }
 html .run-retrieval-plan > div > span { color: var(--ui-accent); }
 html .run-retrieval-plan li small,html .run-retrieval-plan > small,html .run-retrieval-plan p { color: var(--ui-subtle); }
+html .run-compaction-plan { color: var(--ui-text); background: color-mix(in srgb,#7867c4 9%,var(--ui-panel-muted)); border-color: color-mix(in srgb,#7867c4 24%,var(--ui-border)); }
+html .run-compaction-plan dl div { background: var(--ui-panel-raised); }
+html .run-compaction-plan > div > span { color: color-mix(in srgb,#9382e4 72%,var(--ui-text)); }
+html .run-compaction-plan dt,html .run-compaction-plan p,html .run-compaction-plan > small { color: var(--ui-subtle); }
 html .run-events.timeline::before { background: var(--ui-border-strong); }
 html .run-events.timeline li { background: transparent; border: 0; }
 html .run-events.timeline li > i { color: var(--ui-muted); background: var(--ui-panel-raised); border-color: var(--ui-border-strong); }
