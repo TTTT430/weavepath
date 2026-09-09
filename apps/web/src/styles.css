@@ -1995,6 +1995,8 @@ html .composer-attachment button { display: inline-grid; width: 20px; height: 20
 html .composer-attachment button:hover { background: color-mix(in srgb,var(--ui-text) 8%,transparent); }
 html .composer-attachment-error { display: flex; align-items: center; gap: 5px; margin: 0 5px 3px; color: var(--ui-danger); font-size: 10px; }
 html .message-attachment-list { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; margin-bottom: 5px; }
+html .composer-attachment.failed { color: var(--ui-danger); background: var(--ui-danger-soft); border-color: color-mix(in srgb,var(--ui-danger) 42%,var(--ui-border)); }
+html .composer-attachment.processing { color: var(--ui-warning); background: var(--ui-warning-soft); border-color: color-mix(in srgb,var(--ui-warning) 42%,var(--ui-border)); }
 html .chat-user-content { min-width: 0; white-space: pre-wrap; }
 html .chat-user-prompt { white-space: pre-wrap; }
 html .composer-model-picker { position: relative; min-width: 0; flex: 0 1 auto; }
@@ -2079,6 +2081,106 @@ html .run-result > .markdown-message { color: var(--ui-text); font-family: inher
 html .run-result-heading { margin-bottom: 8px; }
 html .run-result-heading h4 { margin-block: 0; }
 
+/* Route-scoped file library ------------------------------------------------
+   The object store is intentionally surfaced as a compact inspector instead
+   of turning the composer into a second file browser. Both columns own their
+   scroll position so long extracted previews never move the file list. */
+html .attachment-manager-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(13,18,27,.48);
+  backdrop-filter: blur(4px);
+}
+html .attachment-manager {
+  display: grid;
+  width: min(960px,calc(100vw - 48px));
+  height: min(680px,calc(100dvh - 48px));
+  min-height: 360px;
+  grid-template-rows: auto auto minmax(0,1fr);
+  overflow: hidden;
+  color: var(--ui-text);
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 13px;
+  box-shadow: 0 24px 72px rgba(8,15,28,.28);
+}
+html .attachment-manager > header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px 15px;
+  border-bottom: 1px solid var(--ui-border);
+}
+html .attachment-manager > header h2,
+html .attachment-manager > header p { margin: 0; }
+html .attachment-manager > header h2 { font-size: 18px; }
+html .attachment-manager > header p { max-width: 620px; margin-top: 5px; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
+html .attachment-manager-header-actions { display: flex; gap: 5px; }
+html .attachment-manager-header-actions .icon-button { width: 32px; height: 32px; color: var(--ui-muted); background: transparent; border-color: transparent; border-radius: 8px; }
+html .attachment-manager-header-actions .icon-button:hover { color: var(--ui-text); background: var(--ui-panel-muted); border-color: var(--ui-border); }
+html .attachment-manager-error { display: flex; align-items: center; gap: 7px; padding: 9px 20px; color: var(--ui-danger); background: var(--ui-danger-soft); border-bottom: 1px solid color-mix(in srgb,var(--ui-danger) 30%,var(--ui-border)); font-size: 12px; }
+html .attachment-manager-body { display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(280px,36%) minmax(0,1fr); }
+html .attachment-manager-list,
+html .attachment-manager-detail { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+html .attachment-manager-list { display: flex; flex-direction: column; gap: 7px; padding: 12px; background: var(--ui-panel-muted); border-right: 1px solid var(--ui-border); }
+html button.attachment-file-card {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: 30px minmax(0,1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px;
+  color: var(--ui-text);
+  text-align: left;
+  background: var(--ui-panel);
+  border-color: var(--ui-border);
+  border-radius: 9px;
+  box-shadow: none;
+}
+html button.attachment-file-card:hover { background: var(--ui-panel-raised); border-color: var(--ui-border-strong); }
+html button.attachment-file-card.selected { background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 52%,var(--ui-border)); box-shadow: inset 3px 0 0 var(--ui-accent); }
+html .attachment-file-icon { display: grid; width: 30px; height: 30px; place-items: center; color: var(--ui-accent); background: var(--ui-accent-soft); border-radius: 7px; }
+html .attachment-file-main { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+html .attachment-file-main strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+html .attachment-file-main small { overflow: hidden; color: var(--ui-subtle); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+html .attachment-status { display: inline-flex; align-items: center; padding: 3px 6px; color: var(--ui-muted); background: var(--ui-panel-muted); border-radius: 999px; font-size: 9px; white-space: nowrap; }
+html .attachment-status.ready { color: var(--ui-success); background: var(--ui-success-soft); }
+html .attachment-status.processing { color: var(--ui-warning); background: var(--ui-warning-soft); }
+html .attachment-status.failed { color: var(--ui-danger); background: var(--ui-danger-soft); }
+html .attachment-manager-detail { padding: 18px 20px 24px; }
+html .attachment-manager-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; gap: 8px; color: var(--ui-subtle); font-size: 12px; }
+html .attachment-detail-title { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 12px; }
+html .attachment-detail-title h3,
+html .attachment-detail-title p { margin: 0; }
+html .attachment-detail-title h3 { overflow-wrap: anywhere; font-size: 16px; }
+html .attachment-detail-title p { margin-top: 4px; color: var(--ui-subtle); font-size: 10px; }
+html .attachment-detail-metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; margin: 16px 0; }
+html .attachment-detail-metrics div { min-width: 0; padding: 9px 10px; background: var(--ui-panel-muted); border: 1px solid var(--ui-border); border-radius: 8px; }
+html .attachment-detail-metrics dt { color: var(--ui-subtle); font-size: 9px; }
+html .attachment-detail-metrics dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
+html .attachment-parse-failure { display: flex; gap: 10px; padding: 12px; color: var(--ui-danger); background: var(--ui-danger-soft); border: 1px solid color-mix(in srgb,var(--ui-danger) 34%,var(--ui-border)); border-radius: 9px; }
+html .attachment-parse-failure > .app-icon { margin-top: 2px; }
+html .attachment-parse-failure p { margin: 4px 0 9px; color: var(--ui-muted); font-size: 11px; }
+html .attachment-parse-failure button { padding: 5px 8px; color: var(--ui-danger); background: var(--ui-panel); border-color: color-mix(in srgb,var(--ui-danger) 38%,var(--ui-border)); font-size: 10px; }
+html .attachment-source-section,
+html .attachment-chunk-section { margin-top: 18px; }
+html .attachment-source-section h4,
+html .attachment-chunk-section h4 { margin: 0 0 8px; font-size: 12px; }
+html .attachment-source-section ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+html .attachment-source-section li { display: inline-flex; align-items: center; gap: 6px; padding: 5px 7px; color: var(--ui-accent); background: var(--ui-accent-soft); border-radius: 6px; font-size: 10px; }
+html .attachment-source-section li small { color: var(--ui-subtle); }
+html .attachment-chunk-section details { margin-bottom: 6px; background: var(--ui-panel-muted); border: 1px solid var(--ui-border); border-radius: 7px; }
+html .attachment-chunk-section summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; cursor: pointer; color: var(--ui-muted); font-size: 11px; }
+html .attachment-chunk-section summary small { color: var(--ui-subtle); }
+html .attachment-chunk-section pre { max-height: 180px; margin: 0; padding: 10px; overflow: auto; color: var(--ui-code-text); background: var(--ui-code-bg); border-radius: 0 0 7px 7px; font: 10px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
 @media (max-width: 1499px) {
   html .chat-shell { grid-template-columns: 224px minmax(0,1fr); }
   html .canvas-body { grid-template-columns: 210px minmax(0,1fr) 340px; }
@@ -2160,6 +2262,11 @@ html .run-result-heading h4 { margin-block: 0; }
   html .agent-runs-layout { grid-template-columns: minmax(0,1fr); overflow-y: auto; }
   html .run-list { max-height: 28dvh; flex: 0 0 auto; }
   html .run-detail { height: auto; min-height: 260px; overflow: visible; }
+  html .attachment-manager-backdrop { padding: 8px; }
+  html .attachment-manager { width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+  html .attachment-manager-body { grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(150px,34%) minmax(0,1fr); }
+  html .attachment-manager-list { border-right: 0; border-bottom: 1px solid var(--ui-border); }
+  html .attachment-detail-metrics { grid-template-columns: minmax(0,1fr); }
 }
 
 @media (hover: none) and (max-width: 760px) {

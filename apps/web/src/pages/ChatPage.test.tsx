@@ -6,7 +6,7 @@ import{ApiError}from'../lib/api';
 import{parseChatMessage}from'../lib/chatAttachments';
 
 const apiMock=vi.hoisted(()=>({
- workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),uploadAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
+ workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),attachments:vi.fn(),attachment:vi.fn(),uploadAttachment:vi.fn(),reparseAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
  chatStream:undefined as ReturnType<typeof vi.fn>|undefined,cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
  createWorkflow:vi.fn(),renameWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
 }));
@@ -31,7 +31,9 @@ beforeEach(()=>{
  apiMock.messageSnapshot.mockImplementation(async(w:string,i:string,scope:string)=>({messages:await apiMock.messages(w,i,scope),contentRevision:1}));apiMock.regenerate.mockResolvedValue({messages:[],contentRevision:2});apiMock.agentRuns.mockResolvedValue([]);apiMock.agentRun.mockResolvedValue({});apiMock.agentRunEvents.mockResolvedValue({runId:'',events:[],nextAfterSequence:null});
  apiMock.aiSettings.mockResolvedValue({configured:false,provider:'openai-compatible',baseUrl:null,model:null,systemPrompt:'',hasApiKey:false,source:'none',persistence:'memory'});
  apiMock.aiModels.mockResolvedValue({models:[],count:0});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model',reasoningEffort:null});
- apiMock.uploadAttachment.mockResolvedValue({attachmentId:'att-1',name:'notes.md',mimeType:'text/markdown',size:8_000_000,sha256:'abc',status:'uploaded',contextCharacters:0,contextTruncated:false});apiMock.deleteAttachment.mockResolvedValue({ok:true,attachmentId:'att-1'});
+ const readyAttachment={attachmentId:'att-1',name:'notes.md',mimeType:'text/markdown',size:8_000_000,sha256:'abc',status:'uploaded',parseStatus:'ready',parser:'utf8-text',parseErrorCode:null,parseError:null,extractedCharacters:8_000_000,chunkCount:2,contextCharacters:0,contextTruncated:false,contextSources:[]};
+ apiMock.attachments.mockResolvedValue([]);apiMock.attachment.mockResolvedValue(readyAttachment);apiMock.reparseAttachment.mockResolvedValue(null);
+ apiMock.uploadAttachment.mockResolvedValue({...readyAttachment,parseStatus:'processing',parser:null,extractedCharacters:0,chunkCount:0});apiMock.deleteAttachment.mockResolvedValue({ok:true,attachmentId:'att-1'});
  apiMock.chat.mockResolvedValue({userMessage:{id:'u1',role:'user',content:'测试消息'},assistantMessage:{id:'a1',role:'assistant',content:'助手回复'}});
  apiMock.renameWorkflow.mockResolvedValue({workflowId:'wf-1',name:'新项目名称',graphRevision:1,eventRevision:1});
 });
@@ -136,12 +138,34 @@ describe('chat delivery mode',()=>{
   fireEvent.change(input,{target:{files:[file]}});
   expect(await screen.findByText('notes.md')).toBeInTheDocument();
   expect(apiMock.uploadAttachment).toHaveBeenCalledWith('wf-1','root',file);
+  await waitFor(()=>expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','root','att-1'));
   fireEvent.change(screen.getByRole('textbox'),{target:{value:'请总结附件'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
   await waitFor(()=>expect(apiMock.send).toHaveBeenCalledTimes(1));
   const stored=String(apiMock.send.mock.calls[0][2]),parsed=parseChatMessage(stored);
   expect(parsed.prompt).toBe('请总结附件');expect(parsed.attachments).toMatchObject([{attachmentId:'att-1',name:'notes.md',size:8_000_000}]);
   expect(stored).not.toContain('file context');
-  expect(screen.queryByText(/WeavePath attachments v1/)).not.toBeInTheDocument();
+ expect(screen.queryByText(/WeavePath attachments v1/)).not.toBeInTheDocument();
+ });
+
+ it('opens a route-scoped file library from the compact composer toolbar',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  apiMock.attachments.mockResolvedValue([{attachmentId:'att-parent',name:'parent.pdf',mimeType:'application/pdf',size:1200,sha256:'abc',status:'bound',parseStatus:'ready',parser:'pypdf',parseErrorCode:null,parseError:null,extractedCharacters:4200,chunkCount:2,contextCharacters:2200,contextTruncated:false,contextSources:[],messageId:3,routeInstanceId:'parent',routeTitle:'父节点',inherited:true}]);
+  renderChat();await screen.findByText('仅记录模式 · 尚未连接 AI');
+  fireEvent.click(screen.getByRole('button',{name:'路线文件'}));
+  expect(await screen.findByRole('heading',{name:'路线文件'})).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:/parent\.pdf/})).toHaveTextContent('继承自父路线');
+  expect(apiMock.attachments).toHaveBeenCalledWith('wf-1','root','route');
+ });
+
+ it('retains a failed image asset visibly but prevents it from being sent as model context',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
+  apiMock.uploadAttachment.mockResolvedValue({attachmentId:'att-image',name:'scan.png',mimeType:'image/png',size:4000,sha256:'image',status:'uploaded',parseStatus:'failed',parser:null,parseErrorCode:'attachmentOcrUnavailable',parseError:'OCR unavailable',extractedCharacters:0,chunkCount:0,contextCharacters:0,contextTruncated:false,contextSources:[]});
+  const file={name:'scan.png',type:'image/png',size:4000}as unknown as File;
+  renderChat();await screen.findByText('仅记录模式 · 尚未连接 AI');
+  fireEvent.change(document.querySelector<HTMLInputElement>('.composer-file-input')!,{target:{files:[file]}});
+  expect(await screen.findByText('图片已保存，但当前尚未配置 OCR。')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'发送'})).toBeDisabled();
+  expect(apiMock.send).not.toHaveBeenCalled();
  });
 
  it('uses the chat endpoint and renders the assistant reply when AI is configured',async()=>{

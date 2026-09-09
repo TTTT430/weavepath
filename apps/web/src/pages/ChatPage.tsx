@@ -1,5 +1,5 @@
 import{useCallback,useEffect,useMemo,useRef,useState}from'react';
-import type{AIStatus,ChatResponseDetails,Graph,Message,MessageSnapshot,WorkflowSummary}from'../domain/types';
+import type{AIStatus,ChatResponseDetails,Graph,Message,MessageSnapshot,UploadedAttachment,WorkflowSummary}from'../domain/types';
 import{api,ApiError}from'../lib/api';
 import{useI18n}from'../lib/i18n';
 import{routeLabel}from'../domain/graph';
@@ -12,7 +12,8 @@ import{AppIcon}from'../components/AppIcon';
 import{ActivityStatus}from'../components/ActivityStatus';
 import{ComposerModelPicker}from'../components/ComposerModelPicker';
 import{ChatUserMessage}from'../components/ChatUserMessage';
-import{MAX_ATTACHMENTS,MAX_ATTACHMENT_BYTES,MAX_COMPOSER_CONTENT,formatFileSize,parseChatMessage,serializeChatMessage,supportsTextAttachment,type ChatAttachment}from'../lib/chatAttachments';
+import{AttachmentManager}from'../components/AttachmentManager';
+import{MAX_ATTACHMENTS,MAX_ATTACHMENT_BYTES,MAX_COMPOSER_CONTENT,formatFileSize,parseChatMessage,serializeChatMessage,supportsAttachment,type ChatAttachment}from'../lib/chatAttachments';
 import{notifyWorkflowChanged,type WorkflowChangedEvent}from'../lib/workflowEvents';
 
 type ReplyState='idle'|'thinking'|'error'|'cancelled';
@@ -23,6 +24,10 @@ interface OwnedReply {owner:string;state:ReplyState;error:string;retry?:ReplyRet
 interface OwnedMessages {owner:string;items:Message[]}
 interface LifecycleRequest {requestId:string;startedAt:number}
 const PINNED_WORKFLOWS_KEY='weavepath.pinned-workflows.v1';
+
+function composerAttachment(uploaded:UploadedAttachment):ChatAttachment{
+ return{id:uploaded.attachmentId,attachmentId:uploaded.attachmentId,name:uploaded.name,mimeType:uploaded.mimeType,size:uploaded.size,sha256:uploaded.sha256,contextCharacters:uploaded.contextCharacters,contextTruncated:uploaded.contextTruncated,parseStatus:uploaded.parseStatus,parser:uploaded.parser,parseErrorCode:uploaded.parseErrorCode,parseError:uploaded.parseError};
+}
 
 function loadPinnedWorkflowIds(){
  try{
@@ -68,6 +73,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const[attachments,setAttachments]=useState<ChatAttachment[]>([]);
  const[attachmentError,setAttachmentError]=useState('');
  const[attachmentBusy,setAttachmentBusy]=useState(false);
+ const[attachmentManagerOpen,setAttachmentManagerOpen]=useState(false);
  const[error,setError]=useState('');
  const[workflowBusy,setWorkflowBusy]=useState(false);
  const[pendingOwners,setPendingOwners]=useState<Set<string>>(()=>new Set());
@@ -113,6 +119,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const inherited=inheritedState.owner===owner?inheritedState.items:[];
  const memoryOpen=memoryOpenOwner===owner;
  const memoryLoading=memoryLoadingOwner===owner;
+ const attachmentsReady=attachments.every(file=>!file.parseStatus||file.parseStatus==='ready');
  const replyState=reply.owner===owner?reply.state:'idle';
  const replyError=reply.owner===owner?reply.error:'';
  const replyPhase=reply.owner===owner?reply.phase:undefined;
@@ -437,17 +444,25 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   if(attachments.length+selected.length>MAX_ATTACHMENTS){setAttachmentError(t('attachmentLimit'));return}
   const workflow=graph?.workflowId,instance=activeRouteId;
   if(!workflow||!instance)return;
+  const targetOwner=`${workflow}:${instance}`;
   const next=[...attachments];
   setAttachmentBusy(true);
   try{
    for(const file of selected){
     if(file.size>MAX_ATTACHMENT_BYTES){setAttachmentError(t('attachmentTooLarge'));return}
-    if(!supportsTextAttachment(file.name,file.type)){setAttachmentError(t('attachmentUnsupported'));return}
-    const uploaded=await api.uploadAttachment(workflow,instance,file);
-    const item:ChatAttachment={id:uploaded.attachmentId,attachmentId:uploaded.attachmentId,name:uploaded.name,mimeType:uploaded.mimeType,size:uploaded.size,sha256:uploaded.sha256,contextCharacters:uploaded.contextCharacters,contextTruncated:uploaded.contextTruncated};
-    if(serializeChatMessage(draft,[...next,item]).length>MAX_COMPOSER_CONTENT){setAttachmentError(t('attachmentContentLimit'));return}
+    if(!supportsAttachment(file.name,file.type)){setAttachmentError(t('attachmentUnsupported'));return}
+    let uploaded=await api.uploadAttachment(workflow,instance,file),item=composerAttachment(uploaded);
+    if(activeKey.current!==targetOwner)return;
+    if(serializeChatMessage(draft,[...next,item]).length>MAX_COMPOSER_CONTENT){void api.deleteAttachment(workflow,instance,uploaded.attachmentId).catch(()=>undefined);setAttachmentError(t('attachmentContentLimit'));return}
     next.push(item);
     setAttachments([...next]);
+    while(uploaded.parseStatus==='processing'&&activeKey.current===targetOwner){
+     await new Promise(resolve=>setTimeout(resolve,300));
+     uploaded=await api.attachment(workflow,instance,uploaded.attachmentId);item=composerAttachment(uploaded);
+     const index=next.findIndex(existing=>existing.id===item.id);
+     if(index>=0){next[index]=item;setAttachments([...next])}
+    }
+    if(uploaded.parseStatus!=='ready')setAttachmentError(uploaded.parseErrorCode==='attachmentOcrUnavailable'?t('imageOcrUnavailable'):t('attachmentParseFailed'));
    }
   }catch(caught){setAttachmentError(caught instanceof ApiError&&caught.code==='attachmentTooLarge'?t('attachmentTooLarge'):caught instanceof ApiError&&caught.code==='attachmentUnsupported'?t('attachmentUnsupported'):caught instanceof ApiError&&caught.code==='attachmentUnreadable'?t('attachmentReadingFailed'):t('attachmentUploadFailed'))}
   finally{setAttachmentBusy(false)}
@@ -553,6 +568,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  async function send(){
   const text=serializeChatMessage(draft,attachments),workflow=graph?.workflowId,instance=activeRouteId;
   if(!text||!workflow||!instance||attachmentBusy)return;
+  if(attachments.some(file=>file.parseStatus&&file.parseStatus!=='ready')){setAttachmentError(t('attachmentNotReady'));return}
   if(text.length>MAX_COMPOSER_CONTENT){setAttachmentError(t('attachmentContentLimit'));return}
   const targetOwner=`${workflow}:${instance}`;
   if(!lockRoute(targetOwner))return;
@@ -695,18 +711,20 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    {stream}
    <form className="composer" onSubmit={event=>{event.preventDefault();void send()}}>
     <textarea value={draft} onChange={event=>setDraft(event.target.value)} placeholder={t('placeholder')} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();void send()}}}/>
-    {!!attachments.length&&<div className="composer-attachments" aria-label={t('attachedFiles')}>{attachments.map(file=><span className="composer-attachment" key={file.id}><AppIcon name="attachment" size={14}/><span title={file.name}>{file.name}</span><small>{formatFileSize(file.size)}</small><button type="button" aria-label={`${t('removeAttachment')}: ${file.name}`} title={t('removeAttachment')} onClick={()=>removeAttachment(file.id)}><AppIcon name="close" size={12}/></button></span>)}</div>}
+    {!!attachments.length&&<div className="composer-attachments" aria-label={t('attachedFiles')}>{attachments.map(file=><span className={`composer-attachment${file.parseStatus==='failed'?' failed':file.parseStatus==='processing'?' processing':''}`} key={file.id}><AppIcon name={file.parseStatus==='failed'?'warning':'attachment'} size={14}/><span title={file.name}>{file.name}</span><small>{file.parseStatus==='processing'?t('parseProcessing'):file.parseStatus==='failed'?t('parseFailed'):formatFileSize(file.size)}</small><button type="button" aria-label={`${t('removeAttachment')}: ${file.name}`} title={t('removeAttachment')} onClick={()=>removeAttachment(file.id)}><AppIcon name="close" size={12}/></button></span>)}</div>}
     {attachmentError&&<div className="composer-attachment-error" role="alert"><AppIcon name="warning" size={14}/><span>{attachmentError}</span></div>}
     <div className="composer-toolbar">
-     <input ref={attachmentInputRef} className="composer-file-input" type="file" multiple accept="text/*,.md,.markdown,.json,.jsonl,.csv,.tsv,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.java,.c,.h,.cpp,.hpp,.cs,.go,.rs,.rb,.php,.sh,.ps1,.sql,.toml,.ini,.cfg,.log,.tex,.r" onChange={event=>{void addAttachments(Array.from(event.target.files||[]));event.target.value=''}}/>
+     <input ref={attachmentInputRef} className="composer-file-input" type="file" multiple accept="text/*,image/*,.md,.markdown,.json,.jsonl,.csv,.tsv,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.java,.c,.h,.cpp,.hpp,.cs,.go,.rs,.rb,.php,.sh,.ps1,.sql,.toml,.ini,.cfg,.log,.tex,.r,.pdf,.docx,.xlsx,.pptx" onChange={event=>{void addAttachments(Array.from(event.target.files||[]));event.target.value=''}}/>
      <button type="button" className="composer-attach-button" aria-label={attachmentBusy?t('uploadingFiles'):t('attachFiles')} title={attachmentBusy?t('uploadingFiles'):t('attachFiles')} disabled={busy||attachmentBusy||attachments.length>=MAX_ATTACHMENTS} onClick={()=>attachmentInputRef.current?.click()}>{attachmentBusy?<span className="composer-model-spinner"/>:<AppIcon name="plus" size={17}/>}</button>
+     <button type="button" className="composer-attach-button" aria-label={t('attachmentLibrary')} title={t('attachmentLibrary')} disabled={!graph||!activeRouteId} onClick={()=>setAttachmentManagerOpen(true)}><AppIcon name="attachment" size={16}/></button>
      <span className="composer-toolbar-spacer"/>
      <ComposerModelPicker status={aiStatus} disabled={replyState==='thinking'} onChanged={setAiStatus} onOpenSettings={()=>setSettingsOpen(true)}/>
-     <button className="primary" disabled={(!draft.trim()&&!attachments.length)||busy||attachmentBusy}>{t('send')}</button>
+     <button className="primary" disabled={(!draft.trim()&&!attachments.length)||busy||attachmentBusy||!attachmentsReady}>{t('send')}</button>
     </div>
    </form>
   </section>
   {settingsOpen&&<ModelSettingsDialog onClose={()=>setSettingsOpen(false)} onSaved={refreshAI}/>}
+  {attachmentManagerOpen&&graph&&activeRouteId&&<AttachmentManager workflowId={graph.workflowId} instanceId={activeRouteId} onClose={()=>setAttachmentManagerOpen(false)}/>}
   {creating&&<div className="modal-backdrop"><form className="modal" onSubmit={event=>{event.preventDefault();void create()}}><h2>{t('newWorkflow')}</h2><label>{t('workflowName')}<input autoFocus value={newName} onChange={event=>setNewName(event.target.value)}/></label><label>{t('rootTitle')}<input value={rootTitle} onChange={event=>setRootTitle(event.target.value)}/></label><p className="auto-name-hint">{t('autoNameHint')}</p><div className="modal-actions"><button type="button" onClick={()=>setCreating(false)}>{t('cancel')}</button><button className="primary" disabled={workflowBusy}>{t('createOpen')}</button></div></form></div>}
  </main>;
 }

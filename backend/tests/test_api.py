@@ -35,6 +35,12 @@ def test_large_text_attachment_is_uploaded_separately_and_materialized_as_stable
         attachment = uploaded.json()
         assert attachment["size"] == len(large_text.encode("utf-8"))
         assert attachment["status"] == "uploaded"
+        assert attachment["parseStatus"] == "processing"
+        parsed = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/A/attachments/"
+            f"{attachment['attachmentId']}"
+        ).json()
+        assert parsed["parseStatus"] == "ready"
         envelope = "[WeavePath attachments v2]\n" + json.dumps({
             "files": [{
                 "attachmentId": attachment["attachmentId"],
@@ -70,7 +76,7 @@ def test_attachment_upload_rejects_oversize_before_reading_and_wrong_route_refer
             f"/api/v1/workflows/{workflow_id}/instances/A/attachments"
             "?name=large.txt&mimeType=text%2Fplain",
             content=b"small",
-            headers={"Content-Type": "text/plain", "Content-Length": str(20 * 1024 * 1024 + 1)},
+            headers={"Content-Type": "text/plain", "Content-Length": str(50 * 1024 * 1024 + 1)},
         )
         assert too_large.status_code == 413
         assert too_large.json()["code"] == "attachmentTooLarge"

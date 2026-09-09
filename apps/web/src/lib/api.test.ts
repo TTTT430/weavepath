@@ -24,7 +24,7 @@ describe('agent runtime API contract',()=>{
  });
 
  it('uploads file bytes separately from chat JSON and can discard an unbound upload',async()=>{
-  const metadata={attachmentId:'att-1',name:'large notes.md',mimeType:'text/markdown',size:8_000_000,sha256:'abc',status:'uploaded',contextCharacters:0,contextTruncated:false};
+  const metadata={attachmentId:'att-1',name:'large notes.md',mimeType:'text/markdown',size:8_000_000,sha256:'abc',status:'uploaded',parseStatus:'ready',parser:'utf8-text',parseErrorCode:null,parseError:null,extractedCharacters:7,chunkCount:1,contextCharacters:0,contextTruncated:false,contextSources:[]};
   const fetchMock=vi.fn()
    .mockResolvedValueOnce(response(201,metadata))
    .mockResolvedValueOnce(response(200,{ok:true,attachmentId:'att-1'}));
@@ -34,7 +34,24 @@ describe('agent runtime API contract',()=>{
   expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/workflows/wf/instances/route%2Fa/attachments?name=large%20notes.md&mimeType=text%2Fmarkdown');
   expect(fetchMock.mock.calls[0][1]).toMatchObject({method:'POST',body:file,headers:{Accept:'application/json','Content-Type':'text/markdown'}});
   await api.deleteAttachment('wf','route/a','att/1');
-  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/workflows/wf/instances/route%2Fa/attachments/att%2F1');
+ expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/workflows/wf/instances/route%2Fa/attachments/att%2F1');
+ });
+
+ it('lists route assets and uses explicit inspect and reparse endpoints',async()=>{
+  const metadata={attachmentId:'att-1',name:'paper.pdf',mimeType:'application/pdf',size:100,sha256:'abc',status:'uploaded',parseStatus:'ready',parser:'pypdf',parseErrorCode:null,parseError:null,extractedCharacters:20,chunkCount:1,contextCharacters:0,contextTruncated:false,contextSources:[]};
+  const fetchMock=vi.fn()
+   .mockResolvedValueOnce(response(200,{attachments:[metadata]}))
+   .mockResolvedValueOnce(response(200,{...metadata,chunks:[{ordinal:1,locator:'page 1',characters:20,preview:'content'}]}))
+   .mockResolvedValueOnce(response(200,metadata));
+  vi.stubGlobal('fetch',fetchMock);
+  expect(await api.attachments('wf','route/a')).toEqual([metadata]);
+  expect((await api.attachment('wf','route/a','att/1')).chunks?.[0].locator).toBe('page 1');
+  expect((await api.reparseAttachment('wf','route/a','att/1')).parser).toBe('pypdf');
+  expect(fetchMock.mock.calls.map(call=>call[0])).toEqual([
+   '/api/v1/workflows/wf/instances/route%2Fa/attachments?scope=route',
+   '/api/v1/workflows/wf/instances/route%2Fa/attachments/att%2F1',
+   '/api/v1/workflows/wf/instances/route%2Fa/attachments/att%2F1/reparse',
+  ]);
  });
 
  it('keeps the persisted run id on an error response',async()=>{

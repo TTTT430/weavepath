@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import sqlite3
@@ -11,7 +12,7 @@ from threading import Event, Lock
 from time import perf_counter
 from typing import BinaryIO, Callable, Literal, TypeVar
 
-from fastapi import FastAPI, Query, Request
+from fastapi import BackgroundTasks, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
@@ -22,22 +23,12 @@ from api.llm import LLMClient, LLMUnavailable, OpenAICompatibleLLM
 from api.model_settings import RuntimeModelSettings
 from engineering import EngineeringRepository
 from graph_core import Conflict, GraphStore, NotFound, Validation
+from graph_core.attachments import MAX_ATTACHMENT_BYTES, supports_attachment
 from host_adapters.standalone import StandaloneHostAdapter
 from runtime_events import event_payload
 
 
 _StoreResource = TypeVar("_StoreResource")
-MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
-_TEXT_ATTACHMENT_EXTENSIONS = {
-    "txt", "md", "markdown", "json", "jsonl", "csv", "tsv", "yaml", "yml",
-    "xml", "html", "css", "js", "jsx", "ts", "tsx", "py", "java", "c", "h",
-    "cpp", "hpp", "cs", "go", "rs", "rb", "php", "sh", "ps1", "sql", "toml",
-    "ini", "cfg", "log", "tex", "r",
-}
-_TEXT_ATTACHMENT_MIME_TYPES = {
-    "application/json", "application/ld+json", "application/xml", "application/yaml",
-    "application/javascript", "application/x-javascript", "application/sql",
-}
 _NARROW_SQLITE_ACCESS_ERRORS = {
     "unable to open database file",
     "attempt to write a readonly database",
@@ -66,13 +57,6 @@ class AttachmentUploadError(RuntimeError):
     def __init__(self, code: str, message: str, status_code: int) -> None:
         super().__init__(message)
         self.code, self.status_code = code, status_code
-
-
-def _supports_text_attachment(name: str, mime_type: str) -> bool:
-    suffix = Path(name).suffix.lower().removeprefix(".")
-    return (mime_type.lower().startswith("text/")
-            or mime_type.lower() in _TEXT_ATTACHMENT_MIME_TYPES
-            or suffix in _TEXT_ATTACHMENT_EXTENSIONS)
 
 
 class _ProcessFileLock:
@@ -694,16 +678,26 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                  scope: Literal["local", "effective"] = "effective"):
         return graph_store.list_messages(workflow_id, instance_id, scope=scope)
 
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments")
+    def attachments(workflow_id: str, instance_id: str,
+                    scope: Literal["local", "route"] = "route"):
+        return graph_store.list_attachments(workflow_id, instance_id, scope=scope)
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/{attachment_id}")
+    def attachment(workflow_id: str, instance_id: str, attachment_id: str):
+        return graph_store.get_attachment(workflow_id, instance_id, attachment_id)
+
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments",
               status_code=201)
-    async def upload_attachment(request: Request, workflow_id: str, instance_id: str,
+    async def upload_attachment(request: Request, background_tasks: BackgroundTasks,
+                                workflow_id: str, instance_id: str,
                                 name: str = Query(..., min_length=1, max_length=255),
                                 mime_type: str = Query("text/plain", alias="mimeType",
                                                        min_length=1, max_length=200)):
-        if not _supports_text_attachment(name, mime_type):
+        if not supports_attachment(name, mime_type):
             raise AttachmentUploadError(
                 "attachmentUnsupported",
-                "Only text, code, and structured data files are supported",
+                "Only text, code, data, PDF, Word, Excel, PowerPoint, and image files are accepted",
                 415,
             )
         declared = request.headers.get("content-length")
@@ -711,37 +705,45 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             try:
                 if int(declared) > MAX_ATTACHMENT_BYTES:
                     raise AttachmentUploadError(
-                        "attachmentTooLarge", "Attachment exceeds the 20 MiB limit", 413
+                        "attachmentTooLarge", "Attachment exceeds the 50 MiB limit", 413
                     )
             except ValueError:
                 raise AttachmentUploadError(
                     "attachmentInvalid", "Invalid attachment content length", 400
                 ) from None
-        payload = bytearray()
-        async for chunk in request.stream():
-            payload.extend(chunk)
-            if len(payload) > MAX_ATTACHMENT_BYTES:
-                raise AttachmentUploadError(
-                    "attachmentTooLarge", "Attachment exceeds the 20 MiB limit", 413
-                )
-        if not payload:
-            raise AttachmentUploadError(
-                "attachmentUnreadable", "Attachment is empty", 422
-            )
+        staged = graph_store.new_attachment_staging_path()
+        digest = hashlib.sha256()
+        size = 0
         try:
-            content_text = bytes(payload).decode("utf-8-sig")
-        except UnicodeDecodeError:
-            raise AttachmentUploadError(
-                "attachmentUnreadable", "Attachment is not valid UTF-8 text", 422
-            ) from None
-        if not content_text or "\x00" in content_text:
-            raise AttachmentUploadError(
-                "attachmentUnreadable", "Attachment is not readable text", 422
+            with staged.open("xb") as target:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_ATTACHMENT_BYTES:
+                        raise AttachmentUploadError(
+                            "attachmentTooLarge", "Attachment exceeds the 50 MiB limit", 413
+                        )
+                    digest.update(chunk)
+                    target.write(chunk)
+            if not size:
+                raise AttachmentUploadError(
+                    "attachmentUnreadable", "Attachment is empty", 422
+                )
+            result = graph_store.create_attachment_from_file(
+                workflow_id, instance_id, name=name, mime_type=mime_type,
+                size_bytes=size, staged_path=staged, sha256=digest.hexdigest(),
+                parse_immediately=False,
             )
-        return graph_store.create_attachment(
-            workflow_id, instance_id, name=name, mime_type=mime_type,
-            size_bytes=len(payload), content_text=content_text,
-        )
+            background_tasks.add_task(
+                graph_store.reparse_attachment, workflow_id, instance_id,
+                result["attachmentId"],
+            )
+            return result
+        finally:
+            staged.unlink(missing_ok=True)
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/{attachment_id}/reparse")
+    def reparse_attachment(workflow_id: str, instance_id: str, attachment_id: str):
+        return graph_store.reparse_attachment(workflow_id, instance_id, attachment_id)
 
     @app.delete(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/{attachment_id}")
     def delete_attachment(workflow_id: str, instance_id: str, attachment_id: str):

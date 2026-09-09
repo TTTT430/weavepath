@@ -1,5 +1,5 @@
 import{describe,expect,it}from'vitest';
-import{MAX_ATTACHMENT_BYTES,MAX_ATTACHMENTS,MAX_COMPOSER_CONTENT,formatFileSize,parseChatMessage,serializeChatMessage,supportsTextAttachment}from'./chatAttachments';
+import{MAX_ATTACHMENT_BYTES,MAX_ATTACHMENTS,MAX_COMPOSER_CONTENT,formatFileSize,parseChatMessage,serializeChatMessage,supportsAttachment}from'./chatAttachments';
 
 describe('chat attachments',()=>{
  it('round-trips durable attachment content separately from the visible prompt',()=>{
@@ -13,15 +13,18 @@ describe('chat attachments',()=>{
   expect(content).not.toContain('file contents');
   expect(parseChatMessage(content)).toEqual({prompt:'检查大文件',attachments:[{id:'att-1',attachmentId:'att-1',name:'large.csv',mimeType:'text/csv',size:8_000_000}]});
  });
- it('does not reinterpret ordinary messages and only accepts readable text formats',()=>{
+ it('does not reinterpret ordinary messages and accepts the supported document formats',()=>{
   expect(parseChatMessage('普通消息')).toEqual({prompt:'普通消息',attachments:[]});
-  expect(supportsTextAttachment('notes.md','')).toBe(true);
- expect(supportsTextAttachment('photo.png','image/png')).toBe(false);
+  expect(supportsAttachment('notes.md','')).toBe(true);
+  expect(supportsAttachment('paper.pdf','application/pdf')).toBe(true);
+  expect(supportsAttachment('slides.pptx','')).toBe(true);
+  expect(supportsAttachment('photo.png','image/png')).toBe(true);
+  expect(supportsAttachment('archive.zip','application/zip')).toBe(false);
  });
  it('keeps a useful bounded upload budget instead of the old 100 KB placeholder',()=>{
-  expect(MAX_ATTACHMENT_BYTES).toBe(20*1024*1024);
+  expect(MAX_ATTACHMENT_BYTES).toBe(50*1024*1024);
   expect(MAX_ATTACHMENTS).toBe(5);
   expect(MAX_COMPOSER_CONTENT).toBe(4_000_000);
-  expect(formatFileSize(MAX_ATTACHMENT_BYTES)).toBe('20 MB');
+  expect(formatFileSize(MAX_ATTACHMENT_BYTES)).toBe('50 MB');
  });
 });

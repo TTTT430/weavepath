@@ -8,12 +8,16 @@ export interface ChatAttachment{
  sha256?:string
  contextCharacters?:number
  contextTruncated?:boolean
+ parseStatus?:'processing'|'ready'|'failed'
+ parser?:string|null
+ parseErrorCode?:string|null
+ parseError?:string|null
 }
 
 const PREFIX='[WeavePath attachments v1]\n';
 const REFERENCE_PREFIX='[WeavePath attachments v2]\n';
 export const MAX_ATTACHMENTS=5;
-export const MAX_ATTACHMENT_BYTES=20*1024*1024;
+export const MAX_ATTACHMENT_BYTES=50*1024*1024;
 export const MAX_COMPOSER_CONTENT=4_000_000;
 const TEXT_EXTENSIONS=new Set([
  'txt','md','markdown','json','jsonl','csv','tsv','yaml','yml','xml','html','css',
@@ -24,11 +28,16 @@ const TEXT_MIME_TYPES=new Set([
  'application/json','application/ld+json','application/xml','application/yaml',
  'application/javascript','application/x-javascript','application/sql',
 ]);
+const DOCUMENT_EXTENSIONS=new Set(['pdf','docx','xlsx','pptx']);
+const IMAGE_EXTENSIONS=new Set(['png','jpg','jpeg','webp','tif','tiff','bmp']);
 
-export function supportsTextAttachment(name:string,mimeType:string){
+export function supportsAttachment(name:string,mimeType:string){
  const extension=name.includes('.')?name.split('.').pop()!.toLocaleLowerCase():'';
- return mimeType.startsWith('text/')||TEXT_MIME_TYPES.has(mimeType)||TEXT_EXTENSIONS.has(extension);
+ return mimeType.startsWith('text/')||mimeType.startsWith('image/')||TEXT_MIME_TYPES.has(mimeType)||TEXT_EXTENSIONS.has(extension)||DOCUMENT_EXTENSIONS.has(extension)||IMAGE_EXTENSIONS.has(extension);
 }
+
+/** Backward-compatible alias for integrations using the original helper. */
+export const supportsTextAttachment=supportsAttachment;
 
 export function serializeChatMessage(prompt:string,attachments:ChatAttachment[]){
  const clean=prompt.trim();

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 import sqlite3
+import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
@@ -11,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from graph_core.attachments import (MAX_ATTACHMENT_BYTES, AttachmentParseError,
+                                    parse_attachment)
 from graph_core.migrations import run_migrations
 
 
@@ -48,7 +52,6 @@ def _stable_json(value: Any) -> str:
 
 _ATTACHMENT_MESSAGE_PREFIX = "[WeavePath attachments v1]\n"
 _ATTACHMENT_REFERENCE_PREFIX = "[WeavePath attachments v2]\n"
-_MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 _ATTACHMENT_CONTEXT_CHARS = 96_000
 _ATTACHMENT_CHUNK_CHARS = 6_000
 
@@ -81,9 +84,8 @@ def _select_attachment_context(content: str, prompt: str,
                                limit: int = _ATTACHMENT_CONTEXT_CHARS) -> tuple[str, bool]:
     """Choose a deterministic, prompt-aware excerpt once when a file is bound.
 
-    The complete UTF-8 text remains in SQLite. Only this persisted excerpt is
-    placed in model messages, keeping later route prefixes stable for provider
-    prompt caching instead of re-running retrieval on every request.
+    This helper remains for migrating legacy inline text rows. New files live
+    in the content-addressed object store and are retrieved from derived chunks.
     """
     if len(content) <= limit:
         return content, False
@@ -159,10 +161,15 @@ class GraphStore:
     never sees a sibling route.
     """
 
-    def __init__(self, db_path: str | Path = ":memory:") -> None:
+    def __init__(self, db_path: str | Path = ":memory:",
+                 attachment_root: str | Path | None = None) -> None:
         self.db_path = str(db_path)
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._owned_attachment_temp: tempfile.TemporaryDirectory[str] | None = None
+        self._attachment_root = (Path(attachment_root) if attachment_root is not None
+                                 else (Path(self.db_path).parent / "files"
+                                       if self.db_path != ":memory:" else None))
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=5)
         self._conn.row_factory = sqlite3.Row
@@ -170,9 +177,36 @@ class GraphStore:
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._init_schema()
+        self._migrate_legacy_attachment_payloads()
+        self._recover_processing_attachments()
+        self.cleanup_orphan_attachment_objects()
 
     def close(self) -> None:
+        if self._attachment_root is not None:
+            self.cleanup_orphan_attachment_objects()
         self._conn.close()
+        if self._owned_attachment_temp is not None:
+            self._owned_attachment_temp.cleanup()
+            self._owned_attachment_temp = None
+
+    def _files_root(self) -> Path:
+        if self._attachment_root is None:
+            self._owned_attachment_temp = tempfile.TemporaryDirectory(
+                prefix="weavepath-attachments-"
+            )
+            self._attachment_root = Path(self._owned_attachment_temp.name)
+        self._attachment_root.mkdir(parents=True, exist_ok=True)
+        return self._attachment_root
+
+    def new_attachment_staging_path(self) -> Path:
+        staging = self._files_root() / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        return staging / f"{uuid.uuid4().hex}.upload"
+
+    def _object_path(self, storage_key: str) -> Path:
+        if not re.fullmatch(r"[0-9a-f]{64}", storage_key):
+            raise Validation("invalid attachment storage key")
+        return self._files_root() / "objects" / storage_key[:2] / storage_key
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -215,45 +249,304 @@ class GraphStore:
         return prompt, references
 
     @staticmethod
-    def _attachment_projection(row: sqlite3.Row) -> dict[str, Any]:
+    def _attachment_projection(row: sqlite3.Row, *, inherited: bool = False,
+                               route_title: str | None = None) -> dict[str, Any]:
         return {
             "attachmentId": row["id"], "name": row["name"],
             "mimeType": row["mime_type"], "size": row["size_bytes"],
             "sha256": row["sha256"], "status": row["status"],
+            "parseStatus": row["parse_status"], "parser": row["parser_kind"],
+            "parseErrorCode": row["parse_error_code"], "parseError": row["parse_error"],
+            "extractedCharacters": row["extracted_characters"],
+            "chunkCount": row["chunk_count"],
             "contextCharacters": len(row["context_text"] or ""),
             "contextTruncated": bool(row["context_truncated"]),
+            "contextSources": _loads(row["context_sources_json"], []),
+            "messageId": row["message_id"], "routeInstanceId": row["instance_id"],
+            "routeTitle": route_title, "inherited": inherited,
+            "createdAt": row["created_at"], "boundAt": row["bound_at"],
         }
+
+    @staticmethod
+    def _file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _normalized_attachment_name(name: str) -> str:
+        normalized = " ".join(name.replace("\\", "/").split("/")[-1].split())
+        if not normalized or len(normalized) > 255:
+            raise Validation("attachment name must be between 1 and 255 characters")
+        return normalized
+
+    def _persist_object(self, staged_path: Path, storage_key: str) -> Path:
+        target = self._object_path(storage_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            staged_path.unlink(missing_ok=True)
+        else:
+            os.replace(staged_path, target)
+        return target
+
+    def create_attachment_from_file(
+        self, workflow_id: str, instance_id: str, *, name: str, mime_type: str,
+        size_bytes: int, staged_path: str | Path, sha256: str | None = None,
+        parse_immediately: bool = True,
+    ) -> dict[str, Any]:
+        normalized_name = self._normalized_attachment_name(name)
+        if not mime_type or len(mime_type) > 200:
+            raise Validation("invalid attachment MIME type")
+        source = Path(staged_path)
+        if (size_bytes <= 0 or size_bytes > MAX_ATTACHMENT_BYTES or not source.is_file()
+                or source.stat().st_size != size_bytes):
+            raise Validation("attachment size does not match the uploaded file")
+        digest = sha256 or self._file_sha256(source)
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise Validation("invalid attachment digest")
+        with self._lock:
+            self._instance(self._conn, workflow_id, instance_id, active=True)
+        self._persist_object(source, digest)
+        attachment_id, now = _id("att"), _now()
+        try:
+            with self.tx() as cx:
+                self._instance(cx, workflow_id, instance_id, active=True)
+                cx.execute(
+                    "INSERT INTO message_attachments("
+                    "id,workflow_id,instance_id,message_id,name,mime_type,size_bytes,content_text,"
+                    "context_text,context_truncated,sha256,status,storage_key,parse_status,"
+                    "parser_kind,parse_error_code,parse_error,extracted_characters,chunk_count,"
+                    "context_sources_json,created_at,bound_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (attachment_id, workflow_id, instance_id, None, normalized_name,
+                     mime_type, size_bytes, "", None, 0, digest, "uploaded", digest,
+                     "processing", None, None, None, 0, 0, "[]", now, None),
+                )
+        except Exception:
+            with self._lock:
+                references = self._conn.execute(
+                    "SELECT COUNT(*) FROM message_attachments WHERE storage_key=?", (digest,)
+                ).fetchone()[0]
+            if not references:
+                self._object_path(digest).unlink(missing_ok=True)
+            raise
+        if parse_immediately:
+            return self.reparse_attachment(workflow_id, instance_id, attachment_id)
+        return self.get_attachment(workflow_id, instance_id, attachment_id)
 
     def create_attachment(self, workflow_id: str, instance_id: str, *, name: str,
                           mime_type: str, size_bytes: int, content_text: str) -> dict[str, Any]:
-        normalized_name = " ".join(name.replace("\\", "/").split("/")[-1].split())
-        if not normalized_name or len(normalized_name) > 255:
-            raise Validation("attachment name must be between 1 and 255 characters")
-        if not mime_type or len(mime_type) > 200:
-            raise Validation("invalid attachment MIME type")
-        if (size_bytes <= 0 or size_bytes > _MAX_ATTACHMENT_BYTES or not content_text
-                or len(content_text.encode("utf-8")) > _MAX_ATTACHMENT_BYTES):
+        encoded = content_text.encode("utf-8")
+        if not content_text or len(encoded) > MAX_ATTACHMENT_BYTES:
             raise Validation("attachment must contain readable text")
-        attachment_id, now = _id("att"), _now()
-        digest = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
-        with self.tx() as cx:
-            self._instance(cx, workflow_id, instance_id, active=True)
-            cx.execute(
-                "INSERT INTO message_attachments("
-                "id,workflow_id,instance_id,message_id,name,mime_type,size_bytes,content_text,"
-                "context_text,context_truncated,sha256,status,created_at,bound_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (attachment_id, workflow_id, instance_id, None, normalized_name,
-                 mime_type, size_bytes, content_text, None, 0, digest,
-                 "uploaded", now, None),
+        staged = self.new_attachment_staging_path()
+        staged.write_bytes(encoded)
+        try:
+            return self.create_attachment_from_file(
+                workflow_id, instance_id, name=name, mime_type=mime_type,
+                size_bytes=len(encoded), staged_path=staged,
+                sha256=hashlib.sha256(encoded).hexdigest(),
             )
-            row = cx.execute(
-                "SELECT * FROM message_attachments WHERE id=?", (attachment_id,)
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def _index_attachment(self, row: sqlite3.Row, *, preserve_context: bool = False) -> None:
+        attachment_id = row["id"]
+        try:
+            parser, chunks = parse_attachment(
+                self._object_path(row["storage_key"]), row["name"], row["mime_type"]
+            )
+            if not chunks:
+                raise AttachmentParseError(
+                    "attachmentUnreadable", "The file contains no readable content."
+                )
+            extracted = sum(len(chunk["content"]) for chunk in chunks)
+            with self.tx() as cx:
+                current = cx.execute(
+                    "SELECT status FROM message_attachments WHERE id=?", (attachment_id,)
+                ).fetchone()
+                if not current:
+                    return
+                cx.execute("DELETE FROM attachment_chunks WHERE attachment_id=?", (attachment_id,))
+                for ordinal, chunk in enumerate(chunks, 1):
+                    content = chunk["content"]
+                    cx.execute(
+                        "INSERT INTO attachment_chunks(attachment_id,ordinal,locator,content_text,"
+                        "sha256,character_count) VALUES(?,?,?,?,?,?)",
+                        (attachment_id, ordinal, chunk["locator"], content,
+                         hashlib.sha256(content.encode("utf-8")).hexdigest(), len(content)),
+                    )
+                context_reset = "" if preserve_context else ",context_text=NULL,context_truncated=0,context_sources_json='[]'"
+                cx.execute(
+                    "UPDATE message_attachments SET content_text='',parse_status='ready',"
+                    "parser_kind=?,parse_error_code=NULL,parse_error=NULL,extracted_characters=?,"
+                    f"chunk_count=?{context_reset} WHERE id=?",
+                    (parser, extracted, len(chunks), attachment_id),
+                )
+        except AttachmentParseError as exc:
+            with self.tx() as cx:
+                cx.execute(
+                    "UPDATE message_attachments SET parse_status='failed',parser_kind=NULL,"
+                    "parse_error_code=?,parse_error=?,extracted_characters=0,chunk_count=0 "
+                    "WHERE id=?",
+                    (exc.code, str(exc), attachment_id),
+                )
+        except Exception:
+            with self.tx() as cx:
+                cx.execute(
+                    "UPDATE message_attachments SET parse_status='failed',parser_kind=NULL,"
+                    "parse_error_code='attachmentParseFailed',"
+                    "parse_error='The file parser failed unexpectedly.',"
+                    "extracted_characters=0,chunk_count=0 WHERE id=?",
+                    (attachment_id,),
+                )
+
+    def reparse_attachment(self, workflow_id: str, instance_id: str,
+                           attachment_id: str) -> dict[str, Any]:
+        with self._lock:
+            self._instance(self._conn, workflow_id, instance_id, active=True)
+            row = self._conn.execute(
+                "SELECT * FROM message_attachments WHERE id=? AND workflow_id=? AND instance_id=?",
+                (attachment_id, workflow_id, instance_id),
             ).fetchone()
-        return self._attachment_projection(row)
+            if not row:
+                raise NotFound("attachment not found")
+            if row["status"] != "uploaded" or row["message_id"] is not None:
+                raise Conflict("a bound attachment cannot be reparsed")
+            self._conn.execute(
+                "UPDATE message_attachments SET parse_status='processing',parse_error_code=NULL,"
+                "parse_error=NULL WHERE id=?", (attachment_id,)
+            )
+            self._conn.commit()
+            source = dict(row)
+            source["parse_status"] = "processing"
+        self._index_attachment(source)  # type: ignore[arg-type]
+        return self.get_attachment(workflow_id, instance_id, attachment_id)
+
+    def _migrate_legacy_attachment_payloads(self) -> None:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM message_attachments WHERE storage_key IS NULL AND content_text<>''"
+            ).fetchall()
+        for row in rows:
+            content = row["content_text"].encode("utf-8")
+            digest = hashlib.sha256(content).hexdigest()
+            staged = self.new_attachment_staging_path()
+            staged.write_bytes(content)
+            try:
+                self._persist_object(staged, digest)
+                with self.tx() as cx:
+                    cx.execute(
+                        "UPDATE message_attachments SET storage_key=?,parse_status='processing' "
+                        "WHERE id=?", (digest, row["id"]),
+                    )
+                migrated = dict(row)
+                migrated["storage_key"] = digest
+                self._index_attachment(migrated, preserve_context=bool(row["context_text"]))  # type: ignore[arg-type]
+            finally:
+                staged.unlink(missing_ok=True)
+
+    def _recover_processing_attachments(self) -> None:
+        """Resume parser work that was interrupted after durable upload."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM message_attachments "
+                "WHERE parse_status='processing' AND storage_key IS NOT NULL"
+            ).fetchall()
+        for row in rows:
+            self._index_attachment(row, preserve_context=bool(row["context_text"]))
+
+    def cleanup_orphan_attachment_objects(self) -> dict[str, int]:
+        """Remove only unreferenced objects and abandoned staging files.
+
+        The sweep is deliberately constrained to this store's dedicated files
+        directory and accepts only SHA-256 object names.
+        """
+        if self._attachment_root is None:
+            return {"removedObjects": 0, "removedStagingFiles": 0}
+        root = self._attachment_root
+        objects, staging = root / "objects", root / "staging"
+        with self._lock:
+            referenced = {row[0] for row in self._conn.execute(
+                "SELECT DISTINCT storage_key FROM message_attachments "
+                "WHERE storage_key IS NOT NULL"
+            ).fetchall()}
+        removed_objects = 0
+        if objects.is_dir():
+            for candidate in objects.glob("*/*"):
+                if (candidate.is_file() and re.fullmatch(r"[0-9a-f]{64}", candidate.name)
+                        and candidate.name not in referenced):
+                    candidate.unlink(missing_ok=True);removed_objects += 1
+            for directory in objects.iterdir():
+                if directory.is_dir():
+                    try:
+                        directory.rmdir()
+                    except OSError:
+                        pass
+        removed_staging = 0
+        if staging.is_dir():
+            for candidate in staging.glob("*.upload"):
+                if candidate.is_file():
+                    candidate.unlink(missing_ok=True);removed_staging += 1
+        return {"removedObjects": removed_objects,
+                "removedStagingFiles": removed_staging}
+
+    def list_attachments(self, workflow_id: str, instance_id: str,
+                         *, scope: str = "route") -> dict[str, Any]:
+        if scope not in {"local", "route"}:
+            raise Validation("attachment scope must be local or route")
+        with self._lock:
+            self._instance(self._conn, workflow_id, instance_id, active=True)
+            route_ids = self._route_ids(self._conn, workflow_id, instance_id)
+            selected_ids = [instance_id] if scope == "local" else route_ids
+            placeholders = ",".join("?" for _ in selected_ids)
+            rows = self._conn.execute(
+                "SELECT ma.*,ci.title AS route_title FROM message_attachments ma "
+                "JOIN conversation_instances ci ON ci.id=ma.instance_id "
+                f"WHERE ma.workflow_id=? AND ma.instance_id IN ({placeholders}) "
+                "ORDER BY ma.created_at,ma.id",
+                (workflow_id, *selected_ids),
+            ).fetchall()
+            attachments = [self._attachment_projection(
+                row, inherited=row["instance_id"] != instance_id,
+                route_title=row["route_title"],
+            ) for row in rows]
+        return {"workflowId": workflow_id, "instanceId": instance_id,
+                "scope": scope, "attachments": attachments}
+
+    def get_attachment(self, workflow_id: str, instance_id: str,
+                       attachment_id: str) -> dict[str, Any]:
+        with self._lock:
+            current = self._instance(self._conn, workflow_id, instance_id, active=True)
+            route_ids = self._route_ids(self._conn, workflow_id, instance_id)
+            row = self._conn.execute(
+                "SELECT ma.*,ci.title AS route_title FROM message_attachments ma "
+                "JOIN conversation_instances ci ON ci.id=ma.instance_id "
+                "WHERE ma.id=? AND ma.workflow_id=?",
+                (attachment_id, workflow_id),
+            ).fetchone()
+            if not row or row["instance_id"] not in route_ids:
+                raise NotFound("attachment not found on this route")
+            projection = self._attachment_projection(
+                row, inherited=row["instance_id"] != current["id"],
+                route_title=row["route_title"],
+            )
+            chunks = self._conn.execute(
+                "SELECT ordinal,locator,character_count,content_text FROM attachment_chunks "
+                "WHERE attachment_id=? ORDER BY ordinal LIMIT 50", (attachment_id,)
+            ).fetchall()
+            projection["chunks"] = [{
+                "ordinal": chunk["ordinal"], "locator": chunk["locator"],
+                "characters": chunk["character_count"],
+                "preview": _summary_excerpt(chunk["content_text"], 280),
+            } for chunk in chunks]
+            return projection
 
     def delete_attachment(self, workflow_id: str, instance_id: str,
                           attachment_id: str) -> dict[str, Any]:
+        storage_key: str | None = None
         with self.tx() as cx:
             self._instance(cx, workflow_id, instance_id, active=True)
             row = cx.execute(
@@ -264,8 +557,54 @@ class GraphStore:
                 raise NotFound("attachment not found")
             if row["status"] != "uploaded" or row["message_id"] is not None:
                 raise Conflict("a bound attachment cannot be deleted")
+            storage_key = row["storage_key"]
             cx.execute("DELETE FROM message_attachments WHERE id=?", (attachment_id,))
+            remaining = (cx.execute(
+                "SELECT COUNT(*) FROM message_attachments WHERE storage_key=?", (storage_key,)
+            ).fetchone()[0] if storage_key else 1)
+        if storage_key and not remaining:
+            self._object_path(storage_key).unlink(missing_ok=True)
         return {"ok": True, "attachmentId": attachment_id}
+
+    def _attachment_context(self, cx: sqlite3.Connection, row: sqlite3.Row,
+                            prompt: str) -> tuple[str, bool, list[dict[str, Any]]]:
+        chunks = cx.execute(
+            "SELECT ordinal,locator,content_text,sha256 FROM attachment_chunks "
+            "WHERE attachment_id=? ORDER BY ordinal", (row["id"],)
+        ).fetchall()
+        if not chunks and row["content_text"]:
+            context, truncated = _select_attachment_context(row["content_text"], prompt)
+            return context, truncated, [{"locator": "legacy text", "chunkOrdinal": 1}]
+        terms = _query_terms(prompt)
+        scores = []
+        for chunk in chunks:
+            lowered = chunk["content_text"].lower()
+            score = sum(min(lowered.count(term), 8) for term in terms)
+            scores.append((score, chunk["ordinal"]))
+        ordered = ([chunks[0]] + ([chunks[-1]] if len(chunks) > 1 else [])) if chunks else []
+        selected = {item["ordinal"] for item in ordered}
+        by_ordinal = {item["ordinal"]: item for item in chunks}
+        for score, ordinal in sorted(scores, key=lambda item: (-item[0], item[1])):
+            if score > 0 and ordinal not in selected:
+                ordered.append(by_ordinal[ordinal]); selected.add(ordinal)
+        for chunk in chunks:
+            if chunk["ordinal"] not in selected:
+                ordered.append(chunk); selected.add(chunk["ordinal"])
+        chosen: list[sqlite3.Row] = []
+        used = 0
+        for chunk in ordered:
+            block_size = len(chunk["content_text"]) + len(chunk["locator"]) + 32
+            if chosen and used + block_size > _ATTACHMENT_CONTEXT_CHARS:
+                continue
+            chosen.append(chunk); used += block_size
+        chosen.sort(key=lambda item: item["ordinal"])
+        blocks = [f"[Source: {chunk['locator']}]\n{chunk['content_text']}" for chunk in chosen]
+        sources = [{
+            "attachmentId": row["id"], "name": row["name"],
+            "chunkOrdinal": chunk["ordinal"], "locator": chunk["locator"],
+            "chunkSha256": chunk["sha256"],
+        } for chunk in chosen]
+        return "\n\n".join(blocks), len(chosen) < len(chunks), sources
 
     def _bind_message_attachments(self, cx: sqlite3.Connection, workflow_id: str,
                                   instance_id: str, message_id: int, role: str,
@@ -289,15 +628,18 @@ class GraphStore:
                 raise Validation("attachment does not belong to this conversation route")
             if row["message_id"] is not None and row["message_id"] != message_id:
                 raise Conflict("attachment is already bound to another message")
+            if row["parse_status"] != "ready":
+                raise Validation("attachment parsing has not completed successfully")
             if (reference.get("name") != row["name"]
                     or reference.get("mimeType") != row["mime_type"]
                     or reference.get("size") != row["size_bytes"]):
                 raise Validation("attachment metadata does not match the uploaded file")
-            context_text, truncated = _select_attachment_context(row["content_text"], prompt)
+            context_text, truncated, sources = self._attachment_context(cx, row, prompt)
             cx.execute(
                 "UPDATE message_attachments SET message_id=?,context_text=?,"
-                "context_truncated=?,status='bound',bound_at=? WHERE id=?",
-                (message_id, context_text, 1 if truncated else 0, now, attachment_id),
+                "context_truncated=?,context_sources_json=?,status='bound',bound_at=? WHERE id=?",
+                (message_id, context_text, 1 if truncated else 0,
+                 _stable_json(sources), now, attachment_id),
             )
             selected_ids.append(attachment_id)
         placeholders = ",".join("?" for _ in selected_ids)

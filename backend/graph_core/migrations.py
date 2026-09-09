@@ -167,6 +167,14 @@ CREATE TABLE IF NOT EXISTS message_attachments(
     context_truncated INTEGER NOT NULL DEFAULT 0 CHECK(context_truncated IN (0,1)),
     sha256 TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('uploaded','bound')),
+    storage_key TEXT,
+    parse_status TEXT NOT NULL DEFAULT 'ready',
+    parser_kind TEXT,
+    parse_error_code TEXT,
+    parse_error TEXT,
+    extracted_characters INTEGER NOT NULL DEFAULT 0,
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    context_sources_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     bound_at TEXT
 );
@@ -174,6 +182,17 @@ CREATE INDEX IF NOT EXISTS idx_message_attachments_route
 ON message_attachments(workflow_id,instance_id,status,created_at);
 CREATE INDEX IF NOT EXISTS idx_message_attachments_message
 ON message_attachments(message_id);
+CREATE TABLE IF NOT EXISTS attachment_chunks(
+    attachment_id TEXT NOT NULL REFERENCES message_attachments(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL,
+    locator TEXT NOT NULL,
+    content_text TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    character_count INTEGER NOT NULL,
+    PRIMARY KEY(attachment_id,ordinal)
+);
+CREATE INDEX IF NOT EXISTS idx_attachment_chunks_attachment
+ON attachment_chunks(attachment_id,ordinal);
 """
 
 # Runtime v2 remains an additive preview and deliberately does not advance the
@@ -325,6 +344,26 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     # already-migrated databases without advancing the graph schema version.
     conn.executescript(V8)
     conn.executescript(ATTACHMENTS_AUXILIARY)
+    attachment_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(message_attachments)")
+    }
+    attachment_additions = {
+        "storage_key": "TEXT",
+        "parse_status": "TEXT NOT NULL DEFAULT 'ready'",
+        "parser_kind": "TEXT",
+        "parse_error_code": "TEXT",
+        "parse_error": "TEXT",
+        "extracted_characters": "INTEGER NOT NULL DEFAULT 0",
+        "chunk_count": "INTEGER NOT NULL DEFAULT 0",
+        "context_sources_json": "TEXT NOT NULL DEFAULT '[]'",
+    }
+    for name, declaration in attachment_additions.items():
+        if name not in attachment_columns:
+            conn.execute(f"ALTER TABLE message_attachments ADD COLUMN {name} {declaration}")
+    conn.execute(
+        "UPDATE message_attachments SET extracted_characters=LENGTH(content_text) "
+        "WHERE extracted_characters=0 AND content_text<>''"
+    )
     runtime_applied = {
         row[0] for row in conn.execute("SELECT version FROM runtime_schema_migrations")
     }
