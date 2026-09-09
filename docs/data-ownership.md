@@ -11,6 +11,7 @@ WeavePath 保存完成 Agent 工作路线所需的最小数据。图元数据由
 | Host task/session ID | 全局 SQLite | 是 | 只保存 binding 和必要 capability |
 | Codex/Claude transcript | 对应宿主 | 否 | 按需 inspect；索引需用户开启 |
 | Standalone transcript | 全局 SQLite | 是 | Local Chat 自己拥有 |
+| Local Chat 文本附件 | 全局 SQLite | 是 | 单文件最多 20 MiB；原文与固化的模型摘录独立保存，消息只存路线受限引用；不能跨 workflow/instance 复用 |
 | Checkpoint | 全局 SQLite | 是 | 分支时记录不可变锚点、创建时快照并绑定具体 instance/revision；运行时上下文沿 parent 路线动态读取 |
 | Foundation、route digest | 全局 SQLite（planned） | 尚未实现 | 未来必须绑定具体 instance/checkpoint |
 | Agent run brief、状态、step、event | 全局 SQLite | 是 | Runtime v2 本机 preview；run 绑定具体 instance/revision，并保存取消、重试 lineage 与审批状态 |

@@ -15,6 +15,92 @@ def test_chat_input_accepts_a_useful_text_attachment_payload():
     assert ChatInput(content=payload).content == payload
 
 
+def test_large_text_attachment_is_uploaded_separately_and_materialized_as_stable_context():
+    store = GraphStore(":memory:")
+    with TestClient(create_app(store, DisabledLLM())) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Workflow", "rootTitle": "A", "rootInstanceId": "A",
+        }).json()
+        workflow_id = graph["workflowId"]
+        large_text = ("start\n" + "ordinary data\n" * 170_000
+                      + "needle finding for the requested analysis\n" + "tail\n")
+        assert len(large_text.encode("utf-8")) > 2 * 1024 * 1024
+        uploaded = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/attachments"
+            "?name=large.txt&mimeType=text%2Fplain",
+            content=large_text.encode("utf-8"),
+            headers={"Content-Type": "text/plain"},
+        )
+        assert uploaded.status_code == 201
+        attachment = uploaded.json()
+        assert attachment["size"] == len(large_text.encode("utf-8"))
+        assert attachment["status"] == "uploaded"
+        envelope = "[WeavePath attachments v2]\n" + json.dumps({
+            "files": [{
+                "attachmentId": attachment["attachmentId"],
+                "name": attachment["name"],
+                "mimeType": attachment["mimeType"],
+                "size": attachment["size"],
+            }],
+            "prompt": "Find the needle finding",
+        })
+        saved = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/messages",
+            json={"role": "user", "content": envelope},
+        )
+        assert saved.status_code == 201
+        listed = store.list_messages(workflow_id, "A")["messages"]
+        assert listed[0]["content"].startswith("[WeavePath attachments v2]")
+        assert "ordinary data" not in listed[0]["content"]
+        materialized = store.materialize_messages(workflow_id, listed)
+        assert "Find the needle finding" in materialized[0]["content"]
+        assert "needle finding for the requested analysis" in materialized[0]["content"]
+        assert len(materialized[0]["content"]) < 110_000
+    store.close()
+
+
+def test_attachment_upload_rejects_oversize_before_reading_and_wrong_route_references():
+    store = GraphStore(":memory:")
+    with TestClient(create_app(store, DisabledLLM())) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Workflow", "rootTitle": "A", "rootInstanceId": "A",
+        }).json()
+        workflow_id = graph["workflowId"]
+        too_large = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/attachments"
+            "?name=large.txt&mimeType=text%2Fplain",
+            content=b"small",
+            headers={"Content-Type": "text/plain", "Content-Length": str(20 * 1024 * 1024 + 1)},
+        )
+        assert too_large.status_code == 413
+        assert too_large.json()["code"] == "attachmentTooLarge"
+        uploaded = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/attachments"
+            "?name=notes.txt&mimeType=text%2Fplain",
+            content=b"route A private file",
+            headers={"Content-Type": "text/plain"},
+        ).json()
+        child = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/fork",
+            json={"title": "B", "instanceId": "B"},
+        )
+        assert child.status_code == 201
+        forged = "[WeavePath attachments v2]\n" + json.dumps({
+            "files": [{
+                "attachmentId": uploaded["attachmentId"], "name": uploaded["name"],
+                "mimeType": uploaded["mimeType"], "size": uploaded["size"],
+            }],
+            "prompt": "read sibling file",
+        })
+        response = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/B/messages",
+            json={"role": "user", "content": forged},
+        )
+        assert response.status_code == 422
+        assert store.list_messages(workflow_id, "B", scope="local")["messages"] == []
+    store.close()
+
+
 class FakeLLM:
     def __init__(self):
         self.messages = []
@@ -144,6 +230,40 @@ def test_ai_status_and_route_aware_chat_round_trip():
         assert [(item["role"], item["content"]) for item in listed] == [
             ("user", "question"), ("assistant", "assistant answer")
         ]
+    store.close()
+
+
+def test_chat_model_receives_bound_attachment_context_not_storage_references():
+    store = GraphStore(":memory:")
+    llm = FakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Workflow", "rootTitle": "A", "rootInstanceId": "A",
+        }).json()
+        workflow_id = graph["workflowId"]
+        uploaded = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/attachments"
+            "?name=notes.md&mimeType=text%2Fmarkdown",
+            content="private dataset facts".encode(),
+            headers={"Content-Type": "text/markdown"},
+        ).json()
+        envelope = "[WeavePath attachments v2]\n" + json.dumps({
+            "files": [{
+                "attachmentId": uploaded["attachmentId"], "name": uploaded["name"],
+                "mimeType": uploaded["mimeType"], "size": uploaded["size"],
+            }],
+            "prompt": "summarize the file",
+        })
+        response = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/chat",
+            json={"content": envelope},
+        )
+        assert response.status_code == 200
+        provider_content = llm.messages[0]["content"]
+        assert "private dataset facts" in provider_content
+        assert "summarize the file" in provider_content
+        assert "[WeavePath attachments v2]" not in provider_content
+        assert uploaded["attachmentId"] not in provider_content
     store.close()
 
 

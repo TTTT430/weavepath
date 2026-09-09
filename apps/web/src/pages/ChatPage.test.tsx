@@ -6,7 +6,7 @@ import{ApiError}from'../lib/api';
 import{parseChatMessage}from'../lib/chatAttachments';
 
 const apiMock=vi.hoisted(()=>({
- workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),send:vi.fn(),chat:vi.fn(),
+ workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),uploadAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
  chatStream:undefined as ReturnType<typeof vi.fn>|undefined,cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
  createWorkflow:vi.fn(),renameWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
 }));
@@ -31,6 +31,7 @@ beforeEach(()=>{
  apiMock.messageSnapshot.mockImplementation(async(w:string,i:string,scope:string)=>({messages:await apiMock.messages(w,i,scope),contentRevision:1}));apiMock.regenerate.mockResolvedValue({messages:[],contentRevision:2});apiMock.agentRuns.mockResolvedValue([]);apiMock.agentRun.mockResolvedValue({});apiMock.agentRunEvents.mockResolvedValue({runId:'',events:[],nextAfterSequence:null});
  apiMock.aiSettings.mockResolvedValue({configured:false,provider:'openai-compatible',baseUrl:null,model:null,systemPrompt:'',hasApiKey:false,source:'none',persistence:'memory'});
  apiMock.aiModels.mockResolvedValue({models:[],count:0});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model',reasoningEffort:null});
+ apiMock.uploadAttachment.mockResolvedValue({attachmentId:'att-1',name:'notes.md',mimeType:'text/markdown',size:8_000_000,sha256:'abc',status:'uploaded',contextCharacters:0,contextTruncated:false});apiMock.deleteAttachment.mockResolvedValue({ok:true,attachmentId:'att-1'});
  apiMock.chat.mockResolvedValue({userMessage:{id:'u1',role:'user',content:'测试消息'},assistantMessage:{id:'a1',role:'assistant',content:'助手回复'}});
  apiMock.renameWorkflow.mockResolvedValue({workflowId:'wf-1',name:'新项目名称',graphRevision:1,eventRevision:1});
 });
@@ -127,18 +128,19 @@ describe('chat delivery mode',()=>{
   await waitFor(()=>expect(apiMock.send).toHaveBeenCalledWith('wf-1','root','测试消息'));
   expect(apiMock.chat).not.toHaveBeenCalled();expect(await screen.findByText('测试消息')).toBeInTheDocument();
  });
- it('attaches a text file from the plus button and binds its contents to the user message',async()=>{
+ it('uploads a large text file separately and binds only its durable reference to the message',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:false,provider:'openai-compatible',model:null});
-  // Regression: attachments larger than the old 100 KB placeholder limit remain usable.
-  const file={name:'notes.md',type:'text/markdown',size:150_000,text:vi.fn().mockResolvedValue('file context')}as unknown as File;
+  const file={name:'notes.md',type:'text/markdown',size:8_000_000}as unknown as File;
   renderChat();await screen.findByText('仅记录模式 · 尚未连接 AI');
   const input=document.querySelector<HTMLInputElement>('.composer-file-input')!;
   fireEvent.change(input,{target:{files:[file]}});
   expect(await screen.findByText('notes.md')).toBeInTheDocument();
+  expect(apiMock.uploadAttachment).toHaveBeenCalledWith('wf-1','root',file);
   fireEvent.change(screen.getByRole('textbox'),{target:{value:'请总结附件'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
   await waitFor(()=>expect(apiMock.send).toHaveBeenCalledTimes(1));
   const stored=String(apiMock.send.mock.calls[0][2]),parsed=parseChatMessage(stored);
-  expect(parsed.prompt).toBe('请总结附件');expect(parsed.attachments).toMatchObject([{name:'notes.md',content:'file context'}]);
+  expect(parsed.prompt).toBe('请总结附件');expect(parsed.attachments).toMatchObject([{attachmentId:'att-1',name:'notes.md',size:8_000_000}]);
+  expect(stored).not.toContain('file context');
   expect(screen.queryByText(/WeavePath attachments v1/)).not.toBeInTheDocument();
  });
 

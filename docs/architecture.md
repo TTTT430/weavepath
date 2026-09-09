@@ -185,7 +185,7 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 
 schema v3 引入且在当前 schema v7 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线；schema v7 增加 `title_is_generated`，让自动标题和用户标题在重启后仍可可靠区分。旧数据迁移时统一视为用户标题，避免升级覆盖历史名称。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
 
-聊天请求的幂等记录位于辅助表 `chat_requests`，包含请求签名、状态、用户/助手消息引用和完整结果。它不会提升 GraphStore 对外 schema 版本（仍为 v7），但会在每次打开数据库时幂等创建；启动恢复会将中断请求标记为可重试。
+聊天请求的幂等记录位于辅助表 `chat_requests`，包含请求签名、状态、用户/助手消息引用和完整结果。路线附件位于辅助表 `message_attachments`：20 MiB 以内的 UTF-8 文本先独立上传，绑定用户消息时校验 workflow/instance/元数据并持久化确定性的 prompt-aware 摘录；消息本体只持久化 v2 引用 envelope，Chat 与 Agent Runtime 在上下文装配阶段才解析为同一份稳定摘录。这两个辅助表都不会提升 GraphStore 对外 schema 版本（仍为 v7），但会在每次打开数据库时幂等创建；启动恢复会将中断聊天请求标记为可重试。
 
 Chat SSE 与 Agent Run journal 共用 `runtime_events.py` 的事件词汇和 schema 版本。现有 Agent Run 的历史 payload 保持兼容，新的 Chat SSE payload 带 `schemaVersion`，客户端可以用同一时间线渲染 message/tool/run 事件。
 

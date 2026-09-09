@@ -27,6 +27,17 @@ from runtime_events import event_payload
 
 
 _StoreResource = TypeVar("_StoreResource")
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+_TEXT_ATTACHMENT_EXTENSIONS = {
+    "txt", "md", "markdown", "json", "jsonl", "csv", "tsv", "yaml", "yml",
+    "xml", "html", "css", "js", "jsx", "ts", "tsx", "py", "java", "c", "h",
+    "cpp", "hpp", "cs", "go", "rs", "rb", "php", "sh", "ps1", "sql", "toml",
+    "ini", "cfg", "log", "tex", "r",
+}
+_TEXT_ATTACHMENT_MIME_TYPES = {
+    "application/json", "application/ld+json", "application/xml", "application/yaml",
+    "application/javascript", "application/x-javascript", "application/sql",
+}
 _NARROW_SQLITE_ACCESS_ERRORS = {
     "unable to open database file",
     "attempt to write a readonly database",
@@ -49,6 +60,19 @@ class DatabaseInstanceLockError(RuntimeError):
             f"{self.code}: Another WeavePath backend is already using database "
             f"'{self.database_path}'. Stop that backend before starting a second instance."
         )
+
+
+class AttachmentUploadError(RuntimeError):
+    def __init__(self, code: str, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.code, self.status_code = code, status_code
+
+
+def _supports_text_attachment(name: str, mime_type: str) -> bool:
+    suffix = Path(name).suffix.lower().removeprefix(".")
+    return (mime_type.lower().startswith("text/")
+            or mime_type.lower() in _TEXT_ATTACHMENT_MIME_TYPES
+            or suffix in _TEXT_ATTACHMENT_EXTENSIONS)
 
 
 class _ProcessFileLock:
@@ -228,8 +252,8 @@ class MessageInput(CamelModel):
 
 
 class ChatInput(CamelModel):
-    # Text attachments are stored inside the durable user-message envelope.
-    # The UI enforces 2 MiB per file and a 4M-character combined budget.
+    # Durable user messages carry only the v2 attachment references. Legacy
+    # v1 inline envelopes still need the historical 4M-character read budget.
     content: str = Field(min_length=1, max_length=4_000_000)
     idempotency_key: str | None = Field(None, alias="idempotencyKey", max_length=200)
 
@@ -533,6 +557,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             payload["diagnostics"] = diagnostics
         return JSONResponse(payload, exc.status_code)
 
+    @app.exception_handler(AttachmentUploadError)
+    async def attachment_upload_error(_: Request, exc: AttachmentUploadError):
+        return JSONResponse({"code": exc.code, "error": str(exc)}, exc.status_code)
+
     @app.exception_handler(AgentRunError)
     async def agent_run_error(_: Request, exc: AgentRunError):
         payload = {"code": exc.code, "error": str(exc)}
@@ -555,6 +583,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
 
     def route_context(workflow_id: str, instance_id: str,
                       messages: list[dict[str, object]]) -> list[dict[str, object]]:
+        messages = graph_store.materialize_messages(workflow_id, messages)
         accepted = engineering.accepted_knowledge(workflow_id, instance_id)
         if not accepted:
             return messages
@@ -664,6 +693,59 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def messages(workflow_id: str, instance_id: str,
                  scope: Literal["local", "effective"] = "effective"):
         return graph_store.list_messages(workflow_id, instance_id, scope=scope)
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments",
+              status_code=201)
+    async def upload_attachment(request: Request, workflow_id: str, instance_id: str,
+                                name: str = Query(..., min_length=1, max_length=255),
+                                mime_type: str = Query("text/plain", alias="mimeType",
+                                                       min_length=1, max_length=200)):
+        if not _supports_text_attachment(name, mime_type):
+            raise AttachmentUploadError(
+                "attachmentUnsupported",
+                "Only text, code, and structured data files are supported",
+                415,
+            )
+        declared = request.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) > MAX_ATTACHMENT_BYTES:
+                    raise AttachmentUploadError(
+                        "attachmentTooLarge", "Attachment exceeds the 20 MiB limit", 413
+                    )
+            except ValueError:
+                raise AttachmentUploadError(
+                    "attachmentInvalid", "Invalid attachment content length", 400
+                ) from None
+        payload = bytearray()
+        async for chunk in request.stream():
+            payload.extend(chunk)
+            if len(payload) > MAX_ATTACHMENT_BYTES:
+                raise AttachmentUploadError(
+                    "attachmentTooLarge", "Attachment exceeds the 20 MiB limit", 413
+                )
+        if not payload:
+            raise AttachmentUploadError(
+                "attachmentUnreadable", "Attachment is empty", 422
+            )
+        try:
+            content_text = bytes(payload).decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise AttachmentUploadError(
+                "attachmentUnreadable", "Attachment is not valid UTF-8 text", 422
+            ) from None
+        if not content_text or "\x00" in content_text:
+            raise AttachmentUploadError(
+                "attachmentUnreadable", "Attachment is not readable text", 422
+            )
+        return graph_store.create_attachment(
+            workflow_id, instance_id, name=name, mime_type=mime_type,
+            size_bytes=len(payload), content_text=content_text,
+        )
+
+    @app.delete(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/{attachment_id}")
+    def delete_attachment(workflow_id: str, instance_id: str, attachment_id: str):
+        return graph_store.delete_attachment(workflow_id, instance_id, attachment_id)
 
     @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/context-preview")
     def context_preview(workflow_id: str, instance_id: str,

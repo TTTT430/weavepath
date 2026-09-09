@@ -386,6 +386,9 @@ class AgentRuntimeService:
             snapshot = self.graph.context_preview(
                 workflow_id, instance_id, max_chars=2_147_483_647
             )
+            snapshot["messages"] = self.graph.materialize_messages(
+                workflow_id, snapshot["messages"]
+            )
         except Validation as exc:
             # Preserve the Runtime API's stable inactive-target contract; the
             # graph projection intentionally reports this as a validation

@@ -154,6 +154,58 @@ def test_context_snapshot_is_route_specific_and_excludes_sibling():
     store.close()
 
 
+def test_agent_runtime_materializes_bound_attachment_references_before_model_call():
+    captured: list[list[dict[str, Any]]] = []
+
+    class CapturingModel:
+        def bind(self):
+            return self
+
+        def snapshot(self):
+            return {"provider": "test", "model": "attachment-capture"}
+
+        def next(self, messages, tools):
+            del tools
+            captured.append(messages)
+            return ModelTurn(final_answer="attachment received")
+
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    wf = graph["workflowId"]
+    uploaded = store.create_attachment(
+        wf, "A", name="requirements.txt", mime_type="text/plain",
+        size_bytes=28, content_text="stable attachment requirement",
+    )
+    envelope = "[WeavePath attachments v2]\n" + json.dumps({
+        "version": 2,
+        "prompt": "Review the attached requirements.",
+        "files": [{
+            "attachmentId": uploaded["attachmentId"],
+            "name": uploaded["name"],
+            "mimeType": uploaded["mimeType"],
+            "size": uploaded["size"],
+        }],
+    })
+    message = store.append_message(wf, "A", role="user", content=envelope)
+    app = create_app(store, agent_model=CapturingModel())
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/A/runs",
+            json=request(message["contentRevision"], "attachment-agent-run"),
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "completed"
+    assert len(captured) == 1
+    serialized = json.dumps(captured[0], ensure_ascii=False)
+    assert "Review the attached requirements." in serialized
+    assert "stable attachment requirement" in serialized
+    assert "[WeavePath attachments v2]" not in serialized
+    assert uploaded["attachmentId"] not in serialized
+    store.close()
+
+
 def test_frozen_context_and_hash_remain_stable_after_later_route_write():
     store = GraphStore(":memory:")
     app = create_app(
@@ -1670,7 +1722,7 @@ def test_protocol_failure_still_journals_provider_cache_usage(monkeypatch):
         detail = client.get(f"/api/v1/runs/{run['runId']}").json()
         assert detail["status"] == "failed"
         assert detail["steps"][0]["status"] == "failed"
-        assert detail["metrics"] | {
+        expected_metrics = {
             "modelStepCount": 1,
             "inputTokens": 20,
             "outputTokens": 3,
@@ -1679,5 +1731,7 @@ def test_protocol_failure_still_journals_provider_cache_usage(monkeypatch):
             "cacheReuseRatio": pytest.approx(0.6),
             "cacheCoverage": pytest.approx(1.0),
             "cacheStatus": "reported",
-        } == detail["metrics"]
+        }
+        for key, expected in expected_metrics.items():
+            assert detail["metrics"][key] == expected
     store.close()

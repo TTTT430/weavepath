@@ -20,7 +20,21 @@ describe('agent runtime API contract',()=>{
   expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/ai/models');
   expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/ai/settings/model');
   expect(fetchMock.mock.calls[1][1]).toMatchObject({method:'PATCH'});
-  expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({model:'model-b',reasoningEffort:null});
+ expect(JSON.parse(String((fetchMock.mock.calls[1][1] as RequestInit).body))).toEqual({model:'model-b',reasoningEffort:null});
+ });
+
+ it('uploads file bytes separately from chat JSON and can discard an unbound upload',async()=>{
+  const metadata={attachmentId:'att-1',name:'large notes.md',mimeType:'text/markdown',size:8_000_000,sha256:'abc',status:'uploaded',contextCharacters:0,contextTruncated:false};
+  const fetchMock=vi.fn()
+   .mockResolvedValueOnce(response(201,metadata))
+   .mockResolvedValueOnce(response(200,{ok:true,attachmentId:'att-1'}));
+  vi.stubGlobal('fetch',fetchMock);
+  const file=new File(['content'],'large notes.md',{type:'text/markdown'});
+  expect(await api.uploadAttachment('wf','route/a',file)).toEqual(metadata);
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/workflows/wf/instances/route%2Fa/attachments?name=large%20notes.md&mimeType=text%2Fmarkdown');
+  expect(fetchMock.mock.calls[0][1]).toMatchObject({method:'POST',body:file,headers:{Accept:'application/json','Content-Type':'text/markdown'}});
+  await api.deleteAttachment('wf','route/a','att/1');
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/workflows/wf/instances/route%2Fa/attachments/att%2F1');
  });
 
  it('keeps the persisted run id on an error response',async()=>{

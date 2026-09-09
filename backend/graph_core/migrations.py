@@ -150,6 +150,32 @@ CREATE TABLE IF NOT EXISTS message_response_details(
 );
 """
 
+# Large text attachments are stored separately from the message envelope.  As
+# with chat_requests, this is an additive Core Service table and does not
+# change the host-facing graph snapshot schema.
+ATTACHMENTS_AUXILIARY = """
+CREATE TABLE IF NOT EXISTS message_attachments(
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+    message_id INTEGER REFERENCES local_messages(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    content_text TEXT NOT NULL,
+    context_text TEXT,
+    context_truncated INTEGER NOT NULL DEFAULT 0 CHECK(context_truncated IN (0,1)),
+    sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('uploaded','bound')),
+    created_at TEXT NOT NULL,
+    bound_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_route
+ON message_attachments(workflow_id,instance_id,status,created_at);
+CREATE INDEX IF NOT EXISTS idx_message_attachments_message
+ON message_attachments(message_id);
+"""
+
 # Runtime v2 remains an additive preview and deliberately does not advance the
 # conversation-graph schema version.  These tables/columns belong to the Agent
 # Runtime journal, not to the graph contract consumed by host adapters.
@@ -298,6 +324,7 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     # graph schema contract (currently v7). Create it for both fresh and
     # already-migrated databases without advancing the graph schema version.
     conn.executescript(V8)
+    conn.executescript(ATTACHMENTS_AUXILIARY)
     runtime_applied = {
         row[0] for row in conn.execute("SELECT version FROM runtime_schema_migrations")
     }

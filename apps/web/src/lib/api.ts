@@ -1,4 +1,4 @@
-import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,WorkflowSummary} from '../domain/types';
+import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,UploadedAttachment,WorkflowSummary} from '../domain/types';
 const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number,public diagnostics?:ConnectionDiagnostics){super(message);this.name='ApiError'}
@@ -26,6 +26,14 @@ export const api={
  graph:(w:string)=>request<Graph>(`/workflows/${enc(w)}/graph`),
  messages:(w:string,i:string,scope:'local'|'effective'='local')=>request<{messages:Message[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`).then(x=>x.messages),
  messageSnapshot:(w:string,i:string,scope:'local'|'effective'='local')=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`),
+ uploadAttachment:async(w:string,i:string,file:File)=>{
+  const path=`${BASE}/workflows/${enc(w)}/instances/${enc(i)}/attachments?name=${enc(file.name)}&mimeType=${enc(file.type||'text/plain')}`;
+  const response=await fetch(path,{method:'POST',headers:{Accept:'application/json','Content-Type':file.type||'application/octet-stream'},body:file});
+  const data=await response.json().catch(()=>({}))as ApiErrorPayload;
+  if(!response.ok)throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code);
+  return data as UploadedAttachment;
+ },
+ deleteAttachment:(w:string,i:string,id:string)=>request<{ok:boolean;attachmentId:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/${enc(id)}`,{method:'DELETE'}),
  contextPreview:(w:string,i:string,maxChars=120000)=>request<ContextPreview>(`/workflows/${enc(w)}/instances/${enc(i)}/context-preview?maxChars=${maxChars}`),
  hostCapabilities:()=>request<{adapter:string;capabilities:Record<string,unknown>}>('/host/capabilities'),
  turns:(w:string,i:string)=>request<TurnCanvasSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/turn-tree`),
