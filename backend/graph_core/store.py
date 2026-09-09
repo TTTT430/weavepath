@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from graph_core.attachments import (MAX_ATTACHMENT_BYTES, AttachmentParseError,
-                                    parse_attachment)
+                                    parse_attachment, supports_attachment)
 from graph_core.migrations import run_migrations
 
 
@@ -152,6 +153,25 @@ def _summary_excerpt(content: str, limit: int) -> str:
     return value[: max(1, limit - 1)].rstrip(" ,，。;；:：-") + "…"
 
 
+def _search_excerpt(content: str, query: str, limit: int = 280) -> str:
+    """Return a compact excerpt centred on the first deterministic match."""
+    flattened = " ".join(content.split()).strip()
+    if len(flattened) <= limit:
+        return flattened
+    lowered = flattened.lower()
+    needles = [query.strip().lower(), *sorted(_query_terms(query), key=lambda item: (-len(item), item))]
+    offsets = [lowered.find(needle) for needle in needles if needle]
+    matches = [offset for offset in offsets if offset >= 0]
+    if not matches:
+        return _summary_excerpt(flattened, limit)
+    centre = min(matches)
+    start = max(0, centre - limit // 3)
+    end = min(len(flattened), start + limit)
+    start = max(0, end - limit)
+    excerpt = flattened[start:end].strip()
+    return ("…" if start else "") + excerpt + ("…" if end < len(flattened) else "")
+
+
 class GraphStore:
     """SQLite graph repository with route-aware, live parent inheritance.
 
@@ -179,6 +199,7 @@ class GraphStore:
         self._init_schema()
         self._migrate_legacy_attachment_payloads()
         self._recover_processing_attachments()
+        self._recover_attachment_uploads()
         self.cleanup_orphan_attachment_objects()
 
     def close(self) -> None:
@@ -202,6 +223,11 @@ class GraphStore:
         staging = self._files_root() / "staging"
         staging.mkdir(parents=True, exist_ok=True)
         return staging / f"{uuid.uuid4().hex}.upload"
+
+    def _upload_dir(self, upload_id: str) -> Path:
+        if not re.fullmatch(r"upl_[0-9a-f]{32}", upload_id):
+            raise Validation("invalid attachment upload id")
+        return self._files_root() / "uploads" / upload_id
 
     def _object_path(self, storage_key: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{64}", storage_key):
@@ -266,6 +292,223 @@ class GraphStore:
             "routeTitle": route_title, "inherited": inherited,
             "createdAt": row["created_at"], "boundAt": row["bound_at"],
         }
+
+    @staticmethod
+    def _received_chunk_digests(row: sqlite3.Row) -> dict[str, str]:
+        try:
+            raw = _loads(row["received_json"], {})
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        received: dict[str, str] = {}
+        for index, digest in raw.items():
+            try:
+                numeric = int(index)
+            except (TypeError, ValueError):
+                continue
+            if (str(numeric) == str(index) and 0 <= numeric < row["total_chunks"]
+                    and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)):
+                received[str(numeric)] = digest
+        return received
+
+    @classmethod
+    def _attachment_upload_projection(cls, row: sqlite3.Row) -> dict[str, Any]:
+        received = cls._received_chunk_digests(row)
+        received_indexes = sorted(int(index) for index in received)
+        missing = [index for index in range(row["total_chunks"])
+                   if str(index) not in received]
+        return {
+            "uploadId": row["id"], "workflowId": row["workflow_id"],
+            "instanceId": row["instance_id"], "name": row["name"],
+            "mimeType": row["mime_type"], "size": row["size_bytes"],
+            "chunkSize": row["chunk_size"], "totalChunks": row["total_chunks"],
+            "receivedChunks": received_indexes, "missingChunks": missing,
+            "status": row["status"], "attachmentId": row["attachment_id"],
+            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+        }
+
+    def _attachment_upload(self, cx: sqlite3.Connection, workflow_id: str,
+                           instance_id: str, upload_id: str) -> sqlite3.Row:
+        self._instance(cx, workflow_id, instance_id, active=True)
+        row = cx.execute(
+            "SELECT * FROM attachment_uploads WHERE id=? AND workflow_id=? AND instance_id=?",
+            (upload_id, workflow_id, instance_id),
+        ).fetchone()
+        if not row:
+            raise NotFound("attachment upload not found")
+        return row
+
+    def create_attachment_upload(
+        self, workflow_id: str, instance_id: str, *, client_key: str, name: str,
+        mime_type: str, size_bytes: int, chunk_size: int,
+    ) -> dict[str, Any]:
+        key = client_key.strip()
+        normalized_name = self._normalized_attachment_name(name)
+        if not key or len(key) > 200:
+            raise Validation("attachment upload client key must be between 1 and 200 characters")
+        if not mime_type or len(mime_type) > 200 or not supports_attachment(normalized_name, mime_type):
+            raise Validation("unsupported attachment type")
+        if size_bytes <= 0 or size_bytes > MAX_ATTACHMENT_BYTES:
+            raise Validation("attachment size is outside the supported range")
+        if chunk_size < 256 * 1024 or chunk_size > 8 * 1024 * 1024:
+            raise Validation("attachment chunk size must be between 256 KiB and 8 MiB")
+        total_chunks = (size_bytes + chunk_size - 1) // chunk_size
+        with self.tx() as cx:
+            self._instance(cx, workflow_id, instance_id, active=True)
+            existing = cx.execute(
+                "SELECT * FROM attachment_uploads "
+                "WHERE workflow_id=? AND instance_id=? AND client_key=?",
+                (workflow_id, instance_id, key),
+            ).fetchone()
+            if existing:
+                identity = (existing["name"], existing["mime_type"], existing["size_bytes"],
+                            existing["chunk_size"])
+                if identity != (normalized_name, mime_type, size_bytes, chunk_size):
+                    raise Conflict("attachment upload key was reused with different metadata")
+                return self._attachment_upload_projection(existing)
+            upload_id, now = _id("upl"), _now()
+            cx.execute(
+                "INSERT INTO attachment_uploads(id,workflow_id,instance_id,client_key,name,"
+                "mime_type,size_bytes,chunk_size,total_chunks,received_json,status,"
+                "attachment_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (upload_id, workflow_id, instance_id, key, normalized_name, mime_type,
+                 size_bytes, chunk_size, total_chunks, "{}", "uploading", None, now, now),
+            )
+            row = cx.execute("SELECT * FROM attachment_uploads WHERE id=?", (upload_id,)).fetchone()
+            return self._attachment_upload_projection(row)
+
+    def get_attachment_upload(self, workflow_id: str, instance_id: str,
+                              upload_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._attachment_upload(self._conn, workflow_id, instance_id, upload_id)
+            return self._attachment_upload_projection(row)
+
+    def write_attachment_upload_chunk(
+        self, workflow_id: str, instance_id: str, upload_id: str, chunk_index: int,
+        *, staged_path: str | Path, size_bytes: int, sha256: str,
+    ) -> dict[str, Any]:
+        source = Path(staged_path)
+        if not source.is_file() or source.stat().st_size != size_bytes:
+            raise Validation("attachment chunk size does not match uploaded bytes")
+        if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise Validation("invalid attachment chunk digest")
+        with self._lock:
+            row = self._attachment_upload(self._conn, workflow_id, instance_id, upload_id)
+            if row["status"] == "completed":
+                return self._attachment_upload_projection(row)
+            if row["status"] != "uploading":
+                raise Conflict("attachment upload is being assembled")
+            if chunk_index < 0 or chunk_index >= row["total_chunks"]:
+                raise Validation("attachment chunk index is outside the upload range")
+            expected = (row["chunk_size"] if chunk_index < row["total_chunks"] - 1
+                        else row["size_bytes"] - row["chunk_size"] * (row["total_chunks"] - 1))
+            if size_bytes != expected:
+                raise Validation("attachment chunk has an unexpected size")
+            received = self._received_chunk_digests(row)
+            previous = received.get(str(chunk_index))
+            target_dir = self._upload_dir(upload_id)
+            target = target_dir / f"{chunk_index:08d}.part"
+            if previous:
+                if previous != sha256:
+                    raise Conflict("attachment chunk was already uploaded with different bytes")
+                source.unlink(missing_ok=True)
+                return self._attachment_upload_projection(row)
+            target_dir.mkdir(parents=True, exist_ok=True)
+            os.replace(source, target)
+            received[str(chunk_index)] = sha256
+            now = _now()
+            self._conn.execute(
+                "UPDATE attachment_uploads SET received_json=?,updated_at=? WHERE id=?",
+                (_stable_json(received), now, upload_id),
+            )
+            self._conn.commit()
+            updated = self._conn.execute(
+                "SELECT * FROM attachment_uploads WHERE id=?", (upload_id,)
+            ).fetchone()
+            return self._attachment_upload_projection(updated)
+
+    def complete_attachment_upload(self, workflow_id: str, instance_id: str,
+                                   upload_id: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._attachment_upload(self._conn, workflow_id, instance_id, upload_id)
+            if row["status"] == "completed" and row["attachment_id"]:
+                return self.get_attachment(
+                    workflow_id, instance_id, row["attachment_id"]
+                )
+            received = self._received_chunk_digests(row)
+            missing = [index for index in range(row["total_chunks"])
+                       if str(index) not in received]
+            if missing:
+                raise Conflict("attachment upload is incomplete")
+            upload_dir = self._upload_dir(upload_id)
+            parts = [upload_dir / f"{index:08d}.part"
+                     for index in range(row["total_chunks"])]
+            if any(not part.is_file() for part in parts):
+                raise Conflict("attachment upload is missing durable chunk files")
+            invalid: list[int] = []
+            for index, part in enumerate(parts):
+                expected_size = (row["chunk_size"] if index < row["total_chunks"] - 1
+                                 else row["size_bytes"] - row["chunk_size"] *
+                                 (row["total_chunks"] - 1))
+                if (part.stat().st_size != expected_size
+                        or self._file_sha256(part) != received[str(index)]):
+                    invalid.append(index)
+            if invalid:
+                for index in invalid:
+                    received.pop(str(index), None)
+                    parts[index].unlink(missing_ok=True)
+                self._conn.execute(
+                    "UPDATE attachment_uploads SET received_json=?,updated_at=? WHERE id=?",
+                    (_stable_json(received), _now(), upload_id),
+                )
+                self._conn.commit()
+                raise Conflict("attachment upload contains a corrupt chunk; retry the missing chunk")
+            self._conn.execute(
+                "UPDATE attachment_uploads SET status='assembling',updated_at=? WHERE id=?",
+                (_now(), upload_id),
+            )
+            self._conn.commit()
+            staged = self.new_attachment_staging_path()
+            digest = hashlib.sha256()
+            try:
+                with staged.open("xb") as target:
+                    for part in parts:
+                        with part.open("rb") as source:
+                            for block in iter(lambda: source.read(1024 * 1024), b""):
+                                digest.update(block);target.write(block)
+                attachment = self.create_attachment_from_file(
+                    workflow_id, instance_id, name=row["name"], mime_type=row["mime_type"],
+                    size_bytes=row["size_bytes"], staged_path=staged,
+                    sha256=digest.hexdigest(), parse_immediately=False,
+                )
+                with self.tx() as cx:
+                    cx.execute(
+                        "UPDATE attachment_uploads SET status='completed',attachment_id=?,"
+                        "updated_at=? WHERE id=?",
+                        (attachment["attachmentId"], _now(), upload_id),
+                    )
+                shutil.rmtree(upload_dir, ignore_errors=True)
+                return attachment
+            except Exception:
+                self._conn.execute(
+                    "UPDATE attachment_uploads SET status='uploading',updated_at=? WHERE id=?",
+                    (_now(), upload_id),
+                )
+                self._conn.commit()
+                raise
+            finally:
+                staged.unlink(missing_ok=True)
+
+    def cancel_attachment_upload(self, workflow_id: str, instance_id: str,
+                                 upload_id: str) -> dict[str, Any]:
+        with self.tx() as cx:
+            row = self._attachment_upload(cx, workflow_id, instance_id, upload_id)
+            if row["status"] == "completed":
+                raise Conflict("a completed attachment upload cannot be cancelled")
+            cx.execute("DELETE FROM attachment_uploads WHERE id=?", (upload_id,))
+        shutil.rmtree(self._upload_dir(upload_id), ignore_errors=True)
+        return {"ok": True, "uploadId": upload_id}
 
     @staticmethod
     def _file_sha256(path: Path) -> str:
@@ -458,6 +701,38 @@ class GraphStore:
         for row in rows:
             self._index_attachment(row, preserve_context=bool(row["context_text"]))
 
+    def _recover_attachment_uploads(self) -> None:
+        """Return interrupted assembly to a resumable chunk-upload state."""
+        with self.tx() as cx:
+            cx.execute(
+                "UPDATE attachment_uploads SET status='uploading',updated_at=? "
+                "WHERE status='assembling'",
+                (_now(),),
+            )
+            rows = cx.execute(
+                "SELECT * FROM attachment_uploads WHERE status='uploading'"
+            ).fetchall()
+            for row in rows:
+                upload_dir = self._upload_dir(row["id"])
+                received = self._received_chunk_digests(row)
+                durable: dict[str, str] = {}
+                for index, digest in received.items():
+                    numeric = int(index)
+                    part = upload_dir / f"{numeric:08d}.part"
+                    expected_size = (row["chunk_size"] if numeric < row["total_chunks"] - 1
+                                     else row["size_bytes"] - row["chunk_size"] *
+                                     (row["total_chunks"] - 1))
+                    if (part.is_file() and part.stat().st_size == expected_size
+                            and self._file_sha256(part) == digest):
+                        durable[index] = digest
+                    else:
+                        part.unlink(missing_ok=True)
+                if durable != received:
+                    cx.execute(
+                        "UPDATE attachment_uploads SET received_json=?,updated_at=? WHERE id=?",
+                        (_stable_json(durable), _now(), row["id"]),
+                    )
+
     def cleanup_orphan_attachment_objects(self) -> dict[str, int]:
         """Remove only unreferenced objects and abandoned staging files.
 
@@ -467,11 +742,14 @@ class GraphStore:
         if self._attachment_root is None:
             return {"removedObjects": 0, "removedStagingFiles": 0}
         root = self._attachment_root
-        objects, staging = root / "objects", root / "staging"
+        objects, staging, uploads = root / "objects", root / "staging", root / "uploads"
         with self._lock:
             referenced = {row[0] for row in self._conn.execute(
                 "SELECT DISTINCT storage_key FROM message_attachments "
                 "WHERE storage_key IS NOT NULL"
+            ).fetchall()}
+            upload_ids = {row[0] for row in self._conn.execute(
+                "SELECT id FROM attachment_uploads WHERE status IN ('uploading','assembling')"
             ).fetchall()}
         removed_objects = 0
         if objects.is_dir():
@@ -490,6 +768,11 @@ class GraphStore:
             for candidate in staging.glob("*.upload"):
                 if candidate.is_file():
                     candidate.unlink(missing_ok=True);removed_staging += 1
+        if uploads.is_dir():
+            for directory in uploads.iterdir():
+                if (directory.is_dir() and re.fullmatch(r"upl_[0-9a-f]{32}", directory.name)
+                        and directory.name not in upload_ids):
+                    shutil.rmtree(directory, ignore_errors=True)
         return {"removedObjects": removed_objects,
                 "removedStagingFiles": removed_staging}
 
@@ -515,6 +798,67 @@ class GraphStore:
             ) for row in rows]
         return {"workflowId": workflow_id, "instanceId": instance_id,
                 "scope": scope, "attachments": attachments}
+
+    def search_attachments(self, workflow_id: str, instance_id: str, *, query: str,
+                           limit: int = 20) -> dict[str, Any]:
+        """Search parsed file chunks visible on exactly one memory route.
+
+        Ranking is deliberately local and deterministic: it never reaches a
+        sibling instance and does not mutate the excerpts frozen into an
+        already-bound model request. Vector/semantic retrieval can be layered
+        on later without changing this ownership boundary.
+        """
+        normalized = " ".join(query.split()).strip()
+        if not normalized:
+            raise Validation("attachment search query must not be blank")
+        if len(normalized) > 200:
+            raise Validation("attachment search query is too long")
+        if limit < 1 or limit > 50:
+            raise Validation("attachment search limit must be between 1 and 50")
+        terms = _query_terms(normalized)
+        phrase = normalized.lower()
+        with self._lock:
+            current = self._instance(self._conn, workflow_id, instance_id, active=True)
+            route_ids = self._route_ids(self._conn, workflow_id, instance_id)
+            placeholders = ",".join("?" for _ in route_ids)
+            rows = self._conn.execute(
+                "SELECT ma.id AS attachment_id,ma.name,ma.instance_id,ci.title AS route_title,"
+                "ac.ordinal,ac.locator,ac.content_text,ac.character_count "
+                "FROM message_attachments ma "
+                "JOIN conversation_instances ci ON ci.id=ma.instance_id "
+                "JOIN attachment_chunks ac ON ac.attachment_id=ma.id "
+                f"WHERE ma.workflow_id=? AND ma.instance_id IN ({placeholders}) "
+                "AND ma.parse_status='ready' ORDER BY ma.created_at,ma.id,ac.ordinal",
+                (workflow_id, *route_ids),
+            ).fetchall()
+        route_order = {route_id: len(route_ids) - index - 1
+                       for index, route_id in enumerate(route_ids)}
+        ranked: list[tuple[int, int, str, int, sqlite3.Row]] = []
+        for row in rows:
+            content = row["content_text"].lower()
+            name = row["name"].lower()
+            phrase_hits = min(content.count(phrase), 8) if phrase else 0
+            term_hits = sum(min(content.count(term), 8) for term in terms)
+            name_hits = ((16 if phrase and phrase in name else 0) + sum(
+                3 for term in terms if term in name
+            )) if row["ordinal"] == 1 else 0
+            score = phrase_hits * 12 + term_hits + name_hits
+            if score:
+                ranked.append((
+                    score, route_order.get(row["instance_id"], 0),
+                    row["attachment_id"], row["ordinal"], row,
+                ))
+        ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+        results = [{
+            "attachmentId": row["attachment_id"], "name": row["name"],
+            "routeInstanceId": row["instance_id"], "routeTitle": row["route_title"],
+            "inherited": row["instance_id"] != current["id"],
+            "chunkOrdinal": row["ordinal"], "locator": row["locator"],
+            "characters": row["character_count"], "score": score,
+            "preview": _search_excerpt(row["content_text"], normalized),
+        } for score, _, _, _, row in ranked[:limit]]
+        return {"workflowId": workflow_id, "instanceId": instance_id,
+                "query": normalized, "results": results}
 
     def get_attachment(self, workflow_id: str, instance_id: str,
                        attachment_id: str) -> dict[str, Any]:
@@ -558,6 +902,7 @@ class GraphStore:
             if row["status"] != "uploaded" or row["message_id"] is not None:
                 raise Conflict("a bound attachment cannot be deleted")
             storage_key = row["storage_key"]
+            cx.execute("DELETE FROM attachment_uploads WHERE attachment_id=?", (attachment_id,))
             cx.execute("DELETE FROM message_attachments WHERE id=?", (attachment_id,))
             remaining = (cx.execute(
                 "SELECT COUNT(*) FROM message_attachments WHERE storage_key=?", (storage_key,)

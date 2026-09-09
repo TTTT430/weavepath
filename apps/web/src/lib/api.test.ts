@@ -1,5 +1,5 @@
 import{afterEach,describe,expect,it,vi}from'vitest';
-import{api,ApiError}from'./api';
+import{api,ApiError,ATTACHMENT_CHUNK_SIZE,RESUMABLE_UPLOAD_THRESHOLD}from'./api';
 
 const response=(status:number,body:unknown)=>({
  ok:status>=200&&status<300,
@@ -35,6 +35,30 @@ describe('agent runtime API contract',()=>{
   expect(fetchMock.mock.calls[0][1]).toMatchObject({method:'POST',body:file,headers:{Accept:'application/json','Content-Type':'text/markdown'}});
   await api.deleteAttachment('wf','route/a','att/1');
  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/workflows/wf/instances/route%2Fa/attachments/att%2F1');
+ });
+
+ it('resumes a large upload and sends only chunks reported missing by the server',async()=>{
+  const metadata={attachmentId:'att-large',name:'dataset.txt',mimeType:'text/plain',size:RESUMABLE_UPLOAD_THRESHOLD+10,sha256:'abc',status:'uploaded',parseStatus:'processing',parser:null,parseErrorCode:null,parseError:null,extractedCharacters:0,chunkCount:0,contextCharacters:0,contextTruncated:false,contextSources:[]};
+  const session={uploadId:'upl-1',workflowId:'wf',instanceId:'route/a',name:'dataset.txt',mimeType:'text/plain',size:metadata.size,chunkSize:ATTACHMENT_CHUNK_SIZE,totalChunks:2,receivedChunks:[0],missingChunks:[1],status:'uploading',attachmentId:null};
+  const fetchMock=vi.fn()
+   .mockResolvedValueOnce(response(201,session))
+   .mockResolvedValueOnce(response(200,{...session,receivedChunks:[0,1],missingChunks:[]}))
+   .mockResolvedValueOnce(response(200,metadata));
+  vi.stubGlobal('fetch',fetchMock);
+  const chunk=new Blob(['tail']),slice=vi.fn(()=>chunk),file={name:'dataset.txt',type:'text/plain',size:metadata.size,lastModified:7,slice}as unknown as File,progress=vi.fn();
+  expect(await api.uploadAttachment('wf','route/a',file,progress)).toEqual(metadata);
+  expect(fetchMock.mock.calls.map(call=>call[0])).toEqual([
+   '/api/v1/workflows/wf/instances/route%2Fa/attachment-uploads',
+   '/api/v1/workflows/wf/instances/route%2Fa/attachment-uploads/upl-1/chunks/1',
+   '/api/v1/workflows/wf/instances/route%2Fa/attachment-uploads/upl-1/complete',
+  ]);
+  expect(JSON.parse(String((fetchMock.mock.calls[0][1]as RequestInit).body))).toMatchObject({name:'dataset.txt',size:metadata.size,chunkSize:ATTACHMENT_CHUNK_SIZE,clientKey:expect.any(String)});
+  expect(slice).toHaveBeenCalledWith(ATTACHMENT_CHUNK_SIZE,metadata.size);
+  expect((fetchMock.mock.calls[1][1]as RequestInit).body).toBe(chunk);
+  expect(progress.mock.calls.map(call=>call[0])).toEqual([
+   {uploadedBytes:ATTACHMENT_CHUNK_SIZE,totalBytes:metadata.size,uploadedChunks:1,totalChunks:2,resumedChunks:1},
+   {uploadedBytes:metadata.size,totalBytes:metadata.size,uploadedChunks:2,totalChunks:2,resumedChunks:1},
+  ]);
  });
 
  it('lists route assets and uses explicit inspect and reparse endpoints',async()=>{

@@ -4,7 +4,7 @@ import{I18nProvider}from'../lib/i18n';
 import{AttachmentManager}from'./AttachmentManager';
 
 const apiMock=vi.hoisted(()=>(
- {attachments:vi.fn(),attachment:vi.fn(),reparseAttachment:vi.fn()}
+ {attachments:vi.fn(),attachment:vi.fn(),reparseAttachment:vi.fn(),searchAttachments:vi.fn()}
 ));
 
 vi.mock('../lib/api',()=>({api:apiMock}));
@@ -31,6 +31,18 @@ describe('AttachmentManager',()=>{
   expect(screen.getByText('#2')).toBeInTheDocument();
   expect(apiMock.attachments).toHaveBeenCalledWith('wf-1','child','route');
   expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','child','att-pdf');
+ });
+
+ it('searches only through the route-scoped file endpoint and opens a matching chunk',async()=>{
+  apiMock.searchAttachments.mockResolvedValue([{attachmentId:'att-pdf',name:'research.pdf',routeInstanceId:'parent',routeTitle:'数据集',inherited:true,chunkOrdinal:2,locator:'page 3',characters:1200,score:12,preview:'private requirement'}]);
+  render(<I18nProvider><AttachmentManager workflowId="wf-1" instanceId="child" onClose={()=>undefined}/></I18nProvider>);
+  const input=await screen.findByPlaceholderText('搜索文件内容…');
+  fireEvent.change(input,{target:{value:'private requirement'}});
+  fireEvent.submit(input.closest('form')!);
+  expect(await screen.findByText('private requirement')).toBeInTheDocument();
+  expect(apiMock.searchAttachments).toHaveBeenCalledWith('wf-1','child','private requirement');
+  fireEvent.click(screen.getByText('private requirement'));
+  await waitFor(()=>expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','child','att-pdf'));
  });
 
  it('keeps unsupported image OCR visible and can retry an unbound asset',async()=>{

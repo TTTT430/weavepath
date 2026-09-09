@@ -6,7 +6,7 @@ import{ApiError}from'../lib/api';
 import{parseChatMessage}from'../lib/chatAttachments';
 
 const apiMock=vi.hoisted(()=>({
- workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),attachments:vi.fn(),attachment:vi.fn(),uploadAttachment:vi.fn(),reparseAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
+ workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),attachments:vi.fn(),searchAttachments:vi.fn(),attachment:vi.fn(),uploadAttachment:vi.fn(),reparseAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
  chatStream:undefined as ReturnType<typeof vi.fn>|undefined,cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
  createWorkflow:vi.fn(),renameWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
 }));
@@ -137,7 +137,7 @@ describe('chat delivery mode',()=>{
   const input=document.querySelector<HTMLInputElement>('.composer-file-input')!;
   fireEvent.change(input,{target:{files:[file]}});
   expect(await screen.findByText('notes.md')).toBeInTheDocument();
-  expect(apiMock.uploadAttachment).toHaveBeenCalledWith('wf-1','root',file);
+  expect(apiMock.uploadAttachment).toHaveBeenCalledWith('wf-1','root',file,expect.any(Function));
   await waitFor(()=>expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','root','att-1'));
   fireEvent.change(screen.getByRole('textbox'),{target:{value:'请总结附件'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
   await waitFor(()=>expect(apiMock.send).toHaveBeenCalledTimes(1));

@@ -1,4 +1,4 @@
-import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,UploadedAttachment,WorkflowSummary} from '../domain/types';
+import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,AttachmentSearchResult,AttachmentUploadSession,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,UploadedAttachment,WorkflowSummary} from '../domain/types';
 const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number,public diagnostics?:ConnectionDiagnostics){super(message);this.name='ApiError'}
@@ -6,6 +6,14 @@ export class ApiError extends Error {
 export type ChatStreamEvent={requestId?:string;userMessage?:Message;assistantMessage?:Message;delta?:string;code?:string;error?:string;replayed?:boolean;phase?:'connecting'|'waiting'|'receiving'|'reconnecting';attempt?:number;maxAttempts?:number;delayMs?:number;networkRoute?:'direct'|'system'}
 async function request<T>(path:string,init?:RequestInit):Promise<T>{const response=await fetch(BASE+path,{...init,headers:{Accept:'application/json',...(init?.body?{'Content-Type':'application/json'}:{}),...init?.headers}});const data=await response.json().catch(()=>({}))as ApiErrorPayload;if(!response.ok)throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code,data.runId,data.diagnostics);return data as T}
 const enc=encodeURIComponent;
+export const ATTACHMENT_CHUNK_SIZE=4*1024*1024;
+export const RESUMABLE_UPLOAD_THRESHOLD=4*1024*1024;
+export interface AttachmentUploadProgress {uploadedBytes:number;totalBytes:number;uploadedChunks:number;totalChunks:number;resumedChunks:number}
+async function rawRequest<T>(path:string,init:RequestInit):Promise<T>{const response=await fetch(BASE+path,{...init,headers:{Accept:'application/json',...init.headers}});const data=await response.json().catch(()=>({}))as ApiErrorPayload;if(!response.ok)throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code);return data as T}
+async function retryRawRequest<T>(path:string,init:RequestInit):Promise<T>{let last:unknown;for(let attempt=0;attempt<3;attempt++){try{return await rawRequest<T>(path,init)}catch(error){last=error;if(error instanceof ApiError&&error.status<500)throw error;if(attempt<2)await new Promise(resolve=>setTimeout(resolve,150*(2**attempt)))}}throw last}
+function uploadResumeStorageKey(w:string,i:string,file:File){return`weavepath.attachment-upload.v1:${enc(w)}:${enc(i)}:${enc(file.name)}:${file.size}:${file.lastModified||0}`}
+function readUploadClientKey(key:string){try{return localStorage.getItem(key)}catch{return null}}
+function writeUploadClientKey(key:string,value:string|null){try{if(value)localStorage.setItem(key,value);else localStorage.removeItem(key)}catch{/* Resumption is optional when storage is unavailable. */}}
 function normalizeTools(value:unknown):AgentToolSpec[]|undefined{return Array.isArray(value)?value.flatMap(item=>{if(!item||typeof item!=='object')return[];const x=item as Record<string,unknown>;return typeof x.name==='string'&&typeof x.version==='string'?[{name:x.name,version:x.version,...(typeof x.description==='string'?{description:x.description}:{})}]:[]}):undefined}
 function normalizeMemoryRoute(value:unknown):AgentMemoryRouteNode[]|undefined{return Array.isArray(value)?value.flatMap(item=>{if(!item||typeof item!=='object')return[];const x=item as Record<string,unknown>;return typeof x.instanceId==='string'&&typeof x.topicId==='string'&&typeof x.title==='string'?[{instanceId:x.instanceId,topicId:x.topicId,title:x.title}]:[]}):undefined}
 function normalizeApprovals(value:unknown):AgentApprovalRequest[]|undefined{return Array.isArray(value)?value.flatMap(item=>{if(!item||typeof item!=='object')return[];const x=item as Record<string,unknown>,tool=x.tool&&typeof x.tool==='object'?x.tool as Record<string,unknown>:{},approvalId=x.approvalId??x.id,toolName=x.toolName??tool.name;if(typeof approvalId!=='string'||typeof toolName!=='string')return[];const rawStatus=String(x.status??'pending'),status=rawStatus==='approved'||rawStatus==='rejected'?rawStatus:'pending';return[{approvalId,runId:(x.runId??undefined)as string|number|undefined,toolCallId:typeof x.toolCallId==='string'?x.toolCallId:undefined,toolName,toolVersion:typeof x.toolVersion==='string'?x.toolVersion:typeof tool.version==='string'?tool.version:undefined,arguments:x.arguments??x.toolArguments,sideEffect:typeof x.sideEffect==='boolean'||typeof x.sideEffect==='string'?x.sideEffect:undefined,status,createdAt:typeof x.createdAt==='string'?x.createdAt:undefined,decidedAt:typeof x.decidedAt==='string'?x.decidedAt:null}]}):undefined}
@@ -27,14 +35,40 @@ export const api={
  messages:(w:string,i:string,scope:'local'|'effective'='local')=>request<{messages:Message[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`).then(x=>x.messages),
  messageSnapshot:(w:string,i:string,scope:'local'|'effective'='local')=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`),
  attachments:(w:string,i:string,scope:'local'|'route'='route')=>request<{attachments:UploadedAttachment[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments?scope=${scope}`).then(x=>x.attachments),
+ searchAttachments:(w:string,i:string,query:string,limit=20)=>request<{results:AttachmentSearchResult[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/search?q=${enc(query)}&limit=${limit}`).then(x=>x.results),
  attachment:(w:string,i:string,id:string)=>request<UploadedAttachment>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/${enc(id)}`),
- uploadAttachment:async(w:string,i:string,file:File)=>{
+ uploadAttachment:async(w:string,i:string,file:File,onProgress?:(progress:AttachmentUploadProgress)=>void)=>{
+  if(file.size>RESUMABLE_UPLOAD_THRESHOLD){
+   const resumeKey=uploadResumeStorageKey(w,i,file),clientKey=readUploadClientKey(resumeKey)||crypto.randomUUID();
+   writeUploadClientKey(resumeKey,clientKey);
+   const base=`/workflows/${enc(w)}/instances/${enc(i)}/attachment-uploads`;
+   const session=await request<AttachmentUploadSession>(base,{method:'POST',body:JSON.stringify({clientKey,name:file.name,mimeType:file.type||'application/octet-stream',size:file.size,chunkSize:ATTACHMENT_CHUNK_SIZE})});
+   const uploadedIndexes=new Set(session.receivedChunks);
+   let uploadedChunks=uploadedIndexes.size;
+   const uploadedBytes=()=>[...uploadedIndexes].reduce((total,index)=>total+Math.max(0,Math.min(session.chunkSize,file.size-index*session.chunkSize)),0);
+   const report=()=>onProgress?.({uploadedBytes:uploadedBytes(),totalBytes:file.size,uploadedChunks,totalChunks:session.totalChunks,resumedChunks:session.receivedChunks.length});
+   report();
+   if(session.status==='completed'&&session.attachmentId){
+    for(let index=0;index<session.totalChunks;index++)uploadedIndexes.add(index);uploadedChunks=session.totalChunks;report();
+    const attachment=await request<UploadedAttachment>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/${enc(session.attachmentId)}`);writeUploadClientKey(resumeKey,null);return attachment;
+   }
+   for(const index of session.missingChunks){
+    const start=index*session.chunkSize,end=Math.min(file.size,start+session.chunkSize),chunk=file.slice(start,end);
+    await retryRawRequest<AttachmentUploadSession>(`${base}/${enc(session.uploadId)}/chunks/${index}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:chunk});
+    uploadedIndexes.add(index);uploadedChunks=uploadedIndexes.size;report();
+   }
+   const attachment=await request<UploadedAttachment>(`${base}/${enc(session.uploadId)}/complete`,{method:'POST'});writeUploadClientKey(resumeKey,null);return attachment;
+  }
+  onProgress?.({uploadedBytes:0,totalBytes:file.size,uploadedChunks:0,totalChunks:1,resumedChunks:0});
   const path=`${BASE}/workflows/${enc(w)}/instances/${enc(i)}/attachments?name=${enc(file.name)}&mimeType=${enc(file.type||'text/plain')}`;
   const response=await fetch(path,{method:'POST',headers:{Accept:'application/json','Content-Type':file.type||'application/octet-stream'},body:file});
   const data=await response.json().catch(()=>({}))as ApiErrorPayload;
   if(!response.ok)throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code);
+  onProgress?.({uploadedBytes:file.size,totalBytes:file.size,uploadedChunks:1,totalChunks:1,resumedChunks:0});
   return data as UploadedAttachment;
  },
+ attachmentUpload:(w:string,i:string,id:string)=>request<AttachmentUploadSession>(`/workflows/${enc(w)}/instances/${enc(i)}/attachment-uploads/${enc(id)}`),
+ cancelAttachmentUpload:(w:string,i:string,id:string)=>request<{ok:boolean;uploadId:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachment-uploads/${enc(id)}`,{method:'DELETE'}),
  reparseAttachment:(w:string,i:string,id:string)=>request<UploadedAttachment>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/${enc(id)}/reparse`,{method:'POST'}),
  deleteAttachment:(w:string,i:string,id:string)=>request<{ok:boolean;attachmentId:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/${enc(id)}`,{method:'DELETE'}),
  contextPreview:(w:string,i:string,maxChars=120000)=>request<ContextPreview>(`/workflows/${enc(w)}/instances/${enc(i)}/context-preview?maxChars=${maxChars}`),

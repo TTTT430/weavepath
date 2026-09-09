@@ -193,6 +193,25 @@ CREATE TABLE IF NOT EXISTS attachment_chunks(
 );
 CREATE INDEX IF NOT EXISTS idx_attachment_chunks_attachment
 ON attachment_chunks(attachment_id,ordinal);
+CREATE TABLE IF NOT EXISTS attachment_uploads(
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+    client_key TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    chunk_size INTEGER NOT NULL,
+    total_chunks INTEGER NOT NULL,
+    received_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK(status IN ('uploading','assembling','completed','cancelled')),
+    attachment_id TEXT REFERENCES message_attachments(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(workflow_id,instance_id,client_key)
+);
+CREATE INDEX IF NOT EXISTS idx_attachment_uploads_route
+ON attachment_uploads(workflow_id,instance_id,status,updated_at);
 """
 
 # Runtime v2 remains an additive preview and deliberately does not advance the

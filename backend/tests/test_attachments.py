@@ -105,6 +105,20 @@ def test_disk_assets_route_listing_and_bound_citations_are_isolated(tmp_path: Pa
         assert row["content_text"] == ""
         assert row["storage_key"] == attachment["sha256"]
 
+        own_search = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/B/attachments/search",
+            params={"q": "private requirement"},
+        ).json()["results"]
+        assert own_search[0]["attachmentId"] == attachment["attachmentId"]
+        assert own_search[0]["routeInstanceId"] == "B"
+        assert own_search[0]["inherited"] is False
+        assert "private requirement" in own_search[0]["preview"]
+        sibling_search = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/E/attachments/search",
+            params={"q": "private requirement"},
+        ).json()["results"]
+        assert sibling_search == []
+
         envelope = "[WeavePath attachments v2]\n" + json.dumps({
             "files": [{
                 "attachmentId": attachment["attachmentId"],
@@ -137,6 +151,12 @@ def test_disk_assets_route_listing_and_bound_citations_are_isolated(tmp_path: Pa
         ).json()["attachments"]
         assert inherited[0]["attachmentId"] == attachment["attachmentId"]
         assert inherited[0]["inherited"] is True
+        inherited_search = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/C/attachments/search",
+            params={"q": "private requirement"},
+        ).json()["results"]
+        assert inherited_search[0]["attachmentId"] == attachment["attachmentId"]
+        assert inherited_search[0]["inherited"] is True
         detail = client.get(
             f"/api/v1/workflows/{workflow_id}/instances/C/attachments/{attachment['attachmentId']}"
         ).json()
@@ -208,3 +228,63 @@ def test_startup_sweep_removes_only_unreferenced_objects_and_staging_files(tmp_p
     assert not orphan.exists()
     assert not staging.exists()
     store.close()
+
+
+def test_chunk_upload_resumes_after_restart_and_assembles_exact_bytes(tmp_path: Path):
+    database = tmp_path / "workspace.db"
+    chunk_size = 256 * 1024
+    content = b"a" * chunk_size + b"tail-of-file"
+    store = GraphStore(database)
+    with TestClient(create_app(store, DisabledLLM())) as client:
+        workflow = client.post("/api/v1/workflows", json={
+            "name": "Resumable", "rootTitle": "A", "rootInstanceId": "A",
+        }).json()
+        route = f"/api/v1/workflows/{workflow['workflowId']}/instances/A"
+        session = client.post(route + "/attachment-uploads", json={
+            "clientKey": "browser-file-fingerprint", "name": "large.txt",
+            "mimeType": "text/plain", "size": len(content), "chunkSize": chunk_size,
+        })
+        assert session.status_code == 201
+        upload = session.json()
+        assert upload["missingChunks"] == [0, 1]
+        second = client.put(
+            route + f"/attachment-uploads/{upload['uploadId']}/chunks/1",
+            content=content[chunk_size:],
+        )
+        assert second.status_code == 200
+        assert second.json()["receivedChunks"] == [1]
+        assert second.json()["missingChunks"] == [0]
+        duplicate = client.put(
+            route + f"/attachment-uploads/{upload['uploadId']}/chunks/1",
+            content=content[chunk_size:],
+        )
+        assert duplicate.status_code == 200
+    store.close()
+
+    reopened = GraphStore(database)
+    with TestClient(create_app(reopened, DisabledLLM())) as client:
+        route = f"/api/v1/workflows/{workflow['workflowId']}/instances/A"
+        resumed = client.post(route + "/attachment-uploads", json={
+            "clientKey": "browser-file-fingerprint", "name": "large.txt",
+            "mimeType": "text/plain", "size": len(content), "chunkSize": chunk_size,
+        }).json()
+        assert resumed["uploadId"] == upload["uploadId"]
+        assert resumed["missingChunks"] == [0]
+        assert client.put(
+            route + f"/attachment-uploads/{upload['uploadId']}/chunks/0",
+            content=content[:chunk_size],
+        ).status_code == 200
+        completed = client.post(
+            route + f"/attachment-uploads/{upload['uploadId']}/complete"
+        )
+        assert completed.status_code == 200
+        attachment = completed.json()
+        assert attachment["parseStatus"] == "processing"
+        detail = client.get(
+            route + f"/attachments/{attachment['attachmentId']}"
+        ).json()
+        assert detail["parseStatus"] == "ready"
+        object_path = (database.parent / "files" / "objects" /
+                       attachment["sha256"][:2] / attachment["sha256"])
+        assert object_path.read_bytes() == content
+    reopened.close()

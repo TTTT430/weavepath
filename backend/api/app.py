@@ -256,6 +256,15 @@ class ChatInput(CamelModel):
         return value.strip() if value is not None else None
 
 
+class AttachmentUploadSessionInput(CamelModel):
+    client_key: str = Field(alias="clientKey", min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(alias="mimeType", min_length=1, max_length=200)
+    size: int = Field(gt=0, le=MAX_ATTACHMENT_BYTES)
+    chunk_size: int = Field(4 * 1024 * 1024, alias="chunkSize",
+                            ge=256 * 1024, le=8 * 1024 * 1024)
+
+
 class RegenerateMessageInput(ChatInput):
     expected_revision: int = Field(alias="expectedRevision", ge=0)
 
@@ -683,9 +692,90 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     scope: Literal["local", "route"] = "route"):
         return graph_store.list_attachments(workflow_id, instance_id, scope=scope)
 
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/search")
+    def search_attachments(workflow_id: str, instance_id: str,
+                           q: str = Query(..., min_length=1, max_length=200),
+                           limit: int = Query(20, ge=1, le=50)):
+        return graph_store.search_attachments(
+            workflow_id, instance_id, query=q, limit=limit
+        )
+
     @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/{attachment_id}")
     def attachment(workflow_id: str, instance_id: str, attachment_id: str):
         return graph_store.get_attachment(workflow_id, instance_id, attachment_id)
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachment-uploads",
+              status_code=201)
+    def create_attachment_upload(workflow_id: str, instance_id: str,
+                                 body: AttachmentUploadSessionInput):
+        if not supports_attachment(body.name, body.mime_type):
+            raise AttachmentUploadError(
+                "attachmentUnsupported", "This attachment type is not supported", 415
+            )
+        return graph_store.create_attachment_upload(
+            workflow_id, instance_id, client_key=body.client_key, name=body.name,
+            mime_type=body.mime_type, size_bytes=body.size, chunk_size=body.chunk_size,
+        )
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachment-uploads/{upload_id}")
+    def attachment_upload(workflow_id: str, instance_id: str, upload_id: str):
+        return graph_store.get_attachment_upload(workflow_id, instance_id, upload_id)
+
+    @app.put(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachment-uploads/{upload_id}/chunks/{chunk_index}")
+    async def upload_attachment_chunk(request: Request, workflow_id: str, instance_id: str,
+                                      upload_id: str, chunk_index: int):
+        session = graph_store.get_attachment_upload(workflow_id, instance_id, upload_id)
+        if chunk_index < 0 or chunk_index >= session["totalChunks"]:
+            raise AttachmentUploadError(
+                "attachmentChunkInvalid", "Chunk index is outside the upload range", 422
+            )
+        expected = (session["chunkSize"] if chunk_index < session["totalChunks"] - 1
+                    else session["size"] - session["chunkSize"] * (session["totalChunks"] - 1))
+        declared = request.headers.get("content-length")
+        if declared:
+            try:
+                if int(declared) != expected:
+                    raise AttachmentUploadError(
+                        "attachmentChunkInvalid", "Chunk has an unexpected size", 422
+                    )
+            except ValueError:
+                raise AttachmentUploadError(
+                    "attachmentChunkInvalid", "Invalid chunk content length", 400
+                ) from None
+        staged = graph_store.new_attachment_staging_path()
+        digest, size = hashlib.sha256(), 0
+        try:
+            with staged.open("xb") as target:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > expected:
+                        raise AttachmentUploadError(
+                            "attachmentChunkInvalid", "Chunk exceeds its expected size", 422
+                        )
+                    digest.update(chunk);target.write(chunk)
+            return graph_store.write_attachment_upload_chunk(
+                workflow_id, instance_id, upload_id, chunk_index,
+                staged_path=staged, size_bytes=size, sha256=digest.hexdigest(),
+            )
+        finally:
+            staged.unlink(missing_ok=True)
+
+    @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachment-uploads/{upload_id}/complete")
+    def complete_attachment_upload(background_tasks: BackgroundTasks, workflow_id: str,
+                                   instance_id: str, upload_id: str):
+        attachment = graph_store.complete_attachment_upload(
+            workflow_id, instance_id, upload_id
+        )
+        if attachment["parseStatus"] == "processing":
+            background_tasks.add_task(
+                graph_store.reparse_attachment, workflow_id, instance_id,
+                attachment["attachmentId"],
+            )
+        return attachment
+
+    @app.delete(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachment-uploads/{upload_id}")
+    def cancel_attachment_upload(workflow_id: str, instance_id: str, upload_id: str):
+        return graph_store.cancel_attachment_upload(workflow_id, instance_id, upload_id)
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments",
               status_code=201)

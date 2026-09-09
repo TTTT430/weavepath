@@ -73,6 +73,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  const[attachments,setAttachments]=useState<ChatAttachment[]>([]);
  const[attachmentError,setAttachmentError]=useState('');
  const[attachmentBusy,setAttachmentBusy]=useState(false);
+ const[attachmentProgress,setAttachmentProgress]=useState<{name:string;uploadedBytes:number;totalBytes:number;resumedChunks:number}|null>(null);
  const[attachmentManagerOpen,setAttachmentManagerOpen]=useState(false);
  const[error,setError]=useState('');
  const[workflowBusy,setWorkflowBusy]=useState(false);
@@ -451,7 +452,10 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    for(const file of selected){
     if(file.size>MAX_ATTACHMENT_BYTES){setAttachmentError(t('attachmentTooLarge'));return}
     if(!supportsAttachment(file.name,file.type)){setAttachmentError(t('attachmentUnsupported'));return}
-    let uploaded=await api.uploadAttachment(workflow,instance,file),item=composerAttachment(uploaded);
+    setAttachmentProgress({name:file.name,uploadedBytes:0,totalBytes:file.size,resumedChunks:0});
+    let uploaded=await api.uploadAttachment(workflow,instance,file,progress=>{
+     if(activeKey.current===targetOwner)setAttachmentProgress({name:file.name,uploadedBytes:progress.uploadedBytes,totalBytes:progress.totalBytes,resumedChunks:progress.resumedChunks});
+    }),item=composerAttachment(uploaded);
     if(activeKey.current!==targetOwner)return;
     if(serializeChatMessage(draft,[...next,item]).length>MAX_COMPOSER_CONTENT){void api.deleteAttachment(workflow,instance,uploaded.attachmentId).catch(()=>undefined);setAttachmentError(t('attachmentContentLimit'));return}
     next.push(item);
@@ -465,7 +469,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
     if(uploaded.parseStatus!=='ready')setAttachmentError(uploaded.parseErrorCode==='attachmentOcrUnavailable'?t('imageOcrUnavailable'):t('attachmentParseFailed'));
    }
   }catch(caught){setAttachmentError(caught instanceof ApiError&&caught.code==='attachmentTooLarge'?t('attachmentTooLarge'):caught instanceof ApiError&&caught.code==='attachmentUnsupported'?t('attachmentUnsupported'):caught instanceof ApiError&&caught.code==='attachmentUnreadable'?t('attachmentReadingFailed'):t('attachmentUploadFailed'))}
-  finally{setAttachmentBusy(false)}
+  finally{setAttachmentBusy(false);setAttachmentProgress(null)}
  }
 
  function removeAttachment(id:string){
@@ -712,6 +716,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    <form className="composer" onSubmit={event=>{event.preventDefault();void send()}}>
     <textarea value={draft} onChange={event=>setDraft(event.target.value)} placeholder={t('placeholder')} onKeyDown={event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();void send()}}}/>
     {!!attachments.length&&<div className="composer-attachments" aria-label={t('attachedFiles')}>{attachments.map(file=><span className={`composer-attachment${file.parseStatus==='failed'?' failed':file.parseStatus==='processing'?' processing':''}`} key={file.id}><AppIcon name={file.parseStatus==='failed'?'warning':'attachment'} size={14}/><span title={file.name}>{file.name}</span><small>{file.parseStatus==='processing'?t('parseProcessing'):file.parseStatus==='failed'?t('parseFailed'):formatFileSize(file.size)}</small><button type="button" aria-label={`${t('removeAttachment')}: ${file.name}`} title={t('removeAttachment')} onClick={()=>removeAttachment(file.id)}><AppIcon name="close" size={12}/></button></span>)}</div>}
+    {attachmentProgress&&<div className="composer-upload-progress" role="status"><span><AppIcon name="attachment" size={13}/><strong title={attachmentProgress.name}>{attachmentProgress.name}</strong><small>{t(attachmentProgress.resumedChunks?'resumingUpload':'uploadingFiles')} · {Math.min(100,Math.round(attachmentProgress.uploadedBytes/Math.max(1,attachmentProgress.totalBytes)*100))}%</small></span><progress max={attachmentProgress.totalBytes} value={attachmentProgress.uploadedBytes}/></div>}
     {attachmentError&&<div className="composer-attachment-error" role="alert"><AppIcon name="warning" size={14}/><span>{attachmentError}</span></div>}
     <div className="composer-toolbar">
      <input ref={attachmentInputRef} className="composer-file-input" type="file" multiple accept="text/*,image/*,.md,.markdown,.json,.jsonl,.csv,.tsv,.yaml,.yml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.java,.c,.h,.cpp,.hpp,.cs,.go,.rs,.rb,.php,.sh,.ps1,.sql,.toml,.ini,.cfg,.log,.tex,.r,.pdf,.docx,.xlsx,.pptx" onChange={event=>{void addAttachments(Array.from(event.target.files||[]));event.target.value=''}}/>

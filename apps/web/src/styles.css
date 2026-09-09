@@ -1994,6 +1994,13 @@ html .message-attachment small { flex: 0 0 auto; color: var(--ui-subtle); font-s
 html .composer-attachment button { display: inline-grid; width: 20px; height: 20px; place-items: center; padding: 0; background: transparent; border: 0; border-radius: 5px; box-shadow: none; }
 html .composer-attachment button:hover { background: color-mix(in srgb,var(--ui-text) 8%,transparent); }
 html .composer-attachment-error { display: flex; align-items: center; gap: 5px; margin: 0 5px 3px; color: var(--ui-danger); font-size: 10px; }
+html .composer-upload-progress { display: grid; gap: 5px; margin: 0 5px 4px; padding: 7px 9px; color: var(--ui-muted); background: var(--ui-panel-muted); border: 1px solid var(--ui-border); border-radius: 8px; }
+html .composer-upload-progress > span { display: flex; min-width: 0; align-items: center; gap: 6px; }
+html .composer-upload-progress strong { min-width: 0; overflow: hidden; color: var(--ui-text); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+html .composer-upload-progress small { margin-left: auto; color: var(--ui-subtle); font-size: 9px; white-space: nowrap; }
+html .composer-upload-progress progress { width: 100%; height: 3px; overflow: hidden; appearance: none; background: var(--ui-border); border: 0; border-radius: 999px; }
+html .composer-upload-progress progress::-webkit-progress-bar { background: var(--ui-border); }
+html .composer-upload-progress progress::-webkit-progress-value { background: var(--ui-accent); border-radius: 999px; }
 html .message-attachment-list { display: flex; min-width: 0; flex-wrap: wrap; gap: 5px; margin-bottom: 5px; }
 html .composer-attachment.failed { color: var(--ui-danger); background: var(--ui-danger-soft); border-color: color-mix(in srgb,var(--ui-danger) 42%,var(--ui-border)); }
 html .composer-attachment.processing { color: var(--ui-warning); background: var(--ui-warning-soft); border-color: color-mix(in srgb,var(--ui-warning) 42%,var(--ui-border)); }
@@ -2129,6 +2136,50 @@ html .attachment-manager-body { display: grid; min-width: 0; min-height: 0; grid
 html .attachment-manager-list,
 html .attachment-manager-detail { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 html .attachment-manager-list { display: flex; flex-direction: column; gap: 7px; padding: 12px; background: var(--ui-panel-muted); border-right: 1px solid var(--ui-border); }
+html .attachment-search-form {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  min-height: 36px;
+  grid-template-columns: auto minmax(0,1fr) auto auto;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 5px 4px 10px;
+  color: var(--ui-subtle);
+  background: var(--ui-panel);
+  border: 1px solid var(--ui-border-strong);
+  border-radius: 9px;
+  box-shadow: 0 5px 14px color-mix(in srgb,var(--ui-text) 6%,transparent);
+}
+html .attachment-search-form:focus-within { color: var(--ui-accent); border-color: var(--ui-accent); }
+html .attachment-search-form input { min-width: 0; padding: 4px 3px; color: var(--ui-text); background: transparent; border: 0; outline: 0; box-shadow: none; font-size: 11px; }
+html .attachment-search-form input::placeholder { color: var(--ui-subtle); }
+html .attachment-search-form .icon-button { display: grid; width: 26px; height: 26px; padding: 0; place-items: center; color: var(--ui-muted); background: transparent; border-color: transparent; border-radius: 6px; }
+html .attachment-search-form .icon-button:hover:not(:disabled) { color: var(--ui-text); background: var(--ui-panel-muted); border-color: var(--ui-border); }
+html .attachment-search-form .composer-model-spinner { width: 12px; height: 12px; }
+html .attachment-search-count { padding: 1px 3px 2px; color: var(--ui-subtle); font-size: 9px; }
+html button.attachment-search-card {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+  padding: 10px;
+  color: var(--ui-text);
+  text-align: left;
+  background: var(--ui-panel);
+  border-color: var(--ui-border);
+  border-radius: 9px;
+  box-shadow: none;
+}
+html button.attachment-search-card:hover { background: var(--ui-panel-raised); border-color: var(--ui-border-strong); }
+html button.attachment-search-card.selected { background: var(--ui-accent-soft); border-color: color-mix(in srgb,var(--ui-accent) 52%,var(--ui-border)); box-shadow: inset 3px 0 0 var(--ui-accent); }
+html .attachment-search-card-head { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 9px; }
+html .attachment-search-card-head strong { min-width: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+html .attachment-search-card-head small,
+html .attachment-search-route { flex: 0 0 auto; color: var(--ui-subtle); font-size: 9px; }
+html .attachment-search-preview { display: -webkit-box; overflow: hidden; color: var(--ui-muted); font-size: 10px; line-height: 1.48; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+html .attachment-search-route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 html button.attachment-file-card {
   display: grid;
   width: 100%;
