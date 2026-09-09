@@ -107,13 +107,15 @@ describe('agent runtime API contract',()=>{
    runId:'run-7',workflowId:'wf',instanceId:'b',status:'completed',inputContentRevision:2,
    objective:'test',constraints:[],deliverables:[],acceptanceChecks:[],
    memoryRoute:[{instanceId:'a',topicId:'ta',title:'数据集'},{instanceId:'b',topicId:'tb',title:'实验'}],
+   retrievalPlan:{planVersion:1,mode:'automatic',query:'sentiment',engine:'fts5-trigram',budgetCharacters:24000,candidateCount:2,selectedCharacters:80,selectedChunks:1,truncated:false,routeInstanceIds:['a','b'],contextSha256:'abc',sources:[{attachmentId:'att-1',name:'notes.txt',chunkOrdinal:1,locator:'lines 1-2'}]},
    availableTools:[{name:'safe_calculator',version:'1.0.0',description:'Arithmetic'}],
   })));
   const run=await api.agentRun('run-7');
   expect(run.memoryRoute).toEqual([
    {instanceId:'a',topicId:'ta',title:'数据集'},
    {instanceId:'b',topicId:'tb',title:'实验'},
-  ]);
+ ]);
+ expect(run.retrievalPlan).toMatchObject({mode:'automatic',selectedChunks:1,contextSha256:'abc'});
  expect(run.availableTools).toEqual([{name:'safe_calculator',version:'1.0.0',description:'Arithmetic'}]);
  });
 

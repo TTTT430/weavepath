@@ -140,8 +140,13 @@ WeavePath 的缓存策略必须服从当前产品语义，而不是反过来改�
 2. 稳定、按 `name + version` 排序的工具定义；
 3. 当前具体 memory route 的历史消息，严格按路线和消息序号排序；
 4. 按稳定键排序的 accepted knowledge；
-5. 本次 objective、constraints、deliverables、acceptance checks；
+5. 本次 objective、constraints、deliverables、acceptance checks；自动路线检索证据属于这个 current request，不进入 system/tool 稳定前缀；
 6. 当前工具调用和结果。
+
+未显式选择文件时，检索器只查询当前 instance 的实时祖先链，并把候选数、入选分块、字符预算、路线、
+chunk hash 和截断状态冻结为可检查计划。Chat 把计划正文附在对应用户消息内；Agent Run 把它附在最终
+current request 内。更换证据会改变完整 request hash，但不会改变只由 system policy 与规范化 tools
+组成的 `stablePrefixSha256`。应用仍不创建或保存推理引擎 KV cache。
 
 要求：
 

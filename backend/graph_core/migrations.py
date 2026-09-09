@@ -253,6 +253,48 @@ AFTER UPDATE ON attachment_chunks BEGIN
         new.content_text
     );
 END;
+
+-- Automatic retrieval is frozen per user message.  The plan stores the exact
+-- provider-visible excerpt while normalized source rows keep provenance and
+-- prevent a cited attachment chunk from being deleted or reparsed underneath
+-- an already-recorded answer.
+CREATE TABLE IF NOT EXISTS message_retrieval_plans(
+    message_id INTEGER PRIMARY KEY REFERENCES local_messages(id) ON DELETE CASCADE,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    instance_id TEXT NOT NULL REFERENCES conversation_instances(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL CHECK(mode IN ('automatic')),
+    query_text TEXT NOT NULL,
+    engine TEXT NOT NULL,
+    budget_characters INTEGER NOT NULL,
+    candidate_count INTEGER NOT NULL,
+    selected_characters INTEGER NOT NULL,
+    truncated INTEGER NOT NULL CHECK(truncated IN (0,1)),
+    context_text TEXT NOT NULL,
+    context_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_message_retrieval_plans_route
+ON message_retrieval_plans(workflow_id,instance_id,created_at);
+CREATE TABLE IF NOT EXISTS message_retrieval_sources(
+    message_id INTEGER NOT NULL REFERENCES message_retrieval_plans(message_id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    attachment_id TEXT NOT NULL,
+    chunk_ordinal INTEGER NOT NULL,
+    route_instance_id TEXT NOT NULL,
+    route_title TEXT NOT NULL,
+    name TEXT NOT NULL,
+    locator TEXT NOT NULL,
+    chunk_sha256 TEXT NOT NULL,
+    characters INTEGER NOT NULL,
+    included_characters INTEGER NOT NULL,
+    score REAL NOT NULL,
+    matched_terms_json TEXT NOT NULL,
+    PRIMARY KEY(message_id,position),
+    FOREIGN KEY(attachment_id,chunk_ordinal)
+        REFERENCES attachment_chunks(attachment_id,ordinal) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_message_retrieval_sources_attachment
+ON message_retrieval_sources(attachment_id,chunk_ordinal);
 """
 
 # Runtime v2 remains an additive preview and deliberately does not advance the

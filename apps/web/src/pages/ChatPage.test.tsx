@@ -201,7 +201,16 @@ describe('chat delivery mode',()=>{
   fireEvent.click(screen.getByRole('button',{name:/notes\.md · page 3/}));
   expect(await screen.findByRole('heading',{name:'路线文件'})).toBeInTheDocument();
   expect(await screen.findByText('精确证据内容')).toBeVisible();
-  expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','root','att-1');
+ expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','root','att-1');
+ });
+ it('shows the inspectable automatic retrieval plan and labels automatic evidence',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  const source={attachmentId:'att-1',name:'route-facts.txt',chunkOrdinal:1,locator:'lines 1-3',routeInstanceId:'root',routeTitle:'数据集构建',inherited:false,retrievalMode:'automatic' as const,characters:120,includedCharacters:120,matchedTerms:['sentiment','dataset']};
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'a1',role:'assistant',content:'自动检索后的回答',responseDetails:{durationMs:900,cacheStatus:'not_reported',sources:[source],retrievalPlan:{planVersion:1,mode:'automatic',query:'sentiment dataset',engine:'fts5-trigram',budgetCharacters:24000,candidateCount:3,selectedCharacters:120,selectedChunks:1,truncated:false,routeInstanceIds:['root'],contextSha256:'abc',sources:[source]}}}],contentRevision:1});
+  renderChat();await screen.findByText('自动检索后的回答');fireEvent.click(screen.getByLabelText('回复详情'));
+  const plan=screen.getByText('自动检索计划').closest('.response-retrieval-plan') as HTMLElement;
+  expect(within(plan).getByText('3')).toBeInTheDocument();expect(within(plan).getByText('1')).toBeInTheDocument();expect(within(plan).getByText('120')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:/route-facts\.txt · lines 1-3/})).toHaveTextContent('自动');
  });
  it('labels cache fields unavailable when an ordinary reply provider omitted them',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});

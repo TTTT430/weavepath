@@ -278,6 +278,46 @@ def test_chat_model_receives_bound_attachment_context_not_storage_references():
     store.close()
 
 
+def test_chat_automatically_retrieves_current_route_files_and_reports_the_plan():
+    store = GraphStore(":memory:")
+    llm = FakeLLM()
+    graph = store.create_workflow(
+        name="Workflow", root_title="A", root_instance_id="A"
+    )
+    workflow_id = graph["workflowId"]
+    ancestor = store.create_attachment(
+        workflow_id, "A", name="route-facts.txt", mime_type="text/plain",
+        size_bytes=64, content_text="Unique route evidence marker AUTO-7788.",
+    )
+    store.fork(workflow_id, "A", title="B", instance_id="B")
+    store.fork(workflow_id, "A", title="E", instance_id="E")
+    sibling = store.create_attachment(
+        workflow_id, "E", name="sibling.txt", mime_type="text/plain",
+        size_bytes=64, content_text="Unique route evidence marker SIBLING-9900.",
+    )
+
+    with TestClient(create_app(store, llm)) as client:
+        response = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/B/chat",
+            json={"content": "Explain the unique route evidence marker."},
+        )
+
+    assert response.status_code == 200
+    provider_content = "\n".join(str(item["content"]) for item in llm.messages)
+    assert "AUTO-7788" in provider_content
+    assert "SIBLING-9900" not in provider_content
+    details = response.json()["assistantMessage"]["responseDetails"]
+    plan = details["retrievalPlan"]
+    assert plan["mode"] == "automatic"
+    assert "contextText" not in plan
+    assert plan["routeInstanceIds"] == ["A", "B"]
+    assert plan["sources"][0]["attachmentId"] == ancestor["attachmentId"]
+    assert sibling["attachmentId"] not in str(plan)
+    assert details["sources"][0]["retrievalMode"] == "automatic"
+    assert details["sources"][0]["locator"]
+    store.close()
+
+
 def test_ordinary_chat_persists_response_duration_and_provider_cache_usage():
     store = GraphStore(":memory:")
     llm = DetailedFakeLLM()

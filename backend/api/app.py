@@ -575,8 +575,12 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     prefix = "/api/v1"
 
     def route_context(workflow_id: str, instance_id: str,
-                      messages: list[dict[str, object]]) -> list[dict[str, object]]:
-        messages = graph_store.materialize_messages(workflow_id, messages)
+                      messages: list[dict[str, object]], *,
+                      retrieval_overrides: dict[int | str, dict[str, object] | None] | None = None,
+                      ) -> list[dict[str, object]]:
+        messages = graph_store.materialize_messages(
+            workflow_id, messages, retrieval_overrides=retrieval_overrides
+        )
         accepted = engineering.accepted_knowledge(workflow_id, instance_id)
         if not accepted:
             return messages
@@ -591,9 +595,30 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             return [*messages[:-1], knowledge, messages[-1]]
         return [*messages, knowledge]
 
+    def evidence_for_message(
+        workflow_id: str, message_id: int | str, *,
+        retrieval_override: dict[str, object] | None = None,
+        use_override: bool = False,
+    ) -> tuple[list[dict[str, object]], dict[str, object] | None]:
+        sources = graph_store.attachment_sources_for_message(workflow_id, message_id)
+        if use_override:
+            sources = [source for source in sources
+                       if source.get("retrievalMode") != "automatic"]
+            if retrieval_override:
+                sources.extend({**source, "retrievalMode": "automatic"}
+                               for source in retrieval_override.get("sources", [])
+                               if isinstance(source, dict))
+            retrieval = retrieval_override
+        else:
+            retrieval = graph_store.retrieval_plan_for_message(workflow_id, message_id)
+        public = ({key: value for key, value in retrieval.items()
+                   if key != "contextText"} if retrieval else None)
+        return sources, public
+
     def response_details(started_at: float,
                          usage: dict[str, object] | None = None,
-                         sources: list[dict[str, object]] | None = None) -> dict[str, object]:
+                         sources: list[dict[str, object]] | None = None,
+                         retrieval_plan: dict[str, object] | None = None) -> dict[str, object]:
         provider = llm.status()
         normalized = dict(usage or {})
         cached = normalized.get("cachedInputTokens")
@@ -619,17 +644,21 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         }
         if sources:
             details["sources"] = sources
+        if retrieval_plan:
+            details["retrievalPlan"] = retrieval_plan
         return details
 
     def complete_with_details(messages: list[dict[str, object]], *,
-                              sources: list[dict[str, object]] | None = None) -> tuple[str, dict[str, object]]:
+                              sources: list[dict[str, object]] | None = None,
+                              retrieval_plan: dict[str, object] | None = None,
+                              ) -> tuple[str, dict[str, object]]:
         started_at = perf_counter()
         complete_detailed = getattr(llm, "complete_with_details", None)
         if callable(complete_detailed):
             answer, usage = complete_detailed(messages)
         else:
             answer, usage = llm.complete(messages), None
-        return answer, response_details(started_at, usage, sources)
+        return answer, response_details(started_at, usage, sources, retrieval_plan)
 
     @app.get(prefix + "/health")
     def health():
@@ -974,7 +1003,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     workflow_id, instance_id,
                     graph_store.list_messages(workflow_id, instance_id)["messages"],
                 )
-                evidence_sources = graph_store.attachment_sources_for_message(
+                evidence_sources, retrieval_plan = evidence_for_message(
                     workflow_id, user_message["id"]
                 )
                 yield _sse("message.started", {
@@ -1022,7 +1051,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 assistant_message = graph_store.append_message(
                     workflow_id, instance_id, role="assistant", content=answer,
                     response_details=response_details(
-                        response_started_at, usage, evidence_sources
+                        response_started_at, usage, evidence_sources, retrieval_plan
                     ),
                 )
                 result = {"userMessage": user_message, "assistantMessage": assistant_message}
@@ -1066,11 +1095,11 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 if key is not None:
                     graph_store.record_chat_user_message(workflow_id, instance_id, key, user_message["id"])
             context = route_context(workflow_id, instance_id, graph_store.list_messages(workflow_id, instance_id)["messages"])
-            evidence_sources = graph_store.attachment_sources_for_message(
+            evidence_sources, retrieval_plan = evidence_for_message(
                 workflow_id, user_message["id"]
             )
             assistant_text, details = complete_with_details(
-                context, sources=evidence_sources
+                context, sources=evidence_sources, retrieval_plan=retrieval_plan
             )
             assistant_message = graph_store.append_message(
                 workflow_id, instance_id, role="assistant", content=assistant_text,
@@ -1108,17 +1137,27 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             workflow_id, instance_id, message_id, content=body.content,
             expected_content_revision=body.expected_revision,
         )
+        retrieval_plan = prepared.get("retrievalPlan")
+        evidence_sources, public_retrieval_plan = evidence_for_message(
+            workflow_id, message_id,
+            retrieval_override=retrieval_plan,
+            use_override=True,
+        )
         assistant_text, details = complete_with_details(
-            route_context(workflow_id, instance_id, prepared["messages"]),
-            sources=graph_store.attachment_sources_for_message(
-                workflow_id, message_id
+            route_context(
+                workflow_id, instance_id, prepared["messages"],
+                retrieval_overrides={message_id: retrieval_plan},
             ),
+            sources=evidence_sources,
+            retrieval_plan=public_retrieval_plan,
         )
         return graph_store.commit_latest_local_user_edit(
             workflow_id, instance_id, message_id, content=body.content,
             expected_content_revision=body.expected_revision,
             assistant_content=assistant_text,
             assistant_response_details=details,
+            retrieval_plan=retrieval_plan,
+            retrieval_plan_prepared=True,
         )
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/runs", status_code=201)
@@ -1242,10 +1281,15 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 )
                 latest_user = next((message for message in reversed(local)
                                     if message["role"] == "user"), None)
-                sources = (graph_store.attachment_sources_for_message(
-                    workflow_id, latest_user["id"]
-                ) if latest_user is not None else [])
-                answer, details = complete_with_details(context, sources=sources)
+                if latest_user is not None:
+                    sources, retrieval_plan = evidence_for_message(
+                        workflow_id, latest_user["id"]
+                    )
+                else:
+                    sources, retrieval_plan = [], None
+                answer, details = complete_with_details(
+                    context, sources=sources, retrieval_plan=retrieval_plan
+                )
                 assistant_message = graph_store.append_message(
                     workflow_id, child_id, role="assistant", content=answer,
                     response_details=details,

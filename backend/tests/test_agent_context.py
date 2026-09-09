@@ -70,7 +70,7 @@ def test_stable_prefix_ignores_runtime_ui_metadata_and_tool_registration_order()
         provider_system_prompt="Project policy\nKeep it deterministic.",
     )
 
-    assert first.prompt_layout_version == PROMPT_LAYOUT_VERSION == "agent-cache-v2"
+    assert first.prompt_layout_version == PROMPT_LAYOUT_VERSION == "agent-cache-v3"
     assert first.stable_prefix_sha256 == second.stable_prefix_sha256
     assert first.request_sha256 == second.request_sha256
     assert first.messages == second.messages
@@ -83,6 +83,30 @@ def test_stable_prefix_ignores_runtime_ui_metadata_and_tool_registration_order()
     assert first.tools[1]["schema"]["required"] == ["path", "query"]
     assert first.tools[1]["schema"]["properties"]["query"]["enum"] == ["alpha", "beta"]
     assert "run-one" not in str(first.messages) and "zoom" not in str(first.messages)
+
+
+def test_retrieved_evidence_changes_only_the_current_request_not_the_stable_prefix():
+    common = {
+        "route_messages": [{"role": "user", "content": "A-B-C route"}],
+        "accepted_knowledge": [{"kind": "conclusion", "title": "Reviewed", "content": "Known"}],
+        "request": execution_request(),
+        "tools": tool_specs(),
+    }
+    first = assemble_agent_context(
+        **common,
+        retrieved_evidence="[Route file evidence: a.txt | lines 1-2]\nalpha",
+    )
+    second = assemble_agent_context(
+        **common,
+        retrieved_evidence="[Route file evidence: b.txt | lines 3-4]\nbeta",
+    )
+
+    assert first.stable_prefix_sha256 == second.stable_prefix_sha256
+    assert first.request_sha256 != second.request_sha256
+    assert first.messages[:-1] == second.messages[:-1]
+    assert "alpha" in first.messages[-1]["content"]
+    assert "beta" not in first.messages[-1]["content"]
+    assert "untrusted task data" in first.messages[-1]["content"]
 
 
 def test_parent_route_update_changes_full_request_but_keeps_existing_prefix():

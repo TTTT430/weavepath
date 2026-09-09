@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 
+import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
@@ -13,7 +14,7 @@ from pptx.util import Inches
 
 from api.app import create_app
 from api.llm import DisabledLLM
-from graph_core import GraphStore
+from graph_core import Conflict, GraphStore
 from graph_core.attachments import parse_attachment
 
 
@@ -210,6 +211,91 @@ def test_persistent_trigram_index_supports_chinese_short_fallback_and_deletion(t
         workflow["workflowId"], "A"
     )["indexedChunks"] == 0
     reopened.close()
+
+
+def test_automatic_retrieval_plan_is_route_scoped_frozen_and_restart_safe(tmp_path: Path):
+    database = tmp_path / "workspace.db"
+    store = GraphStore(database)
+    graph = store.create_workflow(
+        name="Retrieval", root_title="A", root_instance_id="A"
+    )
+    workflow_id = graph["workflowId"]
+    ancestor = store.create_attachment(
+        workflow_id, "A", name="shared-notes.txt", mime_type="text/plain",
+        size_bytes=80,
+        content_text="Shared sentiment evidence marker ROUTE-ALPHA belongs to A.",
+    )
+    store.fork(workflow_id, "A", title="B", instance_id="B")
+    store.fork(workflow_id, "B", title="C", instance_id="C")
+    store.fork(workflow_id, "A", title="E", instance_id="E")
+    sibling = store.create_attachment(
+        workflow_id, "E", name="sibling-secret.txt", mime_type="text/plain",
+        size_bytes=80,
+        content_text="Sibling sentiment evidence marker ROUTE-EPSILON is private.",
+    )
+
+    user = store.append_message(
+        workflow_id, "C", role="user",
+        content="Compare the sentiment evidence marker for this route.",
+    )
+    plan = store.retrieval_plan_for_message(workflow_id, user["id"])
+    assert plan is not None
+    assert plan["mode"] == "automatic"
+    assert plan["engine"] == "fts5-trigram"
+    assert plan["routeInstanceIds"] == ["A", "B", "C"]
+    assert plan["selectedChunks"] == 1
+    assert len(plan["contextText"]) <= plan["budgetCharacters"]
+    assert plan["sources"][0]["attachmentId"] == ancestor["attachmentId"]
+    assert plan["sources"][0]["inherited"] is True
+    assert sibling["attachmentId"] not in str(plan)
+    materialized = store.materialize_messages(
+        workflow_id, store.list_messages(workflow_id, "C")["messages"]
+    )
+    assert "ROUTE-ALPHA" in materialized[-1]["content"]
+    assert "ROUTE-EPSILON" not in materialized[-1]["content"]
+    frozen_hash = plan["contextSha256"]
+    with pytest.raises(Conflict, match="retrieval plan"):
+        store.delete_attachment(workflow_id, "A", ancestor["attachmentId"])
+    with pytest.raises(Conflict, match="retrieval plan"):
+        store.reparse_attachment(workflow_id, "A", ancestor["attachmentId"])
+    store.close()
+
+    reopened = GraphStore(database)
+    restored = reopened.retrieval_plan_for_message(workflow_id, user["id"])
+    assert restored is not None
+    assert restored["contextSha256"] == frozen_hash
+    assert restored["sources"][0]["chunkSha256"] == plan["sources"][0]["chunkSha256"]
+    materialized = reopened.materialize_messages(
+        workflow_id, reopened.list_messages(workflow_id, "C")["messages"]
+    )
+    assert "ROUTE-ALPHA" in materialized[-1]["content"]
+    assert "ROUTE-EPSILON" not in materialized[-1]["content"]
+    reopened.close()
+
+
+def test_automatic_retrieval_plan_enforces_chunk_and_character_budgets():
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(
+        name="Budget", root_title="A", root_instance_id="A"
+    )
+    workflow_id = graph["workflowId"]
+    for index in range(8):
+        content = f"budget evidence marker file {index} " + ("x" * 5_000)
+        store.create_attachment(
+            workflow_id, "A", name=f"budget-{index}.txt", mime_type="text/plain",
+            size_bytes=len(content.encode()), content_text=content,
+        )
+
+    plan = store.automatic_retrieval_plan(
+        workflow_id, "A", "Review the budget evidence marker."
+    )
+    assert plan is not None
+    assert 1 <= plan["selectedChunks"] <= 6
+    assert len(plan["sources"]) == plan["selectedChunks"]
+    assert len(plan["contextText"]) <= plan["budgetCharacters"] == 24_000
+    assert plan["selectedCharacters"] <= plan["budgetCharacters"]
+    assert plan["truncated"] is True
+    store.close()
 
 
 def test_image_upload_is_retained_with_an_explicit_ocr_status(tmp_path: Path):

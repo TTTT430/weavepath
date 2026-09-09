@@ -213,6 +213,7 @@ class AgentRuntimeService:
                 accepted_knowledge=context.get("acceptedKnowledge", []),
                 request=request,
                 tools=context["availableTools"],
+                retrieved_evidence=context.get("retrievedEvidence", ""),
                 provider_system_prompt=current_snapshot.get("systemPrompt", ""),
             )
             if (assembled.prompt_layout_version != context.get("promptLayoutVersion")
@@ -408,6 +409,14 @@ class AgentRuntimeService:
         ]
         accepted_knowledge = (self.engineering.accepted_knowledge(workflow_id, instance_id)
                               if self.engineering else [])
+        retrieval_query = "\n".join([
+            request["objective"], *request["constraints"], *request["deliverables"],
+            *request["acceptanceChecks"],
+        ])
+        retrieval_plan = self.graph.automatic_retrieval_plan(
+            workflow_id, instance_id, retrieval_query
+        )
+        retrieved_evidence = (retrieval_plan or {}).get("contextText", "")
         try:
             bound_model = self.model.bind()
             model_snapshot = _safe_model_snapshot(bound_model.snapshot())
@@ -422,6 +431,7 @@ class AgentRuntimeService:
         assembled = assemble_agent_context(
             route_messages=snapshot["messages"], accepted_knowledge=accepted_knowledge,
             request=request, tools=self.tools.specs(),
+            retrieved_evidence=retrieved_evidence,
             provider_system_prompt=model_snapshot.get("systemPrompt", ""),
         )
         tool_specs, prompt_messages = assembled.tools, assembled.messages
@@ -430,6 +440,10 @@ class AgentRuntimeService:
                    "memoryRoute": memory_route,
                    "routeRevisionVector": route_revision_vector,
                    "acceptedKnowledge": accepted_knowledge,
+                   "retrievalPlan": ({key: value for key, value in retrieval_plan.items()
+                                      if key != "contextText"}
+                                     if retrieval_plan else None),
+                   "retrievedEvidence": retrieved_evidence,
                    "availableTools": tool_specs,
                    "promptLayoutVersion": assembled.prompt_layout_version,
                    "stablePrefixSha256": assembled.stable_prefix_sha256,

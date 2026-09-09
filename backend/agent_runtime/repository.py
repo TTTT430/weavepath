@@ -824,6 +824,7 @@ class AgentRunRepository:
                 "memoryRoute": context.get("memoryRoute", []),
                 "routeRevisionVector": context.get("routeRevisionVector"),
                 "acceptedKnowledge": context.get("acceptedKnowledge", []),
+                "retrievalPlan": context.get("retrievalPlan"),
                 "availableTools": context.get("availableTools", []),
                 "promptLayoutVersion": context.get("promptLayoutVersion"),
                 "stablePrefixSha256": context.get("stablePrefixSha256"),

@@ -206,6 +206,62 @@ def test_agent_runtime_materializes_bound_attachment_references_before_model_cal
     store.close()
 
 
+def test_agent_runtime_automatically_retrieves_only_the_live_route_and_exposes_plan():
+    captured: list[list[dict[str, Any]]] = []
+
+    class CapturingModel:
+        def bind(self):
+            return self
+
+        def snapshot(self):
+            return {"provider": "test", "model": "automatic-retrieval"}
+
+        def next(self, messages, tools):
+            del tools
+            captured.append(messages)
+            return ModelTurn(final_answer="retrieval complete")
+
+    store = GraphStore(":memory:")
+    graph = store.create_workflow(name="Agent", root_title="A", root_instance_id="A")
+    wf = graph["workflowId"]
+    inherited = store.create_attachment(
+        wf, "A", name="parent-evidence.txt", mime_type="text/plain",
+        size_bytes=64, content_text="Agent retrieval marker PARENT-4411.",
+    )
+    store.fork(wf, "A", title="C", instance_id="C")
+    store.fork(wf, "A", title="E", instance_id="E")
+    sibling = store.create_attachment(
+        wf, "E", name="sibling-evidence.txt", mime_type="text/plain",
+        size_bytes=64, content_text="Agent retrieval marker SIBLING-5522.",
+    )
+    revision = store.list_messages(wf, "C", scope="local")["contentRevision"]
+    body = request(revision, "automatic-route-retrieval")
+    body["objective"] = "Inspect the agent retrieval marker."
+    app = create_app(store, agent_model=CapturingModel())
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/workflows/{wf}/instances/C/runs", json=body
+        )
+
+    assert response.status_code == 201
+    assert len(captured) == 1
+    serialized = json.dumps(captured[0], ensure_ascii=False)
+    assert "PARENT-4411" in serialized
+    assert "SIBLING-5522" not in serialized
+    run = response.json()
+    assert run["retrievalPlan"]["sources"][0]["attachmentId"] == inherited["attachmentId"]
+    assert run["retrievalPlan"]["routeInstanceIds"] == ["A", "C"]
+    assert sibling["attachmentId"] not in str(run["retrievalPlan"])
+    raw = store._conn.execute(
+        "SELECT context_snapshot_json FROM agent_runs WHERE id=?", (run["runId"],)
+    ).fetchone()[0]
+    frozen = json.loads(raw)
+    assert frozen["retrievalPlan"]["contextSha256"]
+    assert "PARENT-4411" in frozen["retrievedEvidence"]
+    store.close()
+
+
 def test_frozen_context_and_hash_remain_stable_after_later_route_write():
     store = GraphStore(":memory:")
     app = create_app(
@@ -1610,7 +1666,7 @@ def test_cache_aware_prompt_has_stable_prefix_dynamic_parent_memory_and_sibling_
 
         runs = app.state.agent_runs.list(wf, "C") + app.state.agent_runs.list(wf, "E")
         assert len({run["stablePrefixSha256"] for run in runs}) == 1
-        assert all(run["promptLayoutVersion"] == "agent-cache-v2" for run in runs)
+        assert all(run["promptLayoutVersion"] == "agent-cache-v3" for run in runs)
     store.close()
 
 
