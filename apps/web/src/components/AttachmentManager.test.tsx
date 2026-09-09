@@ -4,7 +4,7 @@ import{I18nProvider}from'../lib/i18n';
 import{AttachmentManager}from'./AttachmentManager';
 
 const apiMock=vi.hoisted(()=>(
- {attachments:vi.fn(),attachment:vi.fn(),reparseAttachment:vi.fn(),searchAttachments:vi.fn()}
+ {attachments:vi.fn(),attachment:vi.fn(),reparseAttachment:vi.fn(),searchAttachments:vi.fn(),attachmentSearchStatus:vi.fn()}
 ));
 
 vi.mock('../lib/api',()=>({api:apiMock}));
@@ -17,7 +17,7 @@ const inherited={
  routeInstanceId:'parent',routeTitle:'数据集',inherited:true,createdAt:'2026-09-09T00:00:00Z',boundAt:'2026-09-09T00:01:00Z',
 };
 
-beforeEach(()=>{localStorage.setItem('cw.locale','zh-CN');apiMock.attachments.mockResolvedValue([inherited]);apiMock.attachment.mockResolvedValue({...inherited,contextSources:[{attachmentId:'att-pdf',name:'research.pdf',chunkOrdinal:2,locator:'page 3',chunkSha256:'chunk'}],chunks:[{ordinal:2,locator:'page 3',characters:1200,preview:'路线感知检索内容'}]})});
+beforeEach(()=>{localStorage.setItem('cw.locale','zh-CN');apiMock.attachments.mockResolvedValue([inherited]);apiMock.attachmentSearchStatus.mockResolvedValue({workflowId:'wf-1',instanceId:'child',engine:'fts5-trigram',indexVersion:1,ready:true,indexedChunks:4,readyChunks:4});apiMock.attachment.mockResolvedValue({...inherited,contextSources:[{attachmentId:'att-pdf',name:'research.pdf',chunkOrdinal:2,locator:'page 3',chunkSha256:'chunk'}],chunks:[{ordinal:2,locator:'page 3',characters:1200,preview:'路线感知检索内容'}]})});
 afterEach(()=>{cleanup();vi.clearAllMocks();localStorage.clear()});
 
 describe('AttachmentManager',()=>{
@@ -30,6 +30,14 @@ describe('AttachmentManager',()=>{
   expect(screen.getAllByText('page 3')).toHaveLength(2);
   expect(screen.getByText('#2')).toBeInTheDocument();
   expect(apiMock.attachments).toHaveBeenCalledWith('wf-1','child','route');
+  expect(apiMock.attachmentSearchStatus).toHaveBeenCalledWith('wf-1','child');
+  expect(screen.getByText(/全文索引已就绪/)).toBeInTheDocument();
+  expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','child','att-pdf');
+ });
+
+ it('opens the exact cited attachment chunk when launched from a response',async()=>{
+  render(<I18nProvider><AttachmentManager workflowId="wf-1" instanceId="child" initialAttachmentId="att-pdf" initialChunkOrdinal={2} onClose={()=>undefined}/></I18nProvider>);
+  expect(await screen.findByText('路线感知检索内容')).toBeVisible();
   expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','child','att-pdf');
  });
 

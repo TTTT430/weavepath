@@ -1,4 +1,4 @@
-import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,AttachmentSearchResult,AttachmentUploadSession,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,UploadedAttachment,WorkflowSummary} from '../domain/types';
+import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,AttachmentSearchResult,AttachmentSearchStatus,AttachmentUploadSession,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,UploadedAttachment,WorkflowSummary} from '../domain/types';
 const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number,public diagnostics?:ConnectionDiagnostics){super(message);this.name='ApiError'}
@@ -36,6 +36,7 @@ export const api={
  messageSnapshot:(w:string,i:string,scope:'local'|'effective'='local')=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages?scope=${scope}`),
  attachments:(w:string,i:string,scope:'local'|'route'='route')=>request<{attachments:UploadedAttachment[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments?scope=${scope}`).then(x=>x.attachments),
  searchAttachments:(w:string,i:string,query:string,limit=20)=>request<{results:AttachmentSearchResult[]}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/search?q=${enc(query)}&limit=${limit}`).then(x=>x.results),
+ attachmentSearchStatus:(w:string,i:string)=>request<AttachmentSearchStatus>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/search-status`),
  attachment:(w:string,i:string,id:string)=>request<UploadedAttachment>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/${enc(id)}`),
  uploadAttachment:async(w:string,i:string,file:File,onProgress?:(progress:AttachmentUploadProgress)=>void)=>{
   if(file.size>RESUMABLE_UPLOAD_THRESHOLD){

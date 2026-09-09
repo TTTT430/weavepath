@@ -102,7 +102,7 @@ Deliver a reliable standalone route-aware conversation graph before expanding in
 
 Introduce a host-neutral runtime for executing an agent turn as a durable run rather than a single opaque HTTP request.
 
-**Verified local preview:** Route-to-Agent Run v1 exercises a synchronous subset of this phase with one registered tool (`safe_calculator` / `1.0.0`), the configured OpenAI-compatible production adapter, and a test-only `ScriptedMockAgentAdapter`. The recorded local test and browser evidence validates this first durable run boundary; it does not complete Phase 2 or imply streaming, cancellation, arbitrary shell/file/network tools, approvals, artifacts, evaluation, multi-agent behavior, or formal Codex/Claude adapters.
+**Verified local preview:** Route-to-Agent Run v1 originally exercised a synchronous subset of this phase. Runtime v2 P0 now also has durable event history, cache-aware context, background queueing, cancellation, retry lineage, approval state, safe tools and versioned patch Artifacts. The next Phase 2 work is recovery across uncertain model/tool boundaries, side-effect-aware retry, durable ownership/lease and approval recovery—not another copy of the already implemented timeline, token, cost, cache-usage and tool-record UI. Arbitrary shell/write/network tools, evaluation, multi-agent behavior and formal Codex/Claude adapters remain outside the verified slice.
 
 **Scope**
 
@@ -183,6 +183,8 @@ Turn routes into comparable engineering experiments rather than informal chat br
 ### Phase 6 — Observability, tracing, and search
 
 Provide engineering-grade visibility into how an answer or artifact was produced.
+
+**Current baseline:** the app already records and renders each run's event timeline, model/tool steps, duration, token/cost fields and provider-reported prompt-cache usage; missing provider usage is shown as unavailable. This phase therefore means expanding trace/export/redaction/search coverage and production retention controls, not rebuilding those existing panels.
 
 **Scope**
 

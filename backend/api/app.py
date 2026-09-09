@@ -580,13 +580,20 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         accepted = engineering.accepted_knowledge(workflow_id, instance_id)
         if not accepted:
             return messages
-        return [*messages, {"role": "system", "content": json.dumps({
+        knowledge = {"role": "system", "content": json.dumps({
             "acceptedRouteKnowledge": accepted,
             "instruction": "Use only these explicitly accepted cross-route facts; do not infer sibling transcripts.",
-        }, ensure_ascii=False)}]
+        }, ensure_ascii=False)}
+        # Preserve the cache-friendly order: route history, accepted knowledge,
+        # then the current request. The provider system policy is added by the
+        # adapter before this list.
+        if messages and messages[-1].get("role") == "user":
+            return [*messages[:-1], knowledge, messages[-1]]
+        return [*messages, knowledge]
 
     def response_details(started_at: float,
-                         usage: dict[str, object] | None = None) -> dict[str, object]:
+                         usage: dict[str, object] | None = None,
+                         sources: list[dict[str, object]] | None = None) -> dict[str, object]:
         provider = llm.status()
         normalized = dict(usage or {})
         cached = normalized.get("cachedInputTokens")
@@ -596,7 +603,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         if (cache_status == "reported" and isinstance(cached, int)
                 and isinstance(uncached, int) and cached + uncached > 0):
             reuse_ratio = cached / (cached + uncached)
-        return {
+        details: dict[str, object] = {
             "durationMs": max(0, round((perf_counter() - started_at) * 1000)),
             "provider": provider.get("provider"),
             "model": provider.get("model"),
@@ -610,15 +617,19 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             "cacheCoverage": 1.0 if cache_status == "reported" else None,
             "cacheStatus": cache_status,
         }
+        if sources:
+            details["sources"] = sources
+        return details
 
-    def complete_with_details(messages: list[dict[str, object]]) -> tuple[str, dict[str, object]]:
+    def complete_with_details(messages: list[dict[str, object]], *,
+                              sources: list[dict[str, object]] | None = None) -> tuple[str, dict[str, object]]:
         started_at = perf_counter()
         complete_detailed = getattr(llm, "complete_with_details", None)
         if callable(complete_detailed):
             answer, usage = complete_detailed(messages)
         else:
             answer, usage = llm.complete(messages), None
-        return answer, response_details(started_at, usage)
+        return answer, response_details(started_at, usage, sources)
 
     @app.get(prefix + "/health")
     def health():
@@ -699,6 +710,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         return graph_store.search_attachments(
             workflow_id, instance_id, query=q, limit=limit
         )
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/search-status")
+    def attachment_search_status(workflow_id: str, instance_id: str):
+        return graph_store.attachment_search_status(workflow_id, instance_id)
 
     @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/attachments/{attachment_id}")
     def attachment(workflow_id: str, instance_id: str, attachment_id: str):
@@ -959,6 +974,9 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     workflow_id, instance_id,
                     graph_store.list_messages(workflow_id, instance_id)["messages"],
                 )
+                evidence_sources = graph_store.attachment_sources_for_message(
+                    workflow_id, user_message["id"]
+                )
                 yield _sse("message.started", {
                     "requestId": key, "userMessage": user_message,
                 })
@@ -1003,7 +1021,9 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     raise LLMUnavailable("AI provider returned an empty response", code="aiEmptyResponse", status_code=502)
                 assistant_message = graph_store.append_message(
                     workflow_id, instance_id, role="assistant", content=answer,
-                    response_details=response_details(response_started_at, usage),
+                    response_details=response_details(
+                        response_started_at, usage, evidence_sources
+                    ),
                 )
                 result = {"userMessage": user_message, "assistantMessage": assistant_message}
                 if key is not None:
@@ -1046,7 +1066,12 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 if key is not None:
                     graph_store.record_chat_user_message(workflow_id, instance_id, key, user_message["id"])
             context = route_context(workflow_id, instance_id, graph_store.list_messages(workflow_id, instance_id)["messages"])
-            assistant_text, details = complete_with_details(context)
+            evidence_sources = graph_store.attachment_sources_for_message(
+                workflow_id, user_message["id"]
+            )
+            assistant_text, details = complete_with_details(
+                context, sources=evidence_sources
+            )
             assistant_message = graph_store.append_message(
                 workflow_id, instance_id, role="assistant", content=assistant_text,
                 response_details=details,
@@ -1084,7 +1109,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             expected_content_revision=body.expected_revision,
         )
         assistant_text, details = complete_with_details(
-            route_context(workflow_id, instance_id, prepared["messages"])
+            route_context(workflow_id, instance_id, prepared["messages"]),
+            sources=graph_store.attachment_sources_for_message(
+                workflow_id, message_id
+            ),
         )
         return graph_store.commit_latest_local_user_edit(
             workflow_id, instance_id, message_id, content=body.content,
@@ -1212,7 +1240,12 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     workflow_id, child_id,
                     graph_store.list_messages(workflow_id, child_id, scope="effective")["messages"],
                 )
-                answer, details = complete_with_details(context)
+                latest_user = next((message for message in reversed(local)
+                                    if message["role"] == "user"), None)
+                sources = (graph_store.attachment_sources_for_message(
+                    workflow_id, latest_user["id"]
+                ) if latest_user is not None else [])
+                answer, details = complete_with_details(context, sources=sources)
                 assistant_message = graph_store.append_message(
                     workflow_id, child_id, role="assistant", content=answer,
                     response_details=details,

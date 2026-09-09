@@ -105,14 +105,23 @@ def test_disk_assets_route_listing_and_bound_citations_are_isolated(tmp_path: Pa
         assert row["content_text"] == ""
         assert row["storage_key"] == attachment["sha256"]
 
-        own_search = client.get(
+        own_search_payload = client.get(
             f"/api/v1/workflows/{workflow_id}/instances/B/attachments/search",
             params={"q": "private requirement"},
-        ).json()["results"]
+        ).json()
+        assert own_search_payload["engine"] == "fts5-trigram"
+        own_search = own_search_payload["results"]
         assert own_search[0]["attachmentId"] == attachment["attachmentId"]
         assert own_search[0]["routeInstanceId"] == "B"
         assert own_search[0]["inherited"] is False
         assert "private requirement" in own_search[0]["preview"]
+        assert own_search[0]["chunkSha256"]
+        index_status = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/B/attachments/search-status"
+        ).json()
+        assert index_status["ready"] is True
+        assert index_status["engine"] == "fts5-trigram"
+        assert index_status["indexedChunks"] == index_status["readyChunks"] >= 1
         sibling_search = client.get(
             f"/api/v1/workflows/{workflow_id}/instances/E/attachments/search",
             params={"q": "private requirement"},
@@ -163,6 +172,44 @@ def test_disk_assets_route_listing_and_bound_citations_are_isolated(tmp_path: Pa
         assert detail["chunks"][0]["preview"]
 
     store.close()
+
+
+def test_persistent_trigram_index_supports_chinese_short_fallback_and_deletion(tmp_path: Path):
+    database = tmp_path / "workspace.db"
+    store = GraphStore(database)
+    workflow = store.create_workflow(
+        name="Search", root_title="A", root_instance_id="A"
+    )
+    attachment = store.create_attachment(
+        workflow["workflowId"], "A", name="中文资料.txt", mime_type="text/plain",
+        size_bytes=len("中文情感分析证据编号 WP-7788".encode("utf-8")),
+        content_text="中文情感分析证据编号 WP-7788",
+    )
+    full = store.search_attachments(
+        workflow["workflowId"], "A", query="情感分析"
+    )
+    assert full["engine"] == "fts5-trigram"
+    assert full["results"][0]["attachmentId"] == attachment["attachmentId"]
+    short = store.search_attachments(workflow["workflowId"], "A", query="中文")
+    assert short["engine"] == "route-like-short-query"
+    assert short["results"][0]["attachmentId"] == attachment["attachmentId"]
+    store.close()
+
+    reopened = GraphStore(database)
+    assert reopened.attachment_search_status(
+        workflow["workflowId"], "A"
+    )["ready"] is True
+    assert reopened.search_attachments(
+        workflow["workflowId"], "A", query="WP-7788"
+    )["results"][0]["attachmentId"] == attachment["attachmentId"]
+    reopened.delete_attachment(workflow["workflowId"], "A", attachment["attachmentId"])
+    assert reopened.search_attachments(
+        workflow["workflowId"], "A", query="WP-7788"
+    )["results"] == []
+    assert reopened.attachment_search_status(
+        workflow["workflowId"], "A"
+    )["indexedChunks"] == 0
+    reopened.close()
 
 
 def test_image_upload_is_retained_with_an_explicit_ocr_status(tmp_path: Path):

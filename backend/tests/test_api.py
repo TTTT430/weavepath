@@ -270,6 +270,11 @@ def test_chat_model_receives_bound_attachment_context_not_storage_references():
         assert "summarize the file" in provider_content
         assert "[WeavePath attachments v2]" not in provider_content
         assert uploaded["attachmentId"] not in provider_content
+        sources = response.json()["assistantMessage"]["responseDetails"]["sources"]
+        assert sources[0]["attachmentId"] == uploaded["attachmentId"]
+        assert sources[0]["name"] == "notes.md"
+        assert sources[0]["chunkOrdinal"] == 1
+        assert sources[0]["locator"].endswith("lines 1-1")
     store.close()
 
 

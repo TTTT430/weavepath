@@ -172,6 +172,24 @@ def _search_excerpt(content: str, query: str, limit: int = 280) -> str:
     return ("…" if start else "") + excerpt + ("…" if end < len(flattened) else "")
 
 
+def _fts_query(query: str) -> str | None:
+    """Build a literal-only FTS expression from untrusted user input.
+
+    Trigram MATCH needs at least three characters. Quoted phrases keep FTS
+    operators in filenames and user queries from changing the expression.
+    """
+    candidates = [query, *query.split()]
+    phrases: list[str] = []
+    for candidate in candidates:
+        value = candidate.strip()
+        if len(value) < 3 or value in phrases:
+            continue
+        phrases.append(value)
+    if not phrases:
+        return None
+    return " OR ".join('"' + value.replace('"', '""') + '"' for value in phrases)
+
+
 class GraphStore:
     """SQLite graph repository with route-aware, live parent inheritance.
 
@@ -801,13 +819,7 @@ class GraphStore:
 
     def search_attachments(self, workflow_id: str, instance_id: str, *, query: str,
                            limit: int = 20) -> dict[str, Any]:
-        """Search parsed file chunks visible on exactly one memory route.
-
-        Ranking is deliberately local and deterministic: it never reaches a
-        sibling instance and does not mutate the excerpts frozen into an
-        already-bound model request. Vector/semantic retrieval can be layered
-        on later without changing this ownership boundary.
-        """
+        """Search the durable FTS index inside exactly one memory route."""
         normalized = " ".join(query.split()).strip()
         if not normalized:
             raise Validation("attachment search query must not be blank")
@@ -815,50 +827,116 @@ class GraphStore:
             raise Validation("attachment search query is too long")
         if limit < 1 or limit > 50:
             raise Validation("attachment search limit must be between 1 and 50")
-        terms = _query_terms(normalized)
-        phrase = normalized.lower()
+        expression = _fts_query(normalized)
         with self._lock:
             current = self._instance(self._conn, workflow_id, instance_id, active=True)
             route_ids = self._route_ids(self._conn, workflow_id, instance_id)
             placeholders = ",".join("?" for _ in route_ids)
-            rows = self._conn.execute(
-                "SELECT ma.id AS attachment_id,ma.name,ma.instance_id,ci.title AS route_title,"
-                "ac.ordinal,ac.locator,ac.content_text,ac.character_count "
-                "FROM message_attachments ma "
-                "JOIN conversation_instances ci ON ci.id=ma.instance_id "
-                "JOIN attachment_chunks ac ON ac.attachment_id=ma.id "
-                f"WHERE ma.workflow_id=? AND ma.instance_id IN ({placeholders}) "
-                "AND ma.parse_status='ready' ORDER BY ma.created_at,ma.id,ac.ordinal",
-                (workflow_id, *route_ids),
-            ).fetchall()
+            if expression is not None:
+                rows = self._conn.execute(
+                    "SELECT ma.id AS attachment_id,ma.name,ma.instance_id,"
+                    "ci.title AS route_title,ac.ordinal,ac.locator,ac.content_text,"
+                    "ac.character_count,ac.sha256 AS chunk_sha256,"
+                    "bm25(attachment_chunks_fts,0.0,0.0,8.0,3.0,1.0) AS search_rank "
+                    "FROM attachment_chunks_fts "
+                    "JOIN attachment_chunks ac ON ac.rowid=attachment_chunks_fts.rowid "
+                    "JOIN message_attachments ma ON ma.id=ac.attachment_id "
+                    "JOIN conversation_instances ci ON ci.id=ma.instance_id "
+                    f"WHERE attachment_chunks_fts MATCH ? AND ma.workflow_id=? "
+                    f"AND ma.instance_id IN ({placeholders}) AND ma.parse_status='ready' "
+                    "ORDER BY search_rank,ma.created_at,ma.id,ac.ordinal LIMIT ?",
+                    (expression, workflow_id, *route_ids, max(limit * 4, limit)),
+                ).fetchall()
+                search_mode = "fts5-trigram"
+            else:
+                # FTS5 trigram cannot match one- or two-character queries. Keep
+                # this bounded to the already-authorized route and use LIKE only
+                # for that narrow compatibility case.
+                needle = f"%{normalized.lower()}%"
+                rows = self._conn.execute(
+                    "SELECT ma.id AS attachment_id,ma.name,ma.instance_id,"
+                    "ci.title AS route_title,ac.ordinal,ac.locator,ac.content_text,"
+                    "ac.character_count,ac.sha256 AS chunk_sha256,0.0 AS search_rank "
+                    "FROM attachment_chunks ac "
+                    "JOIN message_attachments ma ON ma.id=ac.attachment_id "
+                    "JOIN conversation_instances ci ON ci.id=ma.instance_id "
+                    f"WHERE ma.workflow_id=? AND ma.instance_id IN ({placeholders}) "
+                    "AND ma.parse_status='ready' AND (LOWER(ac.content_text) LIKE ? "
+                    "OR LOWER(ma.name) LIKE ? OR LOWER(ac.locator) LIKE ?) "
+                    "ORDER BY ma.created_at,ma.id,ac.ordinal LIMIT ?",
+                    (workflow_id, *route_ids, needle, needle, needle,
+                     max(limit * 4, limit)),
+                ).fetchall()
+                search_mode = "route-like-short-query"
         route_order = {route_id: len(route_ids) - index - 1
                        for index, route_id in enumerate(route_ids)}
-        ranked: list[tuple[int, int, str, int, sqlite3.Row]] = []
+        ranked: list[tuple[float, int, str, int, sqlite3.Row]] = []
         for row in rows:
-            content = row["content_text"].lower()
-            name = row["name"].lower()
-            phrase_hits = min(content.count(phrase), 8) if phrase else 0
-            term_hits = sum(min(content.count(term), 8) for term in terms)
-            name_hits = ((16 if phrase and phrase in name else 0) + sum(
-                3 for term in terms if term in name
-            )) if row["ordinal"] == 1 else 0
-            score = phrase_hits * 12 + term_hits + name_hits
-            if score:
-                ranked.append((
-                    score, route_order.get(row["instance_id"], 0),
-                    row["attachment_id"], row["ordinal"], row,
-                ))
-        ranked.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
+            rank = float(row["search_rank"] or 0.0)
+            ranked.append((rank, route_order.get(row["instance_id"], 0),
+                           row["attachment_id"], row["ordinal"], row))
+        ranked.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         results = [{
             "attachmentId": row["attachment_id"], "name": row["name"],
             "routeInstanceId": row["instance_id"], "routeTitle": row["route_title"],
             "inherited": row["instance_id"] != current["id"],
             "chunkOrdinal": row["ordinal"], "locator": row["locator"],
-            "characters": row["character_count"], "score": score,
+            "characters": row["character_count"], "score": -rank,
+            "chunkSha256": row["chunk_sha256"],
             "preview": _search_excerpt(row["content_text"], normalized),
-        } for score, _, _, _, row in ranked[:limit]]
+        } for rank, _, _, _, row in ranked[:limit]]
         return {"workflowId": workflow_id, "instanceId": instance_id,
-                "query": normalized, "results": results}
+                "query": normalized, "engine": search_mode, "results": results}
+
+    def attachment_search_status(self, workflow_id: str,
+                                 instance_id: str) -> dict[str, Any]:
+        """Report route-scoped persistent index coverage for diagnostics."""
+        with self._lock:
+            self._instance(self._conn, workflow_id, instance_id, active=True)
+            route_ids = self._route_ids(self._conn, workflow_id, instance_id)
+            placeholders = ",".join("?" for _ in route_ids)
+            ready = self._conn.execute(
+                "SELECT COUNT(*) FROM attachment_chunks ac "
+                "JOIN message_attachments ma ON ma.id=ac.attachment_id "
+                f"WHERE ma.workflow_id=? AND ma.instance_id IN ({placeholders}) "
+                "AND ma.parse_status='ready'",
+                (workflow_id, *route_ids),
+            ).fetchone()[0]
+            indexed = self._conn.execute(
+                "SELECT COUNT(*) FROM attachment_chunks_fts f "
+                "JOIN attachment_chunks ac ON ac.rowid=f.rowid "
+                "JOIN message_attachments ma ON ma.id=ac.attachment_id "
+                f"WHERE ma.workflow_id=? AND ma.instance_id IN ({placeholders}) "
+                "AND ma.parse_status='ready'",
+                (workflow_id, *route_ids),
+            ).fetchone()[0]
+        return {"workflowId": workflow_id, "instanceId": instance_id,
+                "engine": "fts5-trigram", "indexVersion": 1,
+                "ready": indexed == ready, "indexedChunks": indexed,
+                "readyChunks": ready}
+
+    def attachment_sources_for_message(self, workflow_id: str,
+                                       message_id: int | str) -> list[dict[str, Any]]:
+        """Return immutable file evidence selected when a user message was bound."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ma.id,ma.name,ma.instance_id,ci.title AS route_title,"
+                "ma.context_sources_json FROM message_attachments ma "
+                "JOIN conversation_instances ci ON ci.id=ma.instance_id "
+                "WHERE ma.workflow_id=? AND ma.message_id=? "
+                "ORDER BY ma.created_at,ma.id",
+                (workflow_id, message_id),
+            ).fetchall()
+        sources: list[dict[str, Any]] = []
+        for row in rows:
+            for source in _loads(row["context_sources_json"], []):
+                if not isinstance(source, dict):
+                    continue
+                sources.append({**source, "attachmentId": row["id"],
+                                "name": row["name"],
+                                "routeInstanceId": row["instance_id"],
+                                "routeTitle": row["route_title"]})
+        return sources
 
     def get_attachment(self, workflow_id: str, instance_id: str,
                        attachment_id: str) -> dict[str, Any]:

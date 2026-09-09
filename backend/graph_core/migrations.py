@@ -212,6 +212,47 @@ CREATE TABLE IF NOT EXISTS attachment_uploads(
 );
 CREATE INDEX IF NOT EXISTS idx_attachment_uploads_route
 ON attachment_uploads(workflow_id,instance_id,status,updated_at);
+
+-- A durable trigram index keeps Chinese and code substring search useful
+-- without requiring a language-specific tokenizer.  Route ownership remains
+-- in message_attachments and is always checked by the query layer.
+CREATE VIRTUAL TABLE IF NOT EXISTS attachment_chunks_fts USING fts5(
+    attachment_id UNINDEXED,
+    ordinal UNINDEXED,
+    name,
+    locator,
+    content_text,
+    tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS attachment_chunks_fts_insert
+AFTER INSERT ON attachment_chunks BEGIN
+    INSERT INTO attachment_chunks_fts(rowid,attachment_id,ordinal,name,locator,content_text)
+    VALUES(
+        new.rowid,
+        new.attachment_id,
+        new.ordinal,
+        COALESCE((SELECT name FROM message_attachments WHERE id=new.attachment_id),''),
+        new.locator,
+        new.content_text
+    );
+END;
+CREATE TRIGGER IF NOT EXISTS attachment_chunks_fts_delete
+AFTER DELETE ON attachment_chunks BEGIN
+    DELETE FROM attachment_chunks_fts WHERE rowid=old.rowid;
+END;
+CREATE TRIGGER IF NOT EXISTS attachment_chunks_fts_update
+AFTER UPDATE ON attachment_chunks BEGIN
+    DELETE FROM attachment_chunks_fts WHERE rowid=old.rowid;
+    INSERT INTO attachment_chunks_fts(rowid,attachment_id,ordinal,name,locator,content_text)
+    VALUES(
+        new.rowid,
+        new.attachment_id,
+        new.ordinal,
+        COALESCE((SELECT name FROM message_attachments WHERE id=new.attachment_id),''),
+        new.locator,
+        new.content_text
+    );
+END;
 """
 
 # Runtime v2 remains an additive preview and deliberately does not advance the
@@ -382,6 +423,19 @@ def run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "UPDATE message_attachments SET extracted_characters=LENGTH(content_text) "
         "WHERE extracted_characters=0 AND content_text<>''"
+    )
+    # Backfill chunks created before the durable search index existed. Keeping
+    # attachment_chunks.rowid as the FTS rowid makes trigger maintenance and
+    # integrity checks deterministic across restarts.
+    conn.execute(
+        "DELETE FROM attachment_chunks_fts WHERE rowid NOT IN "
+        "(SELECT rowid FROM attachment_chunks)"
+    )
+    conn.execute(
+        "INSERT INTO attachment_chunks_fts(rowid,attachment_id,ordinal,name,locator,content_text) "
+        "SELECT ac.rowid,ac.attachment_id,ac.ordinal,ma.name,ac.locator,ac.content_text "
+        "FROM attachment_chunks ac JOIN message_attachments ma ON ma.id=ac.attachment_id "
+        "WHERE NOT EXISTS (SELECT 1 FROM attachment_chunks_fts f WHERE f.rowid=ac.rowid)"
     )
     runtime_applied = {
         row[0] for row in conn.execute("SELECT version FROM runtime_schema_migrations")

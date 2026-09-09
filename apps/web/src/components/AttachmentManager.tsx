@@ -1,5 +1,5 @@
 import{useCallback,useEffect,useState,type FormEvent}from'react';
-import type{AttachmentSearchResult,UploadedAttachment}from'../domain/types';
+import type{AttachmentSearchResult,AttachmentSearchStatus,UploadedAttachment}from'../domain/types';
 import{api}from'../lib/api';
 import{formatFileSize}from'../lib/chatAttachments';
 import{useI18n}from'../lib/i18n';
@@ -9,9 +9,11 @@ interface AttachmentManagerProps{
  workflowId:string
  instanceId:string
  onClose:()=>void
+ initialAttachmentId?:string
+ initialChunkOrdinal?:number
 }
 
-export function AttachmentManager({workflowId,instanceId,onClose}:AttachmentManagerProps){
+export function AttachmentManager({workflowId,instanceId,onClose,initialAttachmentId,initialChunkOrdinal}:AttachmentManagerProps){
  const{t,locale}=useI18n();
  const[items,setItems]=useState<UploadedAttachment[]>([]);
  const[selected,setSelected]=useState<UploadedAttachment|null>(null);
@@ -21,16 +23,17 @@ export function AttachmentManager({workflowId,instanceId,onClose}:AttachmentMana
  const[query,setQuery]=useState('');
  const[searchResults,setSearchResults]=useState<AttachmentSearchResult[]|null>(null);
  const[searching,setSearching]=useState(false);
+ const[indexStatus,setIndexStatus]=useState<AttachmentSearchStatus|null>(null);
  const load=useCallback(async()=>{
   setLoading(true);setError('');
   try{
-   const value=await api.attachments(workflowId,instanceId,'route');setItems(value);
-   setSelected(current=>current?value.find(item=>item.attachmentId===current.attachmentId)||null:null);
+   const[value,status]=await Promise.all([api.attachments(workflowId,instanceId,'route'),api.attachmentSearchStatus(workflowId,instanceId)]);setItems(value);setIndexStatus(status);
   }catch{setError(t('attachmentLoadFailed'))}
   finally{setLoading(false)}
  },[instanceId,t,workflowId]);
  useEffect(()=>{void load()},[load]);
  useEffect(()=>{setQuery('');setSearchResults(null);setSelected(null)},[instanceId,workflowId]);
+ useEffect(()=>{if(initialAttachmentId)void inspect({attachmentId:initialAttachmentId})},[initialAttachmentId,instanceId,workflowId]);
  useEffect(()=>{const close=(event:KeyboardEvent)=>{if(event.key==='Escape')onClose()};window.addEventListener('keydown',close);return()=>window.removeEventListener('keydown',close)},[onClose]);
 
  async function inspect(item:Pick<UploadedAttachment,'attachmentId'>){
@@ -67,7 +70,7 @@ export function AttachmentManager({workflowId,instanceId,onClose}:AttachmentMana
  return <div className="attachment-manager-backdrop" role="presentation" onMouseDown={event=>{if(event.target===event.currentTarget)onClose()}}>
   <section className="attachment-manager" role="dialog" aria-modal="true" aria-labelledby="attachment-manager-title">
    <header>
-    <div><h2 id="attachment-manager-title">{t('attachmentLibrary')}</h2><p>{t('attachmentLibraryHint')}</p></div>
+    <div><h2 id="attachment-manager-title">{t('attachmentLibrary')}</h2><p>{t('attachmentLibraryHint')}</p>{indexStatus&&<span className={`attachment-index-status${indexStatus.ready?' ready':''}`}><AppIcon name={indexStatus.ready?'check':'clock'} size={12}/>{indexStatus.ready?t('searchIndexReady'):t('searchIndexBuilding')} · {indexStatus.indexedChunks.toLocaleString(locale)}/{indexStatus.readyChunks.toLocaleString(locale)}</span>}</div>
     <div className="attachment-manager-header-actions"><button type="button" className="icon-button" aria-label={t('retry')} title={t('retry')} onClick={()=>void load()}><AppIcon name="retry"/></button><button type="button" className="icon-button" aria-label={t('close')} title={t('close')} onClick={onClose}><AppIcon name="close"/></button></div>
    </header>
    {error&&<div className="attachment-manager-error" role="alert"><AppIcon name="warning"/><span>{error}</span></div>}
@@ -99,7 +102,7 @@ export function AttachmentManager({workflowId,instanceId,onClose}:AttachmentMana
       </dl>
       {selected.parseStatus==='failed'&&<div className="attachment-parse-failure"><AppIcon name="warning"/><div><strong>{t('attachmentParseFailed')}</strong><p>{selected.parseErrorCode==='attachmentOcrUnavailable'?t('imageOcrUnavailable'):selected.parseError||selected.parseErrorCode||t('attachmentReadingFailed')}</p>{selected.status==='uploaded'&&<button type="button" disabled={retrying===selected.attachmentId} onClick={()=>void reparse(selected)}>{retrying===selected.attachmentId?t('retryingParsing'):t('retryParsing')}</button>}</div></div>}
       {!!selected.contextSources.length&&<section className="attachment-source-section"><h4>{t('sourceUsed')}</h4><ul>{selected.contextSources.map(source=><li key={`${source.chunkOrdinal}-${source.locator}`}><span>{source.locator}</span><small>#{source.chunkOrdinal}</small></li>)}</ul></section>}
-      {!!selected.chunks?.length&&<section className="attachment-chunk-section"><h4>{t('chunkPreview')}</h4>{selected.chunks.map(chunk=><details key={chunk.ordinal}><summary><span>{chunk.locator}</span><small>{chunk.characters.toLocaleString(locale)}</small></summary><pre>{chunk.preview}</pre></details>)}</section>}
+      {!!selected.chunks?.length&&<section className="attachment-chunk-section"><h4>{t('chunkPreview')}</h4>{selected.chunks.map(chunk=><details key={chunk.ordinal} open={selected.attachmentId===initialAttachmentId&&chunk.ordinal===initialChunkOrdinal}><summary><span>{chunk.locator}</span><small>{chunk.characters.toLocaleString(locale)}</small></summary><pre>{chunk.preview}</pre></details>)}</section>}
      </>}
     </aside>
    </div>

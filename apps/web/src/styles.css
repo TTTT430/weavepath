@@ -1221,6 +1221,12 @@ html .response-details-grid {
 html .response-details-grid > div { display: grid; min-width: 0; gap: 3px; }
 html .response-details-grid small { color: var(--ui-subtle); }
 html .response-details-grid strong { color: var(--ui-muted); font-size: 12px; font-weight: 600; }
+html .response-evidence { display: grid; max-width: 680px; gap: 6px; margin-top: 8px; }
+html .response-evidence > strong { color: var(--ui-muted); font-size: 10px; font-weight: 650; }
+html .response-evidence > div { display: flex; flex-wrap: wrap; gap: 6px; }
+html .response-evidence button { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; gap: 5px; padding: 5px 8px; color: var(--ui-accent); background: var(--ui-accent-soft); border: 1px solid color-mix(in srgb,var(--ui-accent) 26%,var(--ui-border)); border-radius: 7px; box-shadow: none; font-size: 10px; }
+html .response-evidence button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html .response-evidence button:hover:not(:disabled) { border-color: color-mix(in srgb,var(--ui-accent) 55%,var(--ui-border)); }
 
 /* Shared Synapse canvas geometry. */
 html .workspace-canvas-page,
@@ -2128,6 +2134,8 @@ html .attachment-manager > header h2,
 html .attachment-manager > header p { margin: 0; }
 html .attachment-manager > header h2 { font-size: 18px; }
 html .attachment-manager > header p { max-width: 620px; margin-top: 5px; color: var(--ui-muted); font-size: 12px; line-height: 1.5; }
+html .attachment-index-status { display: inline-flex; align-items: center; gap: 5px; margin-top: 7px; padding: 3px 7px; color: var(--ui-warning); background: var(--ui-warning-soft); border-radius: 999px; font-size: 9px; }
+html .attachment-index-status.ready { color: var(--ui-success); background: var(--ui-success-soft); }
 html .attachment-manager-header-actions { display: flex; gap: 5px; }
 html .attachment-manager-header-actions .icon-button { width: 32px; height: 32px; color: var(--ui-muted); background: transparent; border-color: transparent; border-radius: 8px; }
 html .attachment-manager-header-actions .icon-button:hover { color: var(--ui-text); background: var(--ui-panel-muted); border-color: var(--ui-border); }

@@ -6,7 +6,7 @@ import{ApiError}from'../lib/api';
 import{parseChatMessage}from'../lib/chatAttachments';
 
 const apiMock=vi.hoisted(()=>({
- workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),attachments:vi.fn(),searchAttachments:vi.fn(),attachment:vi.fn(),uploadAttachment:vi.fn(),reparseAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
+ workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),attachments:vi.fn(),searchAttachments:vi.fn(),attachmentSearchStatus:vi.fn(),attachment:vi.fn(),uploadAttachment:vi.fn(),reparseAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
  chatStream:undefined as ReturnType<typeof vi.fn>|undefined,cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
  createWorkflow:vi.fn(),renameWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
 }));
@@ -33,6 +33,7 @@ beforeEach(()=>{
  apiMock.aiModels.mockResolvedValue({models:[],count:0});apiMock.switchAIModel.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model',reasoningEffort:null});
  const readyAttachment={attachmentId:'att-1',name:'notes.md',mimeType:'text/markdown',size:8_000_000,sha256:'abc',status:'uploaded',parseStatus:'ready',parser:'utf8-text',parseErrorCode:null,parseError:null,extractedCharacters:8_000_000,chunkCount:2,contextCharacters:0,contextTruncated:false,contextSources:[]};
  apiMock.attachments.mockResolvedValue([]);apiMock.attachment.mockResolvedValue(readyAttachment);apiMock.reparseAttachment.mockResolvedValue(null);
+ apiMock.attachmentSearchStatus.mockResolvedValue({workflowId:'wf-1',instanceId:'root',engine:'fts5-trigram',indexVersion:1,ready:true,indexedChunks:0,readyChunks:0});
  apiMock.uploadAttachment.mockResolvedValue({...readyAttachment,parseStatus:'processing',parser:null,extractedCharacters:0,chunkCount:0});apiMock.deleteAttachment.mockResolvedValue({ok:true,attachmentId:'att-1'});
  apiMock.chat.mockResolvedValue({userMessage:{id:'u1',role:'user',content:'测试消息'},assistantMessage:{id:'a1',role:'assistant',content:'助手回复'}});
  apiMock.renameWorkflow.mockResolvedValue({workflowId:'wf-1',name:'新项目名称',graphRevision:1,eventRevision:1});
@@ -191,6 +192,16 @@ describe('chat delivery mode',()=>{
   expect(within(details).getByText('250')).toBeInTheDocument();
   expect(within(details).getByText('75%')).toBeInTheDocument();
   expect(within(details).getByText('100%')).toBeInTheDocument();
+ });
+ it('opens the exact file evidence from ordinary reply details',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'a1',role:'assistant',content:'带引用的回答',responseDetails:{durationMs:1200,cacheStatus:'not_reported',sources:[{attachmentId:'att-1',name:'notes.md',chunkOrdinal:2,locator:'page 3'}]}}],contentRevision:1});
+  apiMock.attachment.mockResolvedValue({attachmentId:'att-1',name:'notes.md',mimeType:'text/markdown',size:100,sha256:'abc',status:'bound',parseStatus:'ready',parser:'utf8-text',parseErrorCode:null,parseError:null,extractedCharacters:100,chunkCount:2,contextCharacters:80,contextTruncated:false,contextSources:[],messageId:1,routeInstanceId:'root',routeTitle:'数据集构建',inherited:false,chunks:[{ordinal:2,locator:'page 3',characters:80,preview:'精确证据内容'}]});
+  renderChat();await screen.findByText('带引用的回答');fireEvent.click(screen.getByLabelText('回复详情'));
+  fireEvent.click(screen.getByRole('button',{name:/notes\.md · page 3/}));
+  expect(await screen.findByRole('heading',{name:'路线文件'})).toBeInTheDocument();
+  expect(await screen.findByText('精确证据内容')).toBeVisible();
+  expect(apiMock.attachment).toHaveBeenCalledWith('wf-1','root','att-1');
  });
  it('labels cache fields unavailable when an ordinary reply provider omitted them',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
