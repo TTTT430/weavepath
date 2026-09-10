@@ -30,7 +30,7 @@
 | Surface sync | Done for current slice | 同页 selection 激活后通过 `WorkspaceShell` 的直接 callback/signal 驱动 Chat 重读权威 route，避免快速切页依赖浏览器广播；Chat 与 Turn Canvas 的请求 lifecycle 以及可选 `/graph` 兼容入口继续使用按 workflow、route 和 `requestId` 隔离的 `BroadcastChannel + window.opener.postMessage` 提示。这些提示只触发重新读取，SQLite/local snapshot 才是真源；它不是 WebSocket、跨设备同步或持久化的进行中 UI 状态恢复 |
 | Local AI Chat | In progress | 已实现网页/环境变量配置、模型发现、连接验证、输入框快捷模型/推理强度切换、自动/系统代理/直连与逐路线诊断、OpenAI-compatible JSON/SSE 回复、逐 token 草稿、停止生成、失败回答独立重试、请求幂等、编辑最近提问并原子重新生成、思考/内联错误状态、稳定错误码和当前路线消息写回。`＋` 支持 UTF-8 文本/代码/数据、PDF、DOCX、XLSX、PPTX（单文件 50 MiB、每条消息最多 5 个），超过 4 MiB 时可跨重启分片续传。原件进入本机对象存储，显式附件按问题固化上下文；未选文件时从实时父路线生成预算化 FTS5 检索计划。路线历史超过默认 240,000 字符时会自动压缩较早消息，计划绑定具体路线/revision 并在回复详情显示；原始消息不变，父更新动态进入，兄弟内容隔离。图片 OCR 和 embedding/向量语义召回尚未实现；API key 默认仅进程内存，用户显式选择时由 Windows 当前用户 DPAPI 加密保存；仍无 metabolize |
 | Agent Runtime v2 P0–P2 | Done for current slice | cache-aware 请求按 policy/tools/live route/accepted knowledge/current request 装配；checkpoint 仅审计，动态父记忆和兄弟隔离已验证。逐 model step 记录 OpenAI/DeepSeek cache usage，缺失时保持不可用；加入持久化取消、重试 lineage、审批、patch Artifact、路线级自动压缩、run lease/heartbeat/execution phase 和 root-lineage effect journal。已完成 effect 只复用不重做，未知 model/tool 结果阻止自动重放。仍由 OS 锁限制为单 API 进程，不代表生产级多 worker Runtime 完成 |
-| HostAdapter / release P3 | In progress | HostAdapter contract v1 新增版本化 descriptor、capability-aware Codex/Claude companion bridge 边界、operation/identity validation；受管理启动新增只读版本预检、实际迁移前 verified SQLite backup、completed/restored manifest、失败自动恢复和数据库诊断 API。真实 Codex/Claude transport、host saga、显式恢复 UI/命令与备份保留策略仍待实现 |
+| HostAdapter / release P3 | Done for current slice | HostAdapter contract v1、真实 Codex/Claude companion transport、host task 枚举/导入、operation/identity validation、跨宿主 Saga 幂等/补偿/崩溃续交、迁移前 verified SQLite backup、completed/restored manifest、失败自动恢复、备份保留与停机 restore plan 已完成；当前仍是单用户本机、单活动 companion。|
 | Engineering Lab v1 | Done for current slice | schema v5 已加入不读取 transcript 的 2–4 分支对比、显式知识/Artifact 合并、路线作用域接纳知识、版本化 Artifact/数据集和实验快照；schema v6 加入双层路线分类，当前 schema v7 继续沿用这些表并增加标题来源；自动 evaluator/scorer、参数矩阵、Artifact diff/外部文件引用仍未实现 |
 | Route Memory / metabolize | Planned | Phase 3 |
 | `conversation-workflow-bridge-v4` | Legacy frozen | 当前最完整的 Codex 原型；不再承载新的全局业务状态 |
@@ -51,7 +51,7 @@
 ## Phase 1 剩余工作
 
 1. 为 schema v7 前向 migration runner 补齐升级矩阵、失败恢复、备份和 rollback/downgrade 发布策略。
-2. 接入真实 Codex/Claude companion transport 并执行宿主 E2E；Standalone/Mock、contract v1、capability/cursor/binding validation 已完成，测试专用 `ScriptedMockAgentAdapter` 不替代 HostAdapter。
+2. 扩展真实 Codex/Claude companion 的宿主 E2E 与多宿主 registry；当前单活动 companion 的 transport、任务枚举/导入和只读真实 E2E 已完成，测试专用 `ScriptedMockAgentAdapter` 不替代 HostAdapter。
 3. 为宿主注入上下文、归档事件和 transcript projector 增加 typed classifier；Runtime v2 的 Tool/Failure/Approval 自动化时间线已完成，真实浏览器故障/审批路径仍需补验。
 4. 评估多进程/跨设备场景后再引入 WebSocket；可选同源 `/graph` 兼容窗口继续使用 browser events。
 5. 人工确认并删除旧的 `backend/workflow.db` 测试产物。
@@ -61,7 +61,7 @@
 1. **P0：路线文件检索与可追溯引用，已完成当前切片。** 已加入持久化 FTS5 trigram 索引、启动回填/删除同步、路线与兄弟隔离、索引状态，以及回复证据到精确分块的跳转。
 2. **P1：受预算约束的自动路线级检索，已完成词法切片。** 未显式选择文件的 Chat 和 Agent 请求会生成冻结且可检查的 retrieval plan；计划只查询实时父路线，证据位于 current request，稳定 policy/tools 前缀不含动态元数据。下一小步是 OCR 与可选向量语义召回，不替换现有可审计词法路径。
 3. **校正后的 P2：Runtime 可靠性，当前切片已完成。** 已加入模型/工具未知边界恢复、root-lineage 工具副作用幂等、审批恢复、durable owner/lease/heartbeat，以及按具体路线和 revision 派生的自动上下文压缩。每次运行的时间线、费用、Token、缓存命中率和工具记录是既有能力，不作为新 P2 重复开发。下一步是真实 provider 长上下文/中断浏览器 E2E 和多进程接管设计。
-4. **P3：正式 HostAdapter 与迁移/发布硬化，当前第一切片已完成。** 已加入 contract v1、Codex/Claude companion bridge 边界、迁移前 verified backup、失败自动恢复、future/gapped schema 拒绝和只读诊断接口。下一步是真实 companion transport E2E、host operation saga、显式恢复入口与备份保留策略。
+4. **P3：正式 HostAdapter 与迁移/发布硬化，当前本机切片已完成。** 已加入 contract v1、真实 Codex/Claude companion transport、宿主任务枚举/导入、host operation saga、失败补偿、迁移前 verified backup、失败自动恢复、保留策略和显式停机 restore plan。后续是多宿主 registry、签名打包与生产部署治理。
 
 ## WorkspaceShell / 双层画布验证记录
 

@@ -743,7 +743,7 @@ def test_schema_v2_upgrade_backfills_immutable_completed_run_result(tmp_path):
     )] == [1, 2, 3, 4, 5, 6, 7]
     assert [row[0] for row in store._conn.execute(
         "SELECT version FROM runtime_schema_migrations ORDER BY version"
-    )] == [1, 2]
+    )] == [1, 2, 3]
     assert {
         "lease_owner", "lease_expires_at", "last_heartbeat_at", "execution_phase"
     } <= {row[1] for row in store._conn.execute("PRAGMA table_info(agent_runs)")}

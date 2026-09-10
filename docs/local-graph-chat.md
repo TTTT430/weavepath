@@ -14,7 +14,7 @@
 
 目标是在不依赖宿主私有能力的情况下，完整验证图、路线记忆、原生 WorkspaceShell 和节点内部 Turn Canvas。独立 `/graph` 窗口降为可选兼容入口，不再定义默认交互。
 
-已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。AI 请求支持 SSE 逐 token 草稿、停止生成、失败回答重试、幂等键和本地化错误状态；连接中、等待模型、接收回答、自动重连和已处理时长使用统一图标活动组件显示。模型生成读取不设固定时限；可重试的建连和传输故障最多自动尝试三次，半截流式草稿会先清除再重建请求。编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；HostAdapter contract v1 已实现，真实 Codex/Claude companion transport 和 metabolize 尚未实现。
+已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。AI 请求支持 SSE 逐 token 草稿、停止生成、失败回答重试、幂等键和本地化错误状态；连接中、等待模型、接收回答、自动重连和已处理时长使用统一图标活动组件显示。模型生成读取不设固定时限；可重试的建连和传输故障最多自动尝试三次，半截流式草稿会先清除再重建请求。编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 与 P3/P4 的真实 Codex/Claude companion transport、宿主 Saga、数据库恢复和 SSE socket 验收已完成当前单用户本机切片；metabolize 与多宿主 registry 仍未实现。
 
 依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：选择具体实例会同步激活 Chat 的当前路线，双击还会进入该实例的 local-only Turn Canvas；第二层选择具体 turn/内部路线时同样同步 `activeRouteInstanceId`，“继续对话”只返回 Chat。可以从选定本地用户 turn 记录精确 checkpoint 锚点。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
 
@@ -59,7 +59,7 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 实现范围：
 
 - FastAPI、React 和已验证的 schemaVersion 7 SQLite 前向迁移；受管理启动已有迁移前 verified backup 和失败自动恢复，不支持反向 SQL downgrade；
-- GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port、Standalone/Mock HostAdapter 与 companion bridge contract v1 已实现，真实 Codex/Claude transport 尚未接入；
+- GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port、Standalone/Mock HostAdapter、真实 Codex/Claude companion bridge contract v1、任务枚举/导入 API 与 Saga 已实现；外部 transcript 仍只通过 HostAdapter 分页读取；
 - workflow、topic、instance、checkpoint、local message、tombstone；
 - Turn projector 只读取具体实例的 local messages，将一个用户问题及下一用户问题前的 assistant/tool message 组织为一张 turn 卡片；沿祖先路线动态继承的消息不重复投影，failure/operation 事件扩展仍是后续工作；
 - Turn Canvas composer 与普通 Chat 调用同一条 route-aware 消息链路并写入同一 SQLite 消息真源，不复制 transcript；从 turn 卡片发起的 `fork-chat` 以精确 anchor 幂等创建 `surface_scope=turn` 的内部实例。首条问题可省略，空路线由 `routeNodes` 立即投影为占位卡；提供首条问题时可立即生成回答。内部实例只进入 owner 的 Turn Tree，不进入第一层 graph；
@@ -75,7 +75,7 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 2. `backend/api`：turns query 和带 revision 的 anchor fork 已落地；`backend/agent_runtime` 继续承载已验证本机 preview 的 run repository/service、model port 与 tool registry。
 3. `apps/web`：`WorkspaceShell` 已成为默认入口并保持 Chat surface；Workflow surface 在顶层实例图和节点内部 Turn Canvas 间按需钻入。
 4. Tool/Failure/Approval Runtime 时间线已完成当前切片；turn 卡片仍不得把继承消息当成本地内容。
-5. Standalone/Host Mock 与 capability-aware bridge contract v1 已完成；真实 Codex/Claude companion 集成和宿主 saga 仍是后续。
+5. Standalone/Host Mock、真实 Codex/Claude companion、capability-aware bridge contract v1 与宿主 Saga 已完成当前切片；多宿主 registry 和生产打包仍是后续。
 6. 下方 A/B/C/D/turn 的 Standalone 自动化与主路径真实浏览器 E2E 已完成；跨宿主验收不能复用该完成声明。
 
 ### 必须通过的验收
@@ -114,7 +114,7 @@ A
 
 21. schema v7 持久化 `title_is_generated`。系统生成标题会在第一条本地用户消息到达时更新为最多 48 字摘要并增加 `graphRevision`；用户显式重命名后永不自动覆盖。旧数据库标题升级时一律按用户所有处理。**后端自动化已验证。**
 
-当前本机统一套件为后端 197 项并通过 Python compileall；前端 153 项测试、TypeScript typecheck 和 production build 通过。这里的“通过”只覆盖 Standalone 本机预览与 HostAdapter transport contract；真实 Codex/Claude companion、真实窄屏和生产部署不在范围内。
+当前本机统一套件为后端 214 项并通过 Python compileall；前端 155 项测试、TypeScript typecheck 和 production build 通过。`scripts/check-live.ps1` 另通过真实 Codex app-tools pipe、Claude Code 本机会话及 Uvicorn/SSE socket 断线恢复验收；真实公网 provider 可用性仍需用户自己的配置做人工测试。
 
 ## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
 
@@ -122,7 +122,7 @@ Route-to-Agent Run v1 已验证同步 durable run 的第一条窄链路。它不
 
 这个 **Verified local preview** 包括 execution brief、持久化 run/step/event/tool journal、唯一安全工具 `safe_calculator` / `1.0.0`、生产 OpenAI-compatible adapter、测试专用 `ScriptedMockAgentAdapter`，以及 run dialog/timeline。API 合同和逐项本机验收记录以 [Route-to-Agent Run v1](route-to-agent-run-v1.md) 为准。
 
-这个切片没有 SSE、取消、任意 shell/文件/网络工具、artifacts、evaluation、多 Agent，也没有正式 Codex/Claude adapter。
+这个切片不包含任意 shell/网络工具、自动 evaluator/scorer、多 Agent 或多宿主 registry；SSE、取消、文件附件、artifacts、真实 Codex/Claude companion 和当前 P3/P4 验收已在后续切片加入。安全边界与未实现能力仍按 HostAdapter capability 明确返回，不伪造支持。
 
 ## Phase 3：Route-aware Memory 与 Context Engineering
 

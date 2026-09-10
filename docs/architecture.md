@@ -1,6 +1,6 @@
 # 总体架构与领域模型
 
-本文主要描述目标架构。当前自动化验证基线包含 SQLite GraphStore、schema v7 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布、Engineering Lab v1 和最小 OpenAI-compatible 同步 LLM adapter；正式 application/host ports、SSE、服务端事件流、migration rollback 与发布策略仍是目标结构。WorkspaceShell/双层画布和 Route-to-Agent Run v1 已完成窄范围真实浏览器验收，Engineering Lab v1 已完成自动化验证；这些都不等于完整 Agent Runtime、跨宿主集成或阶段完成。
+本文主要描述目标架构。当前验证基线包含 SQLite GraphStore、schema v7 与 runtime auxiliary schema v3 前向迁移、FastAPI 路由、原生 React `WorkspaceShell`、双层画布、Engineering Lab v1、OpenAI-compatible SSE Chat、HostAdapter companion transport 和 operation Saga。P3/P4 的单用户本机切片已完成真实 Codex/Claude read-only bridge、HTTP/SSE 断线恢复及数据库发布恢复验证；多宿主 registry、认证/多租户、migration downgrade 和生产部署治理仍是目标结构。
 
 ## 分层
 
@@ -235,8 +235,8 @@ UI 根据 capability 显示动作。缺失导航能力时保留画布并提供 c
 ### 适配器职责
 
 - StandaloneAdapter：Core Service 持有消息；从 checkpoint 创建本地子会话。
-- CodexAdapter：已建立受信任 companion transport、operation ID、capability 与返回 binding 验证合同；真实插件 transport 仍需接入。
-- ClaudeAdapter：使用同一 canonical transport 边界但独立声明真实能力；无法原生导航时返回明确降级结果，真实 companion 尚未接入。
+- CodexAdapter：已建立受信任 companion transport、operation ID、capability 与返回 binding 验证合同；个人插件通过原生 app-tools pipe 实现任务枚举、读取、任务头 fork、导航、重命名和归档。
+- ClaudeAdapter：使用同一 canonical transport 边界并独立声明真实能力；本机 JSONL/CLI companion 已接入，历史 turn fork、重命名与归档在 CLI 不支持时明确降级。
 - Host MockAdapter（目标）：用于 host saga、revision 和错误恢复的确定性测试；不要与当前 Agent Runtime 的测试专用 `ScriptedMockAgentAdapter` 混为生产 adapter。
 
 适配器不能决定 parent/topic/prune 语义，也不能绕过 graph-core 直接改数据库。

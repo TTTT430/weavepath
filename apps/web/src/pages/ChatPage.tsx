@@ -429,6 +429,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    switch(caught.code){
     case'aiTimeout':return t('aiTimeout');
     case'aiConnectionFailed':return t('aiConnectionFailed');
+    case'chatInterrupted':return t('chatInterrupted');
     case'aiUnavailable':return t('aiUnavailable');
     case'aiContextTooLarge':return t('aiContextTooLarge');
     case'reasoningEffortUnsupported':return t('reasoningEffortUnsupported');
@@ -601,8 +602,12 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
      const controller=new AbortController();
      streamRequests.current.set(targetOwner,requestId);
      streamControllers.current.set(targetOwner,controller);
-     let terminal:'completed'|'failed'|'cancelled'|null=null;let streamError:ApiError|null=null;
-     await api.chatStream(workflow,instance,text,requestId,(event,data)=>{
+     let terminal:'completed'|'failed'|'cancelled'|null=null;let streamError:ApiError|null=null,lastSequence=0;
+     const consumeStreamEvent=(event:string,data:import('../lib/api').ChatStreamEvent)=>{
+      if(typeof data.sequence==='number'){
+       if(data.sequence<=lastSequence)return;
+       lastSequence=data.sequence;
+      }
       if(event==='connection.status'&&data.phase){
        if(activeKey.current===targetOwner)setReply(current=>current.owner===targetOwner&&current.state==='thinking'?{...current,phase:data.phase,attempt:data.attempt}:current);
        return;
@@ -615,10 +620,58 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
        if(activeKey.current===targetOwner){setReply(current=>current.owner===targetOwner&&current.state==='thinking'?{...current,phase:'receiving'}:current);setStreamingText(current=>current+(data.delta||''));}
        return;
       }
-      if(event==='message.completed')terminal='completed';
+      if(event==='message.completed'){
+       terminal='completed';
+       delivered={userMessage:data.userMessage,assistantMessage:data.assistantMessage};
+      }
       if(event==='message.cancelled')terminal='cancelled';
       if(event==='message.failed'){terminal='failed';streamError=new ApiError(data.error||t('aiGenericError'),502,data.code)}
-     },controller.signal);
+     };
+     const recoverEvents=async()=>{
+      const recovered=await api.chatEvents(workflow,instance,requestId,lastSequence);
+      for(const item of recovered.events)consumeStreamEvent(item.type,{...item.payload,sequence:item.sequence});
+      if(recovered.status==='completed')terminal='completed';
+      else if(recovered.status==='cancelled')terminal='cancelled';
+      else if(recovered.status==='failed'){
+       terminal='failed';
+       if(!streamError)streamError=new ApiError(t('aiGenericError'),502,recovered.errorCode||'chatInterrupted');
+      }
+      return recovered;
+     };
+     let attempt=1;
+     while(attempt<=3){
+      terminal=null;streamError=null;
+      try{
+       await api.chatStream(workflow,instance,text,requestId,consumeStreamEvent,controller.signal);
+      }catch(caught){
+       if(controller.signal.aborted)throw caught;
+       if(activeKey.current===targetOwner)setReply(current=>current.owner===targetOwner&&current.state==='thinking'?{...current,phase:'reconnecting',attempt}:current);
+       try{
+        let recovered=await recoverEvents();
+        // A dropped browser stream does not imply a dropped model request.
+        // Continue from the durable server journal without imposing a model
+        // response timeout. Cancellation remains available while polling.
+        while(recovered.status==='started'&&!controller.signal.aborted){
+         await new Promise(resolve=>setTimeout(resolve,500));
+         recovered=await recoverEvents();
+        }
+       }catch(recoveryError){
+        if(attempt>=3)throw caught instanceof Error?caught:recoveryError;
+       }
+      }
+      if(terminal==='completed'||terminal==='cancelled')break;
+      if(terminal==='failed'&&(streamError as ApiError|null)?.code!=='chatInterrupted')throw streamError;
+      if(terminal===null){
+       try{await recoverEvents()}catch{/* The reconnect below uses the same idempotency key. */}
+       if(terminal==='completed'||terminal==='cancelled')break;
+       if(terminal==='failed'&&(streamError as ApiError|null)?.code!=='chatInterrupted')throw streamError;
+      }
+      if(attempt>=3)throw streamError||new ApiError(t('aiGenericError'),502,'aiEmptyResponse');
+      attempt+=1;
+      lastSequence=0;terminal=null;streamError=null;
+      if(activeKey.current===targetOwner){setStreamingText('');setReply(current=>current.owner===targetOwner&&current.state==='thinking'?{...current,phase:'reconnecting',attempt}:current)}
+      await new Promise(resolve=>setTimeout(resolve,200*attempt));
+     }
      const locallyCancelled=cancelledRequests.current.has(requestId);
      if(terminal==='cancelled'||locallyCancelled){
       cancelledRequests.current.delete(requestId);

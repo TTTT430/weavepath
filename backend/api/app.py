@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Event, Lock
@@ -26,13 +27,19 @@ from engineering import EngineeringRepository
 from graph_core import Conflict, DatabaseMigrationError, GraphStore, NotFound, Validation
 from graph_core.attachments import MAX_ATTACHMENT_BYTES, supports_attachment
 from graph_core.database_lifecycle import (
+    commit_database_backup_retention,
     complete_database_upgrade,
     connection_database_status,
+    database_backup_retention_plan,
+    list_database_backups,
     prepare_database_upgrade,
     restore_database_upgrade,
 )
 from graph_core.migrations import LATEST_GRAPH_SCHEMA_VERSION
-from host_adapters.standalone import StandaloneHostAdapter
+from host_adapters import (
+    HostAdapter, HostAdapterError, HostBinding, HostOperationJournal,
+    configured_host_adapter,
+)
 from runtime_events import event_payload
 
 
@@ -440,6 +447,28 @@ class PruneCommitInput(PrunePlanInput):
     idempotency_key: str = Field(alias="idempotencyKey", min_length=1)
 
 
+class BackupRetentionInput(CamelModel):
+    keep_last: int = Field(5, alias="keepLast", ge=1, le=100)
+    confirmed: bool = False
+
+
+class DatabaseRestorePlanInput(CamelModel):
+    manifest_path: str = Field(alias="manifestPath", min_length=1, max_length=4096)
+
+
+class ImportHostConversationInput(CamelModel):
+    thread_id: str = Field(alias="threadId", min_length=1, max_length=240)
+    title: str | None = Field(None, max_length=240)
+    workflow_name: str | None = Field(None, alias="workflowName", max_length=240)
+
+    @field_validator("thread_id")
+    @classmethod
+    def thread_id_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("threadId must not be blank")
+        return value.strip()
+
+
 class ArtifactInput(CamelModel):
     name: str = Field(min_length=1, max_length=240)
     kind: str = Field(default="text", min_length=1, max_length=80)
@@ -494,7 +523,8 @@ class ExperimentInput(CamelModel):
 def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = None,
                model_settings: RuntimeModelSettings | None = None,
                agent_model: AgentModelPort | None = None,
-               background_agent_runs: bool | None = None) -> FastAPI:
+               background_agent_runs: bool | None = None,
+               host_adapter: HostAdapter | None = None) -> FastAPI:
     owned = store is None
     background_enabled = owned if background_agent_runs is None else background_agent_runs
     instance_lock: _ProcessFileLock | None = None
@@ -510,7 +540,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         llm: LLMClient = llm_client or settings
         run_repository = AgentRunRepository(graph_store._conn, graph_store._lock)
         engineering = EngineeringRepository(graph_store._conn, graph_store._lock)
-        host_adapter = StandaloneHostAdapter(graph_store)
+        host = host_adapter or configured_host_adapter(graph_store)
+        host_operations = HostOperationJournal(graph_store._conn, graph_store._lock)
         if agent_model is None:
             if isinstance(llm, OpenAICompatibleLLM):
                 agent_model = OpenAICompatibleAgentAdapter(lambda: llm)
@@ -537,6 +568,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         try:
             run_repository.recover_interrupted(preserve_queued=run_dispatcher is not None)
             graph_store.recover_chat_requests()
+            host_operations.recover_started()
             if run_dispatcher is not None:
                 run_dispatcher.start()
                 for queued_run_id in run_repository.queued_run_ids():
@@ -559,7 +591,8 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     app.state.agent_runtime = run_service
     app.state.agent_dispatcher = run_dispatcher
     app.state.engineering = engineering
-    app.state.host_adapter = host_adapter
+    app.state.host_adapter = host
+    app.state.host_operations = host_operations
     database_lifecycle = connection_database_status(
         graph_store._conn,
         graph_store.db_path,
@@ -603,6 +636,13 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         if exc.run_id:
             payload["runId"] = exc.run_id
         return JSONResponse(payload, exc.status_code)
+
+    @app.exception_handler(HostAdapterError)
+    async def host_adapter_error(_: Request, exc: HostAdapterError):
+        status = 409 if exc.code in {"hostBindingMismatch", "hostOperationConflict"} else 503
+        if exc.code in {"hostInvalidRequest", "hostCapabilityUnsupported"}:
+            status = 422
+        return JSONResponse({"code": exc.code, "error": str(exc)}, status)
 
     @app.exception_handler(ValueError)
     async def bad_value(_: Request, exc: ValueError):
@@ -745,13 +785,145 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         """Read-only release diagnostics; never mutates or restores data."""
         return database_lifecycle
 
+    @app.get(prefix + "/system/database/backups")
+    def database_backups(keep_last: int = Query(5, alias="keepLast", ge=1, le=100)):
+        backups = list_database_backups(graph_store.db_path)
+        return {"backups": backups,
+                "retentionPlan": database_backup_retention_plan(graph_store.db_path, keep_last),
+                "restoreRequiresShutdown": True}
+
+    @app.post(prefix + "/system/database/backups/retention")
+    def database_backup_retention(body: BackupRetentionInput):
+        return commit_database_backup_retention(
+            graph_store.db_path, body.keep_last, confirmed=body.confirmed
+        )
+
+    @app.post(prefix + "/system/database/restore-plan")
+    def database_restore_plan(body: DatabaseRestorePlanInput):
+        database = str(Path(graph_store.db_path).resolve(strict=False))
+        selected = next((item for item in list_database_backups(database)
+                         if item.get("manifestPath") == str(Path(body.manifest_path).resolve(strict=False))), None)
+        if not selected or not selected.get("restorable"):
+            raise Validation("selected backup is not restorable for this database")
+        return {
+            "databasePath": database,
+            "manifestPath": selected["manifestPath"],
+            "confirmation": f"RESTORE {Path(database).name}",
+            "requiresShutdown": True,
+            "command": ["python", "-m", "graph_core.restore_cli", "--database", database,
+                        "--manifest", selected["manifestPath"], "--confirm",
+                        f"RESTORE {Path(database).name}"],
+        }
+
     @app.get(prefix + "/host/capabilities")
     def host_capabilities():
-        descriptor = host_adapter.descriptor().as_dict()
+        descriptor = host.descriptor().as_dict()
         # Keep the original two fields during the contract-v1 transition.
         return {"adapter": descriptor["adapterId"],
                 "capabilities": descriptor["capabilities"],
                 "descriptor": descriptor}
+
+    @app.get(prefix + "/host/conversations")
+    async def host_conversations(cursor: str | None = None):
+        descriptor = host.descriptor()
+        if not descriptor.connected:
+            raise HostAdapterError(
+                "hostDisconnected", "Configured host companion is not connected"
+            )
+        page = await host.list_conversations(cursor)
+        return {
+            "host": descriptor.as_dict(),
+            "items": list(page.items),
+            "nextCursor": page.next_cursor,
+        }
+
+    @app.post(prefix + "/host/conversations/import", status_code=201)
+    async def import_host_conversation(body: ImportHostConversationInput):
+        """Bind one accessible host task as a new WeavePath root.
+
+        The transcript remains owned by the host.  A one-item inspect verifies
+        that the companion can actually access the requested identity before
+        the graph binding is committed.  Repeating the import is idempotent by
+        provider + host conversation identity.
+        """
+        descriptor = host.descriptor()
+        if not descriptor.connected:
+            raise HostAdapterError(
+                "hostDisconnected", "Configured host companion is not connected"
+            )
+        if descriptor.host_kind not in {"codex", "claude-code"}:
+            raise HostAdapterError(
+                "hostCapabilityUnsupported",
+                "The active host does not expose external conversations for import",
+            )
+        for workflow in graph_store.list_workflows()["workflows"]:
+            existing = next((
+                node for node in workflow.get("nodes", [])
+                if node.get("provider") == descriptor.host_kind
+                and node.get("providerConversationId") == body.thread_id
+                and node.get("status") != "pruned"
+            ), None)
+            if existing is not None:
+                return {"imported": False, "graph": workflow, "node": existing}
+
+        probe = HostBinding(
+            workflow_id="weavepath-import-probe",
+            instance_id="weavepath-import-probe",
+            thread_id=body.thread_id,
+            provider=descriptor.host_kind,
+            provider_conversation_id=body.thread_id,
+        )
+        await host.inspect(probe, limit=1)
+        title = (body.title or "").strip() or f"{descriptor.display_name} conversation"
+        workflow_name = (body.workflow_name or "").strip() or title
+        graph = graph_store.create_workflow(
+            name=workflow_name,
+            root_title=title,
+            provider=descriptor.host_kind,
+            provider_conversation_id=body.thread_id,
+        )
+        return {"imported": True, "graph": graph, "node": graph["nodes"][0]}
+
+    def host_binding(workflow_id: str, instance_id: str) -> HostBinding:
+        node = graph_store.get_instance(workflow_id, instance_id)
+        provider = str(node.get("provider") or "standalone")
+        return HostBinding(
+            workflow_id=workflow_id, instance_id=instance_id,
+            thread_id=str(node.get("providerConversationId") or instance_id),
+            provider=provider,
+            provider_conversation_id=node.get("providerConversationId"),
+            metadata={"title": node.get("title")},
+        )
+
+    def is_external_binding(binding: HostBinding) -> bool:
+        return binding.provider in {"codex", "claude-code"}
+
+    def require_matching_host(binding: HostBinding) -> None:
+        descriptor = host.descriptor()
+        if not descriptor.connected:
+            raise HostAdapterError("hostDisconnected", "Configured host companion is not connected")
+        if descriptor.host_kind != binding.provider:
+            raise HostAdapterError("hostBindingMismatch", "Conversation is bound to another host")
+
+    @app.get(prefix + "/host/operations")
+    def incomplete_host_operations():
+        return {"operations": host_operations.list_incomplete()}
+
+    @app.get(prefix + "/host/operations/{operation_id}")
+    def get_host_operation(operation_id: str):
+        return host_operations.get(operation_id)
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/host-transcript")
+    async def inspect_host_transcript(workflow_id: str, instance_id: str,
+                                      cursor: str | None = None,
+                                      limit: int = Query(50, ge=1, le=200)):
+        binding = host_binding(workflow_id, instance_id)
+        if not is_external_binding(binding):
+            page = await host.inspect(binding, cursor, limit)
+        else:
+            require_matching_host(binding)
+            page = await host.inspect(binding, cursor, limit)
+        return {"items": list(page.items), "nextCursor": page.next_cursor}
 
     @app.get(prefix + "/ai/status")
     def ai_status():
@@ -1056,9 +1228,25 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
             event.set()
             return True
 
-    def _sse(event: str, data: object) -> str:
+    def _sse(event: str, data: object, sequence: int | None = None) -> str:
         payload = event_payload(event, data if isinstance(data, dict) else {"data": data})
-        return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        if sequence is not None:
+            payload["sequence"] = sequence
+        event_id = f"id: {sequence}\n" if sequence is not None else ""
+        return f"{event_id}event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _chat_sse(workflow_id: str, instance_id: str, key: str | None,
+                  event: str, data: dict[str, object]) -> str:
+        if key is None:
+            return _sse(event, data)
+        stored = graph_store.record_chat_stream_event(
+            workflow_id, instance_id, key, event, event_payload(event, data)
+        )
+        # The persisted envelope already contains schemaVersion. Avoid nesting
+        # another envelope when formatting it for the live response.
+        payload = {**stored["payload"], "sequence": stored["sequence"]}
+        return (f"id: {stored['sequence']}\nevent: {event}\n"
+                f"data: {json.dumps(payload, ensure_ascii=False)}\n\n")
 
     def _stream_chat(workflow_id: str, instance_id: str, body: ChatInput) -> StreamingResponse:
         if not llm.status()["configured"]:
@@ -1090,7 +1278,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 evidence_sources, retrieval_plan = evidence_for_message(
                     workflow_id, user_message["id"]
                 )
-                yield _sse("message.started", {
+                yield _chat_sse(workflow_id, instance_id, key, "message.started", {
                     "requestId": key, "userMessage": user_message,
                 })
                 parts: list[str] = []
@@ -1104,16 +1292,16 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 for provider_event in provider_events:
                     if event.is_set():
                         _chat_finish(workflow_id, instance_id, key, signature, None, "cancelled", "chatCancelled")
-                        yield _sse("message.cancelled", {"requestId": key})
+                        yield _chat_sse(workflow_id, instance_id, key, "message.cancelled", {"requestId": key})
                         return
                     if not isinstance(provider_event, dict):
                         continue
                     if provider_event.get("type") == "status":
-                        yield _sse("connection.status", {"requestId": key, **provider_event})
+                        yield _chat_sse(workflow_id, instance_id, key, "connection.status", {"requestId": key, **provider_event})
                         continue
                     if provider_event.get("type") == "reset":
                         parts.clear()
-                        yield _sse("message.reset", {"requestId": key})
+                        yield _chat_sse(workflow_id, instance_id, key, "message.reset", {"requestId": key})
                         continue
                     if provider_event.get("type") == "usage":
                         candidate = provider_event.get("usage")
@@ -1124,10 +1312,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                     if provider_event.get("type") != "delta" or not isinstance(chunk, str) or not chunk:
                         continue
                     parts.append(chunk)
-                    yield _sse("message.delta", {"requestId": key, "delta": chunk})
+                    yield _chat_sse(workflow_id, instance_id, key, "message.delta", {"requestId": key, "delta": chunk})
                 if event.is_set():
                     _chat_finish(workflow_id, instance_id, key, signature, None, "cancelled", "chatCancelled")
-                    yield _sse("message.cancelled", {"requestId": key})
+                    yield _chat_sse(workflow_id, instance_id, key, "message.cancelled", {"requestId": key})
                     return
                 answer = "".join(parts).strip()
                 if not answer:
@@ -1143,13 +1331,13 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 if key is not None:
                     graph_store.complete_chat_request(workflow_id, instance_id, key, result)
                 _chat_finish(workflow_id, instance_id, key, signature, result)
-                yield _sse("message.completed", result)
+                yield _chat_sse(workflow_id, instance_id, key, "message.completed", result)
             except LLMUnavailable as exc:
                 _chat_finish(workflow_id, instance_id, key, signature, None, "failed", exc.code)
-                yield _sse("message.failed", {"requestId": key, "code": exc.code, "error": str(exc)})
+                yield _chat_sse(workflow_id, instance_id, key, "message.failed", {"requestId": key, "code": exc.code, "error": str(exc)})
             except Exception:
                 _chat_finish(workflow_id, instance_id, key, signature, None, "failed", "aiUnavailable")
-                yield _sse("message.failed", {"requestId": key, "code": "aiUnavailable", "error": "AI provider is unavailable"})
+                yield _chat_sse(workflow_id, instance_id, key, "message.failed", {"requestId": key, "code": "aiUnavailable", "error": "AI provider is unavailable"})
             finally:
                 # A client disconnect can close the generator before the
                 # provider yields another token.  Always release the active
@@ -1213,6 +1401,18 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat/{request_id}/cancel")
     def cancel_chat(workflow_id: str, instance_id: str, request_id: str):
         return {"ok": True, "requestId": request_id, "cancelled": _chat_cancel(workflow_id, instance_id, request_id)}
+
+    @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/chat/{request_id}/events")
+    def chat_recovery_events(workflow_id: str, instance_id: str, request_id: str,
+                             after_sequence: int = Query(0, alias="afterSequence", ge=0),
+                             limit: int = Query(500, ge=1, le=1000)):
+        snapshot = graph_store.chat_stream_events(
+            workflow_id, instance_id, request_id,
+            after_sequence=after_sequence, limit=limit,
+        )
+        for item in snapshot["events"]:
+            item["payload"] = {**item["payload"], "sequence": item["sequence"]}
+        return snapshot
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/messages/{message_id}/regenerate")
     def regenerate_message(workflow_id: str, instance_id: str, message_id: int,
@@ -1347,9 +1547,117 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def create_experiment(workflow_id: str, body: ExperimentInput):
         return engineering.create_experiment(workflow_id, **body.model_dump(by_alias=False))
 
+    def binding_dict(binding: HostBinding) -> dict[str, object]:
+        return {
+            "workflowId": binding.workflow_id, "instanceId": binding.instance_id,
+            "threadId": binding.thread_id, "provider": binding.provider,
+            "providerConversationId": binding.provider_conversation_id,
+            "metadata": binding.metadata,
+        }
+
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/fork", status_code=201)
-    def fork(workflow_id: str, instance_id: str, body: ForkInput):
-        return graph_store.fork(workflow_id, instance_id, **body.model_dump(by_alias=False))
+    async def fork(workflow_id: str, instance_id: str, body: ForkInput):
+        source = host_binding(workflow_id, instance_id)
+        if not is_external_binding(source):
+            return graph_store.fork(workflow_id, instance_id, **body.model_dump(by_alias=False))
+        require_matching_host(source)
+        if not body.idempotency_key or not body.idempotency_key.strip():
+            raise Validation("idempotencyKey is required for a host-bound fork")
+        target_instance_id = body.instance_id or f"i_{uuid.uuid4().hex}"
+        request_payload = {**body.model_dump(by_alias=True), "targetInstanceId": target_instance_id}
+        saga, created = host_operations.begin(
+            workflow_id=workflow_id, source_instance_id=instance_id,
+            operation_type="fork", host_kind=source.provider,
+            idempotency_key=body.idempotency_key, request=request_payload,
+            target_instance_id=target_instance_id,
+        )
+        if saga["status"] == "completed":
+            return saga["localResult"]
+        if saga["status"] in {"compensated", "orphaned", "failed"}:
+            raise HostAdapterError(saga.get("errorCode") or "hostOperationFailed",
+                                   saga.get("errorMessage") or "Host fork did not complete")
+        child_binding: HostBinding
+        if saga["status"] == "host_succeeded":
+            saved = saga.get("hostResult") or {}
+            child = saved.get("binding") if isinstance(saved, dict) else None
+            if not isinstance(child, dict):
+                raise HostAdapterError("hostInvalidResponse", "Saga has no recoverable host binding")
+            child_binding = HostBinding(
+                workflow_id=str(child["workflowId"]), instance_id=str(child["instanceId"]),
+                thread_id=str(child["threadId"]), provider=str(child.get("provider") or source.provider),
+                provider_conversation_id=child.get("providerConversationId"),
+                metadata=child.get("metadata") if isinstance(child.get("metadata"), dict) else {},
+            )
+        else:
+            if not created:
+                raise HostAdapterError("hostOperationConflict", "Host fork is already in progress")
+            if body.expected_content_revision is not None:
+                current_source = graph_store.get_instance(workflow_id, instance_id)
+                if current_source["contentRevision"] != body.expected_content_revision:
+                    host_operations.transition(
+                        saga["operationId"], "failed",
+                        error_code="conflict",
+                        error_message="source content revision changed before host fork",
+                    )
+                    raise Conflict("source content revision changed before host fork")
+            checkpoint = {
+                "kind": "localUserTurn" if body.anchor_message_id else "instanceHead",
+                "anchorMessageId": body.anchor_message_id,
+                "contentRevision": body.expected_content_revision,
+            }
+            try:
+                child_binding = await host.fork(
+                    source, checkpoint, body.initial_message,
+                    {"targetInstanceId": target_instance_id, "title": body.title,
+                     "topicId": body.topic_id}, saga["operationId"],
+                )
+                if child_binding.instance_id != target_instance_id:
+                    raise HostAdapterError("hostBindingMismatch", "Host returned an unexpected target instance")
+                saga = host_operations.transition(
+                    saga["operationId"], "host_succeeded",
+                    host_result={"binding": binding_dict(child_binding)},
+                    target_instance_id=target_instance_id,
+                )
+            except Exception as exc:
+                host_operations.transition(
+                    saga["operationId"], "failed",
+                    error_code=getattr(exc, "code", "hostForkFailed"), error_message=str(exc),
+                )
+                raise
+        try:
+            local_body = body.model_dump(by_alias=False)
+            local_body.update({
+                "instance_id": target_instance_id,
+                "provider": source.provider,
+                "provider_conversation_id": child_binding.thread_id,
+            })
+            local_result = graph_store.fork(workflow_id, instance_id, **local_body)
+        except Exception as exc:
+            try:
+                compensation = await host.archive(child_binding, saga["operationId"] + ":compensate")
+            except Exception as archive_exc:
+                host_operations.transition(
+                    saga["operationId"], "orphaned",
+                    error_code="hostForkOrphaned",
+                    error_message=f"Local registration failed: {exc}; host archive failed: {archive_exc}",
+                )
+                raise HostAdapterError("hostForkOrphaned", "Host child exists but local registration failed") from exc
+            status = "compensated" if compensation.ok else "orphaned"
+            host_operations.transition(
+                saga["operationId"], status,
+                error_code="hostForkRegistrationFailed", error_message=str(exc),
+            )
+            raise HostAdapterError("hostForkRegistrationFailed", "Host fork was rolled back after local registration failed") from exc
+        warnings: list[dict[str, str]] = []
+        if host.capabilities().can_navigate:
+            navigation = await host.navigate(child_binding, saga["operationId"] + ":navigate")
+            if navigation.ok:
+                graph_store.activate(workflow_id, target_instance_id)
+            else:
+                warnings.append({"operation": "navigate", "code": navigation.code or "hostNavigateFailed"})
+        result = {**local_result, "hostOperationId": saga["operationId"], "warnings": warnings}
+        host_operations.transition(saga["operationId"], "completed", local_result=result)
+        return result
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/fork-chat", status_code=201)
     def fork_chat(workflow_id: str, instance_id: str, body: ForkChatInput):
@@ -1397,11 +1705,73 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
                 "assistantMessage": assistant_message}
 
     @app.patch(prefix + "/workflows/{workflow_id}/instances/{instance_id}")
-    def rename_instance(workflow_id: str, instance_id: str, body: RenameInstanceInput):
-        return graph_store.rename_instance(
-            workflow_id, instance_id, title=body.title,
-            expected_revision=body.expected_revision,
+    async def rename_instance(workflow_id: str, instance_id: str, body: RenameInstanceInput):
+        binding = host_binding(workflow_id, instance_id)
+        if not is_external_binding(binding):
+            return graph_store.rename_instance(
+                workflow_id, instance_id, title=body.title,
+                expected_revision=body.expected_revision,
+            )
+        require_matching_host(binding)
+        old_title = str(binding.metadata.get("title") or instance_id)
+        idempotency_key = hashlib.sha256(
+            f"{instance_id}:{body.expected_revision}:{body.title}".encode("utf-8")
+        ).hexdigest()
+        saga, created = host_operations.begin(
+            workflow_id=workflow_id, source_instance_id=instance_id,
+            operation_type="rename", host_kind=binding.provider,
+            idempotency_key=idempotency_key, request=body.model_dump(by_alias=True),
+            target_instance_id=instance_id,
         )
+        if saga["status"] == "completed":
+            return saga["localResult"]
+        if saga["status"] in {"compensated", "orphaned", "failed"}:
+            raise HostAdapterError(saga.get("errorCode") or "hostOperationFailed",
+                                   saga.get("errorMessage") or "Host rename did not complete")
+        if saga["status"] == "started":
+            if not created:
+                raise HostAdapterError("hostOperationConflict", "Host rename is already in progress")
+            if graph_store.get_graph(workflow_id)["graphRevision"] != body.expected_revision:
+                host_operations.transition(
+                    saga["operationId"], "failed", error_code="conflict",
+                    error_message="graph revision changed before host rename",
+                )
+                raise Conflict("graph revision changed before host rename")
+            renamed = await host.rename(binding, body.title, saga["operationId"])
+            if not renamed.ok:
+                host_operations.transition(saga["operationId"], "failed",
+                                           error_code=renamed.code or "hostRenameFailed",
+                                           error_message=renamed.message)
+                raise HostAdapterError(renamed.code or "hostRenameFailed", renamed.message or "Host rename failed")
+            saga = host_operations.transition(saga["operationId"], "host_succeeded",
+                                              host_result={"result": renamed.data})
+        try:
+            local = graph_store.rename_instance(
+                workflow_id, instance_id, title=body.title,
+                expected_revision=body.expected_revision,
+            )
+        except Exception as exc:
+            try:
+                rollback = await host.rename(
+                    binding, old_title, saga["operationId"] + ":compensate"
+                )
+            except Exception as rollback_exc:
+                host_operations.transition(
+                    saga["operationId"], "orphaned",
+                    error_code="hostRenameRollbackFailed",
+                    error_message=f"Local rename failed: {exc}; host rollback failed: {rollback_exc}",
+                )
+                raise HostAdapterError(
+                    "hostRenameRollbackFailed",
+                    "Host title changed but local rename and remote rollback failed",
+                ) from exc
+            host_operations.transition(
+                saga["operationId"], "compensated" if rollback.ok else "orphaned",
+                error_code="hostRenameLocalConflict", error_message=str(exc),
+            )
+            raise
+        host_operations.transition(saga["operationId"], "completed", local_result=local)
+        return local
 
     @app.patch(prefix + "/workflows/{workflow_id}")
     def rename_workflow(workflow_id: str, body: RenameWorkflowInput):
@@ -1410,9 +1780,43 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         )
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/activate")
-    def activate(workflow_id: str, instance_id: str, body: ActivateInput):
-        del body
-        return graph_store.activate(workflow_id, instance_id)
+    async def activate(workflow_id: str, instance_id: str, body: ActivateInput):
+        binding = host_binding(workflow_id, instance_id)
+        if not is_external_binding(binding):
+            return graph_store.activate(workflow_id, instance_id)
+        require_matching_host(binding)
+        key = body.preference_key or f"navigate-{uuid.uuid4().hex}"
+        saga, created = host_operations.begin(
+            workflow_id=workflow_id, source_instance_id=instance_id,
+            operation_type="navigate", host_kind=binding.provider,
+            idempotency_key=key, request={"instanceId": instance_id}, target_instance_id=instance_id,
+        )
+        if saga["status"] == "completed":
+            return saga["localResult"]
+        if saga["status"] in {"compensated", "orphaned", "failed"}:
+            raise HostAdapterError(saga.get("errorCode") or "hostOperationFailed",
+                                   saga.get("errorMessage") or "Host navigation did not complete")
+        if saga["status"] == "started":
+            if not created:
+                raise HostAdapterError("hostOperationConflict", "Host navigation is already in progress")
+            navigated = await host.navigate(binding, saga["operationId"])
+            if not navigated.ok:
+                host_operations.transition(saga["operationId"], "failed",
+                                           error_code=navigated.code or "hostNavigateFailed",
+                                           error_message=navigated.message)
+                raise HostAdapterError(navigated.code or "hostNavigateFailed", navigated.message or "Host navigation failed")
+            saga = host_operations.transition(
+                saga["operationId"], "host_succeeded",
+                host_result={"result": navigated.data},
+            )
+        try:
+            local = graph_store.activate(workflow_id, instance_id)
+        except Exception as exc:
+            host_operations.transition(saga["operationId"], "orphaned",
+                                       error_code="hostNavigateLocalConflict", error_message=str(exc))
+            raise
+        host_operations.transition(saga["operationId"], "completed", local_result=local)
+        return local
 
     @app.get(prefix + "/workflows/{workflow_id}/topics/{topic_id}/routes")
     def routes(workflow_id: str, topic_id: str, include_pruned: bool = Query(False, alias="includePruned")):
@@ -1423,10 +1827,61 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
         return graph_store.prune_plan(workflow_id, instance_id, allow_root=body.allow_root)
 
     @app.post(prefix + "/workflows/{workflow_id}/instances/{instance_id}/prune-commit")
-    def prune_commit(workflow_id: str, instance_id: str, body: PruneCommitInput):
-        return graph_store.prune_commit(workflow_id, instance_id,
-                                        expected_revision=body.expected_revision,
-                                        idempotency_key=body.idempotency_key,
-                                        allow_root=body.allow_root)
+    async def prune_commit(workflow_id: str, instance_id: str, body: PruneCommitInput):
+        plan = graph_store.prune_plan(workflow_id, instance_id, allow_root=body.allow_root)
+        # Never mutate the external host from a stale UI plan.  The local
+        # commit performs the same check, but it would be too late after one
+        # or more remote conversations had already been archived.
+        if plan["graphRevision"] != body.expected_revision:
+            raise Conflict("graph revision changed since prune plan")
+        external = [host_binding(workflow_id, item["id"]) for item in plan["nodes"]]
+        external = [binding for binding in external if is_external_binding(binding)]
+        if not external:
+            return graph_store.prune_commit(workflow_id, instance_id,
+                                            expected_revision=body.expected_revision,
+                                            idempotency_key=body.idempotency_key,
+                                            allow_root=body.allow_root)
+        for binding in external:
+            require_matching_host(binding)
+        request_payload = {**body.model_dump(by_alias=True),
+                           "leafFirstInstanceIds": [item["id"] for item in plan["nodes"]]}
+        saga, created = host_operations.begin(
+            workflow_id=workflow_id, source_instance_id=instance_id,
+            operation_type="archive", host_kind=external[0].provider,
+            idempotency_key=body.idempotency_key, request=request_payload,
+            target_instance_id=instance_id,
+        )
+        if saga["status"] == "completed":
+            return saga["localResult"]
+        if saga["status"] == "started":
+            if not created:
+                raise HostAdapterError("hostOperationConflict", "Host archive is already in progress")
+            archived: list[str] = []
+            for binding in external:
+                outcome = await host.archive(binding, f"{saga['operationId']}:{binding.instance_id}")
+                if not outcome.ok:
+                    host_operations.transition(
+                        saga["operationId"], "orphaned", host_result={"archivedInstanceIds": archived},
+                        error_code=outcome.code or "hostArchivePartialFailure",
+                        error_message=outcome.message or "Host archive stopped after a partial success",
+                    )
+                    raise HostAdapterError(outcome.code or "hostArchivePartialFailure",
+                                           outcome.message or "Host archive partially failed")
+                archived.append(binding.instance_id)
+            saga = host_operations.transition(
+                saga["operationId"], "host_succeeded",
+                host_result={"archivedInstanceIds": archived},
+            )
+        try:
+            local = graph_store.prune_commit(
+                workflow_id, instance_id, expected_revision=body.expected_revision,
+                idempotency_key=body.idempotency_key, allow_root=body.allow_root,
+            )
+        except Exception as exc:
+            host_operations.transition(saga["operationId"], "orphaned",
+                                       error_code="hostArchiveLocalConflict", error_message=str(exc))
+            raise
+        host_operations.transition(saga["operationId"], "completed", local_result=local)
+        return local
 
     return app

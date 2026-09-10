@@ -7,6 +7,8 @@ WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作
 > [!WARNING]
 > 当前版本为 `0.x` 早期开发预览，面向单用户本机环境，不具备公网身份认证或生产级多租户隔离。请勿直接暴露到互联网。
 
+> **P3/P4 收口（2026-09-10）**：当前本机切片已完成真实 Codex/Claude companion transport、跨宿主 operation Saga、verified backup/保留与停机恢复入口，并通过真实 Codex app-tools pipe、Claude Code 本机会话和 HTTP/SSE socket 断线恢复验收。详见 [P3/P4 真实连接与恢复验收](docs/p3-p4-live-acceptance.md)；文中早期的“待完成”描述仅保留作历史上下文。
+
 当前的 Conversation Workflow 是第一个业务模块，不是整个产品本身。Codex skill、MCP App 和未来的 Claude Code 插件都是宿主适配器或交互外壳，不是领域状态的长期真源。
 
 ## 当前阶段
@@ -249,6 +251,7 @@ $env:WEAVEPATH_CONTEXT_BUDGET_CHARS = "240000" # 可选；超出时按具体路�
 - [Agent 工程路线图](docs/agent-engineering-roadmap.md)
 - [Codex 对话交互借鉴路线](docs/codex-interaction-roadmap.md)
 - [P3 HostAdapter 与数据库发布硬化](docs/host-and-release-p3.md)
+- [P3/P4 真实连接与恢复验收](docs/p3-p4-live-acceptance.md)
 - [Route-to-Agent Run v1 契约与本机验收记录](docs/route-to-agent-run-v1.md)
 - [Runtime v2 P2：可靠执行与路线级自动压缩](docs/runtime-v2-p2.md)
 - [ADR-0001：全局 SQLite 为长期真源](docs/adr/0001-global-sqlite-source-of-truth.md)

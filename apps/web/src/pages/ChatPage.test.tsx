@@ -7,7 +7,7 @@ import{parseChatMessage}from'../lib/chatAttachments';
 
 const apiMock=vi.hoisted(()=>({
  workflows:vi.fn(),graph:vi.fn(),messages:vi.fn(),messageSnapshot:vi.fn(),regenerate:vi.fn(),agentRuns:vi.fn(),createAgentRun:vi.fn(),agentRun:vi.fn(),agentRunEvents:vi.fn(),aiStatus:vi.fn(),aiSettings:vi.fn(),saveAISettings:vi.fn(),resetAISettings:vi.fn(),validateAISettings:vi.fn(),aiModels:vi.fn(),switchAIModel:vi.fn(),attachments:vi.fn(),searchAttachments:vi.fn(),attachmentSearchStatus:vi.fn(),attachment:vi.fn(),uploadAttachment:vi.fn(),reparseAttachment:vi.fn(),deleteAttachment:vi.fn(),send:vi.fn(),chat:vi.fn(),
- chatStream:undefined as ReturnType<typeof vi.fn>|undefined,cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
+ chatStream:undefined as ReturnType<typeof vi.fn>|undefined,chatEvents:vi.fn(),cancelChat:undefined as ReturnType<typeof vi.fn>|undefined,
  createWorkflow:vi.fn(),renameWorkflow:vi.fn(),fork:vi.fn(),activate:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),routes:vi.fn()
 }));
 
@@ -26,6 +26,7 @@ function renderChat(){return render(<I18nProvider><ChatPage/></I18nProvider>)}
 beforeEach(()=>{
  localStorage.clear();localStorage.setItem('cw.locale','zh-CN');localStorage.setItem('cw.workflow','wf-1');
  apiMock.chatStream=undefined;apiMock.cancelChat=undefined;
+ apiMock.chatEvents.mockResolvedValue({requestId:'request',status:'failed',errorCode:'chatInterrupted',events:[],nextAfterSequence:0});
  apiMock.workflows.mockResolvedValue([{id:'wf-1',name:'研究项目',activeInstanceId:'root'}]);
  apiMock.graph.mockResolvedValue(graph);apiMock.messages.mockResolvedValue([]);apiMock.send.mockResolvedValue({id:'u1',role:'user',content:'测试消息'});
  apiMock.messageSnapshot.mockImplementation(async(w:string,i:string,scope:string)=>({messages:await apiMock.messages(w,i,scope),contentRevision:1}));apiMock.regenerate.mockResolvedValue({messages:[],contentRevision:2});apiMock.agentRuns.mockResolvedValue([]);apiMock.agentRun.mockResolvedValue({});apiMock.agentRunEvents.mockResolvedValue({runId:'',events:[],nextAfterSequence:null});
@@ -376,12 +377,28 @@ describe('chat delivery mode',()=>{
   expect(events.find(value=>value.phase==='completed')?.requestId).toBe(requestId);
   post.mockRestore();
  });
- it('treats an SSE EOF without a terminal event as a failure',async()=>{
+ it('retries an SSE EOF and reports an interrupted request when recovery stays incomplete',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
   apiMock.chatStream=vi.fn().mockResolvedValue(undefined);
   renderChat();await screen.findByText(/AI 已配置/);
   fireEvent.change(screen.getByRole('textbox'),{target:{value:'无终态'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
-  expect(await screen.findByText('模型返回了空响应。')).toBeInTheDocument();
+  expect(await screen.findByText('回复连接已中断，自动恢复未完成。重试会沿用同一条请求继续。',{}, {timeout:4_000})).toBeInTheDocument();
+  expect(apiMock.chatStream).toHaveBeenCalledTimes(3);
+ });
+ it('reconnects an interrupted stream with the same request id and does not duplicate the user message',async()=>{
+  apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});
+  apiMock.chatEvents.mockResolvedValue({requestId:'request',status:'failed',errorCode:'chatInterrupted',events:[],nextAfterSequence:0});
+  apiMock.chatStream=vi.fn()
+   .mockRejectedValueOnce(new TypeError('network connection dropped'))
+   .mockImplementationOnce((_w:string,_i:string,_c:string,_key:string,onEvent:(event:string,data:Record<string,unknown>)=>void)=>{onEvent('message.started',{sequence:1});onEvent('message.delta',{sequence:2,delta:'恢复成功'});onEvent('message.completed',{sequence:3,assistantMessage:{id:'a1',role:'assistant',content:'恢复成功'}});return Promise.resolve()});
+  apiMock.messageSnapshot.mockResolvedValue({messages:[{id:'u1',role:'user',content:'只发一次'},{id:'a1',role:'assistant',content:'恢复成功'}],contentRevision:2});
+  renderChat();await screen.findByText(/AI 已配置/);
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'只发一次'}});fireEvent.click(screen.getByRole('button',{name:'发送'}));
+  expect(await screen.findByText('恢复成功')).toBeInTheDocument();
+  await waitFor(()=>expect(apiMock.chatStream).toHaveBeenCalledTimes(2));
+  const keys=apiMock.chatStream.mock.calls.map(call=>call[3]);expect(keys[1]).toBe(keys[0]);
+  expect(screen.getAllByText('只发一次')).toHaveLength(1);
+  expect(screen.queryByRole('button',{name:'重试回答'})).not.toBeInTheDocument();
  });
  it('records an SSE terminal even after the user switches routes',async()=>{
   apiMock.aiStatus.mockResolvedValue({configured:true,provider:'openai-compatible',model:'test-model'});

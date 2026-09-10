@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import tempfile
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,6 +136,13 @@ class DatabaseBackupError(RuntimeError):
         )
 
 
+class DatabaseRestoreError(RuntimeError):
+    code = "databaseRestoreFailed"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(f"{self.code}: {message}")
+
+
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
@@ -151,6 +159,164 @@ def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def _backup_directory(database_path: str | Path) -> Path:
+    return Path(database_path).resolve(strict=False).parent / "backups"
+
+
+def list_database_backups(database_path: str | Path) -> list[dict[str, Any]]:
+    """List only manifests bound to this exact database, newest first."""
+    database = Path(database_path).resolve(strict=False)
+    directory = _backup_directory(database)
+    if not directory.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    for manifest_path in directory.glob("*.json"):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            backup = Path(str(manifest["backupPath"])).resolve(strict=True)
+            if Path(str(manifest["databasePath"])).resolve(strict=False) != database:
+                continue
+            if backup.parent != directory.resolve(strict=False):
+                continue
+            expected_sha = manifest.get("backupSha256")
+            actual_sha = _sha256(backup)
+            valid = isinstance(expected_sha, str) and expected_sha == actual_sha
+            integrity = inspect_database_file(backup)["integrity"] if valid else "checksumMismatch"
+            items.append({
+                "manifestPath": str(manifest_path.resolve()),
+                "backupPath": str(backup),
+                "status": manifest.get("status", "unknown"),
+                "source": manifest.get("source", {}),
+                "target": manifest.get("target", {}),
+                "preparedAt": manifest.get("preparedAt"),
+                "completedAt": manifest.get("completedAt"),
+                "restoredAt": manifest.get("restoredAt"),
+                "sizeBytes": backup.stat().st_size,
+                "sha256": actual_sha,
+                "integrity": integrity,
+                "restorable": valid and integrity == "ok" and manifest.get("status") in {"completed", "restored"},
+            })
+        except (OSError, ValueError, KeyError, sqlite3.Error):
+            items.append({
+                "manifestPath": str(manifest_path.resolve(strict=False)),
+                "backupPath": None,
+                "status": "invalid",
+                "integrity": "invalidManifest",
+                "restorable": False,
+            })
+    return sorted(items, key=lambda item: str(item.get("preparedAt") or item["manifestPath"]), reverse=True)
+
+
+def database_backup_retention_plan(database_path: str | Path, keep_last: int) -> dict[str, Any]:
+    if keep_last < 1 or keep_last > 100:
+        raise ValueError("keepLast must be between 1 and 100")
+    backups = list_database_backups(database_path)
+    valid = [item for item in backups if item.get("restorable")]
+    removable = valid[keep_last:]
+    return {
+        "keepLast": keep_last,
+        "backupCount": len(backups),
+        "restorableCount": len(valid),
+        "remove": removable,
+        "removeCount": len(removable),
+    }
+
+
+def commit_database_backup_retention(database_path: str | Path, keep_last: int,
+                                     *, confirmed: bool) -> dict[str, Any]:
+    if not confirmed:
+        raise ValueError("backup cleanup requires explicit confirmation")
+    plan = database_backup_retention_plan(database_path, keep_last)
+    removed: list[str] = []
+    for item in plan["remove"]:
+        # The listing step proved both targets are exact children of this
+        # database's backup directory. Never expand globs during deletion.
+        backup = Path(item["backupPath"])
+        manifest = Path(item["manifestPath"])
+        backup.unlink(missing_ok=True)
+        manifest.unlink(missing_ok=True)
+        removed.extend([str(backup), str(manifest)])
+    return {**plan, "removedPaths": removed}
+
+
+@contextmanager
+def _offline_database_lock(database_path: Path):
+    lock_path = Path(str(database_path) + ".weavepath.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    locked = False
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            locked = True
+        except OSError as exc:
+            raise DatabaseRestoreError("stop the WeavePath API before restoring a backup") from exc
+        yield
+    finally:
+        if locked:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def restore_database_from_manifest(database_path: str | Path, manifest_path: str | Path,
+                                   *, confirmation: str) -> dict[str, Any]:
+    """Restore a verified migration snapshot while the API is stopped."""
+    database = Path(database_path).resolve(strict=False)
+    manifest_file = Path(manifest_path).resolve(strict=True)
+    expected_confirmation = f"RESTORE {database.name}"
+    if confirmation != expected_confirmation:
+        raise DatabaseRestoreError(f"confirmation must equal '{expected_confirmation}'")
+    matches = {
+        item["manifestPath"]: item for item in list_database_backups(database)
+        if item.get("restorable")
+    }
+    selected = matches.get(str(manifest_file))
+    if selected is None:
+        raise DatabaseRestoreError("manifest is not a verified restorable backup for this database")
+    backup = Path(selected["backupPath"])
+    with _offline_database_lock(database):
+        staged = database.with_name(f".{database.name}.manual-restore-{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copy2(backup, staged)
+            if _sha256(staged) != selected["sha256"]:
+                raise DatabaseRestoreError("staged restore checksum mismatch")
+            if inspect_database_file(staged)["integrity"] != "ok":
+                raise DatabaseRestoreError("staged restore integrity check failed")
+            for suffix in ("-wal", "-shm"):
+                Path(str(database) + suffix).unlink(missing_ok=True)
+            os.replace(staged, database)
+        finally:
+            staged.unlink(missing_ok=True)
+        payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+        receipt = {
+            "restoredAt": _now(),
+            "databaseSha256": _sha256(database),
+            "databaseIntegrity": inspect_database_file(database)["integrity"],
+            "mode": "explicitOfflineRestore",
+        }
+        _write_manifest(manifest_file, {**payload, "status": "restored", **receipt})
+        return {
+            "databasePath": str(database), "manifestPath": str(manifest_file),
+            "backupPath": str(backup), **receipt,
+        }
 
 
 def _manifest(upgrade: DatabaseUpgrade, status: str, **extra: Any) -> dict[str, Any]:
@@ -319,11 +485,16 @@ def connection_database_status(conn: sqlite3.Connection, database_path: str | Pa
 __all__ = [
     "DatabaseMigrationError",
     "DatabaseBackupError",
+    "DatabaseRestoreError",
     "DatabaseUpgrade",
     "assert_database_file_compatible",
     "complete_database_upgrade",
+    "commit_database_backup_retention",
     "connection_database_status",
+    "database_backup_retention_plan",
     "inspect_database_file",
+    "list_database_backups",
     "prepare_database_upgrade",
     "restore_database_upgrade",
+    "restore_database_from_manifest",
 ]

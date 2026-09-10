@@ -1567,6 +1567,17 @@ class GraphStore:
                     "graphRevision": wf["graph_revision"], "eventRevision": wf["content_revision"],
                     "nodes": [self._node(self._conn, workflow_id, row) for row in rows]}
 
+    def get_instance(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
+        """Return one concrete route, including internal turn routes.
+
+        The workflow graph intentionally hides second-layer routes. Host
+        bindings, however, must be resolvable for either surface without
+        weakening that presentation boundary.
+        """
+        with self._lock:
+            row = self._instance(self._conn, workflow_id, instance_id)
+            return self._node(self._conn, workflow_id, row)
+
     def _local_messages(self, cx: sqlite3.Connection, instance_id: str) -> list[dict[str, Any]]:
         messages = [dict(row) for row in cx.execute(
             "SELECT lm.id,lm.role,lm.content,lm.created_at AS createdAt,"
@@ -1730,6 +1741,10 @@ class GraphStore:
                     "assistant_message_id=NULL,updated_at=?,completed_at=NULL WHERE workflow_id=? AND instance_id=? AND idempotency_key=?",
                     (now, workflow_id, instance_id, idempotency_key),
                 )
+                cx.execute(
+                    "DELETE FROM chat_stream_events WHERE workflow_id=? AND instance_id=? AND idempotency_key=?",
+                    (workflow_id, instance_id, idempotency_key),
+                )
                 return {"state": "retry", "userMessageId": row["user_message_id"]}
             now = _now()
             cx.execute(
@@ -1776,6 +1791,66 @@ class GraphStore:
                 "WHERE workflow_id=? AND instance_id=? AND idempotency_key=? AND status='started'",
                 (status, error_code, _now(), _now(), workflow_id, instance_id, idempotency_key),
             )
+
+    def record_chat_stream_event(self, workflow_id: str, instance_id: str,
+                                 idempotency_key: str, event_type: str,
+                                 payload: dict[str, Any]) -> dict[str, Any]:
+        """Append one durable SSE event and allocate its per-request sequence."""
+        if not idempotency_key.strip():
+            raise Validation("idempotencyKey must not be blank")
+        with self.tx() as cx:
+            request = cx.execute(
+                "SELECT status FROM chat_requests WHERE workflow_id=? AND instance_id=? AND idempotency_key=?",
+                (workflow_id, instance_id, idempotency_key),
+            ).fetchone()
+            if request is None:
+                raise NotFound("chat request not found")
+            sequence = int(cx.execute(
+                "SELECT COALESCE(MAX(sequence),0)+1 FROM chat_stream_events "
+                "WHERE workflow_id=? AND instance_id=? AND idempotency_key=?",
+                (workflow_id, instance_id, idempotency_key),
+            ).fetchone()[0])
+            now = _now()
+            cx.execute(
+                "INSERT INTO chat_stream_events(workflow_id,instance_id,idempotency_key,sequence,"
+                "event_type,payload_json,created_at) VALUES(?,?,?,?,?,?,?)",
+                (workflow_id, instance_id, idempotency_key, sequence, event_type,
+                 _stable_json(payload), now),
+            )
+        return {"sequence": sequence, "type": event_type, "payload": payload, "createdAt": now}
+
+    def chat_stream_events(self, workflow_id: str, instance_id: str,
+                           idempotency_key: str, *, after_sequence: int = 0,
+                           limit: int = 500) -> dict[str, Any]:
+        if after_sequence < 0 or limit < 1 or limit > 1000:
+            raise Validation("invalid chat event cursor")
+        with self._lock:
+            request = self._conn.execute(
+                "SELECT status,error_code,updated_at,completed_at FROM chat_requests "
+                "WHERE workflow_id=? AND instance_id=? AND idempotency_key=?",
+                (workflow_id, instance_id, idempotency_key),
+            ).fetchone()
+            if request is None:
+                raise NotFound("chat request not found")
+            rows = self._conn.execute(
+                "SELECT sequence,event_type,payload_json,created_at FROM chat_stream_events "
+                "WHERE workflow_id=? AND instance_id=? AND idempotency_key=? AND sequence>? "
+                "ORDER BY sequence LIMIT ?",
+                (workflow_id, instance_id, idempotency_key, after_sequence, limit),
+            ).fetchall()
+            events = [{
+                "sequence": row["sequence"], "type": row["event_type"],
+                "payload": _loads(row["payload_json"], {}), "createdAt": row["created_at"],
+            } for row in rows]
+            return {
+                "requestId": idempotency_key,
+                "status": request["status"],
+                "errorCode": request["error_code"],
+                "events": events,
+                "nextAfterSequence": events[-1]["sequence"] if events else after_sequence,
+                "updatedAt": request["updated_at"],
+                "completedAt": request["completed_at"],
+            }
 
     def list_turns(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
         """Project one instance's local transcript into user-anchored turns.

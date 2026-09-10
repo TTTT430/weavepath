@@ -75,6 +75,27 @@
 .connection-attempt small{padding-left:5px;border-left:1px solid var(--ui-border,#d8e0e8);font-variant-numeric:tabular-nums}
 .connection-attempt.is-connected svg{color:var(--ui-success,#18864b)}
 .connection-attempt:not(.is-connected) svg{color:var(--ui-danger,#b42318)}
+.database-recovery{display:grid;gap:11px;margin-top:20px;padding-top:17px;border-top:1px solid var(--ui-border,#d8e0e8)}
+.database-recovery-heading{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:12px}
+.database-recovery-heading>span:first-child{display:flex;align-items:center;gap:9px;color:var(--ui-text,#172126)}
+.database-recovery-heading>span:first-child>span{display:grid;gap:1px}
+.database-recovery-heading strong{font-size:14px}
+.database-version{flex:0 0 auto;color:var(--ui-subtle,#718087);font-size:11px;font-variant-numeric:tabular-nums}
+.database-retention{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:9px;padding:10px;background:var(--ui-panel-muted,#f4f6f8);border:1px solid var(--ui-border,#d8e0e8);border-radius:9px}
+.database-retention label{display:grid;gap:5px;color:var(--ui-muted,#56666c);font-size:12px}
+.database-retention select{min-height:36px}
+.database-retention button,.database-backup-list button,.database-restore-plan button{min-height:34px;padding:6px 10px;border-radius:7px;box-shadow:none}
+.database-recovery h3{margin:1px 0 -3px;color:var(--ui-text,#172126);font-size:12px}
+.database-backup-list{display:grid;gap:7px}
+.database-backup-list article{display:flex;min-width:0;align-items:center;justify-content:space-between;gap:9px;padding:9px 10px;background:var(--ui-panel-muted,#f4f6f8);border:1px solid var(--ui-border,#d8e0e8);border-radius:8px}
+.database-backup-list article>div{display:grid;min-width:0;gap:3px}
+.database-backup-list article strong{overflow:hidden;color:var(--ui-text,#172126);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.database-backup-list p{margin:0;color:var(--ui-subtle,#718087);font-size:12px}
+.database-restore-plan{display:grid;gap:8px;padding:10px;background:color-mix(in srgb,var(--ui-warning,#ad6b00) 8%,var(--ui-panel,#fff));border:1px solid color-mix(in srgb,var(--ui-warning,#ad6b00) 30%,var(--ui-border,#d8e0e8));border-radius:9px}
+.database-restore-plan p{display:flex;align-items:flex-start;gap:7px;margin:0;color:var(--ui-text,#172126);font-size:12px;line-height:1.5}
+.database-restore-plan code{display:block;max-height:92px;padding:8px;overflow:auto;color:var(--ui-text,#172126);background:var(--ui-panel,#fff);border:1px solid var(--ui-border,#d8e0e8);border-radius:6px;font-size:10px;line-height:1.5;white-space:pre-wrap;word-break:break-all}
+.database-restore-plan button{display:inline-flex;justify-self:start;align-items:center;gap:6px}
+.database-recovery-notice{margin:0;color:var(--ui-muted,#56666c);font-size:12px}
 @keyframes settings-status-spin{to{transform:rotate(360deg)}}
 .settings-modal-footer{
  position:sticky;
@@ -103,6 +124,8 @@
  .settings-modal-body{padding:14px}
  .settings-form-grid{grid-template-columns:1fr;gap:13px}
  .settings-form-grid .settings-wide{grid-column:auto}
+ .database-recovery-heading{align-items:flex-start;flex-direction:column}
+ .database-retention{grid-template-columns:1fr}
  .settings-modal-footer{padding:10px 14px}
  .settings-modal .modal-actions{flex-wrap:wrap}
  .settings-modal .modal-actions span{display:none}

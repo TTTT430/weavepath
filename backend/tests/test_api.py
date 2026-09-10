@@ -442,6 +442,84 @@ def test_streaming_chat_persists_usage_on_the_completed_assistant_message():
     store.close()
 
 
+def test_streaming_chat_exposes_ordered_durable_recovery_events_and_replays_once():
+    store = GraphStore(":memory:")
+    llm = DetailedStreamingFakeLLM()
+    with TestClient(create_app(store, llm)) as client:
+        graph = client.post("/api/v1/workflows", json={
+            "name": "Workflow", "rootTitle": "A", "rootInstanceId": "A"
+        }).json()
+        workflow_id = graph["workflowId"]
+        path = f"/api/v1/workflows/{workflow_id}/instances/A"
+        first = client.post(
+            path + "/chat/stream",
+            json={"content": "recoverable question", "idempotencyKey": "recover-stream"},
+        )
+        assert first.status_code == 200
+        assert "id: 1\n" in first.text
+        recovered = client.get(
+            path + "/chat/recover-stream/events?afterSequence=0"
+        ).json()
+        assert recovered["status"] == "completed"
+        assert [item["sequence"] for item in recovered["events"]] == list(
+            range(1, len(recovered["events"]) + 1)
+        )
+        assert recovered["events"][0]["type"] == "message.started"
+        assert recovered["events"][-1]["type"] == "message.completed"
+        tail = client.get(
+            path + "/chat/recover-stream/events?afterSequence=2"
+        ).json()
+        assert all(item["sequence"] > 2 for item in tail["events"])
+
+        replay = client.post(
+            path + "/chat/stream",
+            json={"content": "recoverable question", "idempotencyKey": "recover-stream"},
+        )
+        assert replay.status_code == 200
+        assert "message.completed" in replay.text
+        assert llm.calls == 1
+        local = store.list_messages(workflow_id, "A", scope="local")["messages"]
+        assert [item["role"] for item in local] == ["user", "assistant"]
+    store.close()
+
+
+def test_process_restart_retries_the_same_chat_request_without_duplicating_user_message(tmp_path):
+    path = tmp_path / "chat-recovery.db"
+    crashed = GraphStore(path)
+    graph = crashed.create_workflow(
+        name="Workflow", root_title="A", root_instance_id="A"
+    )
+    workflow_id = graph["workflowId"]
+    claimed = crashed.begin_chat_request(
+        workflow_id, "A", "restart-key", {"content": "survive restart"},
+        f"{workflow_id}:A:restart-key:survive restart",
+    )
+    assert claimed["state"] == "new"
+    user = crashed.append_message(
+        workflow_id, "A", role="user", content="survive restart"
+    )
+    crashed.record_chat_user_message(workflow_id, "A", "restart-key", user["id"])
+    crashed.close()
+
+    reopened = GraphStore(path)
+    llm = DetailedStreamingFakeLLM()
+    with TestClient(create_app(reopened, llm)) as client:
+        response = client.post(
+            f"/api/v1/workflows/{workflow_id}/instances/A/chat/stream",
+            json={"content": "survive restart", "idempotencyKey": "restart-key"},
+        )
+        assert response.status_code == 200
+        assert "message.completed" in response.text
+        local = reopened.list_messages(workflow_id, "A", scope="local")["messages"]
+        assert [item["role"] for item in local] == ["user", "assistant"]
+        assert sum(item["content"] == "survive restart" for item in local) == 1
+        recovery = client.get(
+            f"/api/v1/workflows/{workflow_id}/instances/A/chat/restart-key/events"
+        ).json()
+        assert recovery["status"] == "completed"
+    reopened.close()
+
+
 def test_chat_idempotency_is_durable_and_context_preview_has_provenance(tmp_path):
     path = tmp_path / "chat.db"
     store = GraphStore(path)

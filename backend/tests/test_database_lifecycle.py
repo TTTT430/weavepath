@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 import api.app as app_module
 from api.app import create_app
 from graph_core import DatabaseBackupError, DatabaseMigrationError, DatabaseSchemaError, GraphStore
-from graph_core.database_lifecycle import inspect_database_file
+from graph_core.database_lifecycle import (
+    commit_database_backup_retention,
+    database_backup_retention_plan,
+    inspect_database_file,
+    list_database_backups,
+    restore_database_from_manifest,
+)
 from graph_core.migrations import V1
 
 
@@ -40,7 +46,7 @@ def test_managed_startup_creates_verified_pre_migration_backup(monkeypatch, tmp_
         assert health["databaseStatus"] == "migrated"
         assert status["status"] == "migrated"
         assert status["graphVersion"] == 7
-        assert status["runtimeVersion"] == 2
+        assert status["runtimeVersion"] == 3
         assert status["integrity"] == "ok"
         assert status["downgradeSupported"] is False
         backup = Path(status["backupPath"])
@@ -50,7 +56,7 @@ def test_managed_startup_creates_verified_pre_migration_backup(monkeypatch, tmp_
         journal = json.loads(manifest.read_text(encoding="utf-8"))
         assert journal["status"] == "completed"
         assert journal["source"]["graphVersion"] == 1
-        assert journal["target"] == {"graphVersion": 7, "runtimeVersion": 2}
+        assert journal["target"] == {"graphVersion": 7, "runtimeVersion": 3}
         assert journal["backupIntegrity"] == "ok"
 
 
@@ -146,3 +152,48 @@ def test_required_backup_failure_is_not_hidden_by_empty_temp_fallback(monkeypatc
         create_app()
     assert raised.value.code == "databaseBackupFailed"
     assert not fallback.exists()
+
+
+def test_verified_backup_can_be_listed_planned_and_restored_only_with_exact_confirmation(monkeypatch, tmp_path):
+    database = tmp_path / "workspace.db"
+    _legacy_v1_database(database)
+    monkeypatch.setenv("WEAVEPATH_DB", str(database))
+    with TestClient(create_app()) as client:
+        listing = client.get("/api/v1/system/database/backups").json()
+        assert listing["restoreRequiresShutdown"] is True
+        assert len(listing["backups"]) == 1
+        selected = listing["backups"][0]
+        assert selected["restorable"] is True
+        plan = client.post(
+            "/api/v1/system/database/restore-plan",
+            json={"manifestPath": selected["manifestPath"]},
+        ).json()
+        assert plan["confirmation"] == "RESTORE workspace.db"
+        assert "graph_core.restore_cli" in " ".join(plan["command"])
+    with pytest.raises(Exception):
+        restore_database_from_manifest(
+            database, selected["manifestPath"], confirmation="yes"
+        )
+    receipt = restore_database_from_manifest(
+        database, selected["manifestPath"], confirmation="RESTORE workspace.db"
+    )
+    assert receipt["databaseIntegrity"] == "ok"
+    assert inspect_database_file(database)["graphVersion"] == 1
+
+
+def test_backup_retention_requires_confirmation_and_removes_only_old_verified_pairs(monkeypatch, tmp_path):
+    database = tmp_path / "workspace.db"
+    monkeypatch.setenv("WEAVEPATH_DB", str(database))
+    for _ in range(2):
+        _legacy_v1_database(database)
+        with TestClient(create_app()):
+            pass
+        database.unlink()
+    plan = database_backup_retention_plan(database, 1)
+    assert plan["restorableCount"] == 2
+    assert plan["removeCount"] == 1
+    with pytest.raises(ValueError):
+        commit_database_backup_retention(database, 1, confirmed=False)
+    result = commit_database_backup_retention(database, 1, confirmed=True)
+    assert len(result["removedPaths"]) == 2
+    assert len(list_database_backups(database)) == 1

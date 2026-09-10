@@ -94,6 +94,6 @@ Context builder 只可读取：
 
 为避免改名造成数据丢失，当新路径不存在而旧版 `CoThinker Workspace` / `co-thinker-workspace` 数据库存在时，WeavePath 会原地复用旧数据库；不会自动复制、重命名或删除。
 
-优先使用 `WEAVEPATH_DATA_DIR` 覆盖数据目录，或用 `WEAVEPATH_DB` 直接指定数据库文件；`COTHINKER_DATA_DIR` 与 `COTHINKER_WORKFLOW_DB` 仅为兼容入口。当前 schema version 为 7，SQLite 已启用 WAL、外键和 `schema_migrations` 前向迁移；自动 downgrade、rollback 与发布级恢复工具仍待实现。schema v7 迁移把所有既有标题视为用户所有，宁可保留旧的 `新分支 N`，也不猜测并覆盖历史名称。备份必须使用 SQLite backup API 或一致性快照，不直接复制正在写入的 WAL 组合。
+优先使用 `WEAVEPATH_DATA_DIR` 覆盖数据目录，或用 `WEAVEPATH_DB` 直接指定数据库文件；`COTHINKER_DATA_DIR` 与 `COTHINKER_WORKFLOW_DB` 仅为兼容入口。当前 graph schema version 为 7，runtime auxiliary schema version 为 3；SQLite 已启用 WAL、外键和迁移表前向迁移。受管理启动会在真实迁移前使用 SQLite backup API 创建并校验 verified snapshot，失败自动恢复；设置页可查看备份、执行保留清理并生成要求停机和精确确认短语的离线 restore plan。项目不提供反向 SQL migration。schema v7 迁移把所有既有标题视为用户所有，宁可保留旧的 `新分支 N`，也不猜测并覆盖历史名称。备份不能直接复制正在写入的 WAL 组合。
 
 仓库中的 `backend/workflow.db` 是早期测试产物，不是长期真源；`*.db` 已被忽略。删除是独立的人工确认操作，不由启动或文档脚本自动执行。

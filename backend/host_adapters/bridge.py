@@ -51,7 +51,7 @@ def _binding_payload(binding: HostBinding) -> dict[str, Any]:
 class BridgeHostAdapter:
     def __init__(self, *, adapter_id: str, host_kind: str, display_name: str,
                  capabilities: HostCapabilities, transport: HostBridgeTransport,
-                 limitations: tuple[str, ...] = ()) -> None:
+                 limitations: tuple[str, ...] = (), connected: bool = True) -> None:
         if host_kind not in {"codex", "claude-code"}:
             raise ValueError("bridge host kind must be codex or claude-code")
         self.adapter_id = adapter_id
@@ -60,6 +60,7 @@ class BridgeHostAdapter:
         self._capabilities = capabilities
         self.transport = transport
         self.limitations = limitations
+        self.connected = connected
 
     def descriptor(self) -> HostDescriptor:
         return HostDescriptor(
@@ -67,6 +68,7 @@ class BridgeHostAdapter:
             host_kind=self.host_kind,
             display_name=self.display_name,
             capabilities=self._capabilities,
+            connected=self.connected,
             limitations=self.limitations,
         )
 
@@ -150,9 +152,10 @@ class BridgeHostAdapter:
                    prompt: str | None, options: dict[str, Any],
                    operation_id: str) -> HostBinding:
         self._require("fork")
-        if checkpoint and not self._capabilities.can_fork_from_checkpoint:
-            raise HostCapabilityUnsupported(self.adapter_id, "can_fork_from_checkpoint")
         cursor_kind = checkpoint.get("kind") if checkpoint else None
+        if (checkpoint and cursor_kind != "instanceHead"
+                and not self._capabilities.can_fork_from_checkpoint):
+            raise HostCapabilityUnsupported(self.adapter_id, "can_fork_from_checkpoint")
         if (cursor_kind is not None
                 and cursor_kind not in self._capabilities.supported_checkpoint_cursor_kinds):
             raise HostCapabilityUnsupported(
@@ -221,21 +224,25 @@ class BridgeHostAdapter:
 
 class CodexHostAdapter(BridgeHostAdapter):
     def __init__(self, transport: HostBridgeTransport, capabilities: HostCapabilities,
-                 *, adapter_id: str = "codex-bridge") -> None:
+                 *, adapter_id: str = "codex-bridge", connected: bool = True,
+                 limitations: tuple[str, ...] | None = None) -> None:
         super().__init__(
             adapter_id=adapter_id, host_kind="codex", display_name="Codex",
             capabilities=capabilities, transport=transport,
-            limitations=("Requires an installed trusted Codex companion bridge",),
+            connected=connected,
+            limitations=limitations or ("Requires an installed trusted Codex companion bridge",),
         )
 
 
 class ClaudeCodeHostAdapter(BridgeHostAdapter):
     def __init__(self, transport: HostBridgeTransport, capabilities: HostCapabilities,
-                 *, adapter_id: str = "claude-code-bridge") -> None:
+                 *, adapter_id: str = "claude-code-bridge", connected: bool = True,
+                 limitations: tuple[str, ...] | None = None) -> None:
         super().__init__(
             adapter_id=adapter_id, host_kind="claude-code", display_name="Claude Code",
             capabilities=capabilities, transport=transport,
-            limitations=("Capabilities depend on the connected Claude Code companion",),
+            connected=connected,
+            limitations=limitations or ("Capabilities depend on the connected Claude Code companion",),
         )
 
 

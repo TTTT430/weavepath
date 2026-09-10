@@ -178,10 +178,10 @@ can_navigate
 - UI metadata 的写入不得改变 graph/content revision。
 - 自动标题和显式重命名属于图元数据变更，必须增加 `graph_revision`；纯视觉 theme、viewport 和节点位置不得改变领域 revision。selection 会改变 active route，但不增加 graph/content revision。
 - 同 topic 多路线必须先解析到具体 instance，Turn Canvas 和继续对话都不能使用逻辑 topic 代替实例 ID。
-- 本 ADR 的 Standalone 本机纵向切片已完成后端、前端、typecheck/build 与真实浏览器 E2E，状态为 **Verified local preview**；这不代表正式 Codex/Claude HostAdapter、failure/approval 完整事件投影、跨设备同步或生产部署已经完成。
+- 本 ADR 的 Standalone 本机纵向切片已完成后端、前端、typecheck/build 与真实浏览器 E2E，状态为 **Verified local preview**；P3/P4 另已加入真实 Codex/Claude companion、宿主 Saga、数据库恢复和 SSE socket 验收。这不代表 failure/approval 完整事件投影、跨设备同步或生产部署已经完成。
 
 ## 本机验证记录
 
 2026-09-07 的当前后端验证基线为 113 项测试和 Python compileall；前端继续使用统一测试、TypeScript typecheck 和 production build。自动化路径确认了原生三视图切换、画布选择与 Chat 的精确路线同步、内部分支不泄漏到顶层、通过具体 `activeRouteInstanceId` 共用消息真源、空内部路线可见、从具体 turn 幂等创建并回答内部路线、自动/手动标题所有权、画布状态恢复，以及激活失败和迟到响应的状态收敛。数据库前向迁移当前到 schema v7；此前 schema v6 的内部路线迁移语义保持不变。
 
-该记录只适用于单用户、本机、Standalone Local Graph Chat 纵向切片。`/graph` 是兼容入口；正式 HostAdapter 的 capability degradation 仍需 adapter contract 与对应宿主 E2E。
+该记录只适用于单用户、本机、Standalone Local Graph Chat 与当前 companion 纵向切片。`/graph` 是兼容入口；多宿主 registry、生产授权和公网部署仍不在范围内。

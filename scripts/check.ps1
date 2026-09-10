@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $backendRoot = Join-Path $workspaceRoot "backend"
 $webRoot = Join-Path $workspaceRoot "apps\web"
+$pluginRoot = Join-Path $workspaceRoot "plugins\weavepath-codex-companion"
 
 if (-not $Python) {
   $venvPython = Join-Path $workspaceRoot ".venv\Scripts\python.exe"
@@ -30,11 +31,23 @@ Push-Location $backendRoot
 try {
   & $Python -m pytest
   if ($LASTEXITCODE -ne 0) { throw "Backend tests failed." }
-  & $Python -m compileall -q api agent_runtime graph_core host_adapters tests runtime_events.py
+  & $Python -m compileall -q api agent_runtime graph_core host_adapters tests runtime_events.py ..\integrations
   if ($LASTEXITCODE -ne 0) { throw "Backend compile check failed." }
 }
 finally {
   Pop-Location
+}
+
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) { throw "Node.js was not found; the Codex companion cannot be verified." }
+& $node.Source --check (Join-Path $pluginRoot "server.mjs")
+if ($LASTEXITCODE -ne 0) { throw "Codex companion syntax check failed." }
+& $node.Source (Join-Path $pluginRoot "tests\smoke.mjs")
+if ($LASTEXITCODE -ne 0) { throw "Codex companion loopback smoke test failed." }
+$pluginValidator = Join-Path $env:USERPROFILE ".codex\skills\.system\plugin-creator\scripts\validate_plugin.py"
+if (Test-Path -LiteralPath $pluginValidator) {
+  & $Python $pluginValidator $pluginRoot
+  if ($LASTEXITCODE -ne 0) { throw "Codex plugin validation failed." }
 }
 
 Push-Location $webRoot

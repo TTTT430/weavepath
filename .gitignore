@@ -20,6 +20,9 @@ coverage/
 *.tsbuildinfo
 playwright-report/
 test-results/
+.verify-tmp/
+.test-tmp-*/
+.web-test-tmp-*/
 
 # Local configuration and secrets
 .env

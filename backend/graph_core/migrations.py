@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 
 LATEST_GRAPH_SCHEMA_VERSION = 7
-LATEST_RUNTIME_SCHEMA_VERSION = 2
+LATEST_RUNTIME_SCHEMA_VERSION = 3
 
 
 class DatabaseSchemaError(RuntimeError):
@@ -401,6 +401,49 @@ CREATE INDEX IF NOT EXISTS idx_tool_effects_root
 ON tool_effects(root_run_id,created_at);
 """
 
+V11_HOST_SAGA_AND_STREAM_RECOVERY = """
+CREATE TABLE IF NOT EXISTS host_operation_sagas(
+    operation_id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    source_instance_id TEXT REFERENCES conversation_instances(id) ON DELETE SET NULL,
+    target_instance_id TEXT,
+    operation_type TEXT NOT NULL CHECK(operation_type IN ('fork','navigate','inspect','archive','rename')),
+    host_kind TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    request_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'started','host_succeeded','completed','compensated','orphaned','failed'
+    )),
+    host_result_json TEXT,
+    local_result_json TEXT,
+    error_code TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    UNIQUE(workflow_id,operation_type,idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_host_operation_sagas_status
+ON host_operation_sagas(status,updated_at);
+
+CREATE TABLE IF NOT EXISTS chat_stream_events(
+    workflow_id TEXT NOT NULL,
+    instance_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(workflow_id,instance_id,idempotency_key,sequence),
+    FOREIGN KEY(workflow_id,instance_id,idempotency_key)
+        REFERENCES chat_requests(workflow_id,instance_id,idempotency_key)
+        ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_chat_stream_events_request
+ON chat_stream_events(workflow_id,instance_id,idempotency_key,sequence);
+"""
+
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     # Refuse unknown or damaged histories before issuing any DDL. This is the
@@ -622,6 +665,14 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         )
         conn.execute(
             "INSERT INTO runtime_schema_migrations(version,applied_at) VALUES(2,?)",
+            (_now(),),
+        )
+    if 3 not in runtime_applied:
+        conn.executescript(V11_HOST_SAGA_AND_STREAM_RECOVERY)
+        # The marker is last so a process interrupted during the additive DDL
+        # can safely replay the idempotent statements on the next startup.
+        conn.execute(
+            "INSERT INTO runtime_schema_migrations(version,applied_at) VALUES(3,?)",
             (_now(),),
         )
     conn.commit()

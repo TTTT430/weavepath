@@ -1,9 +1,9 @@
-import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,AttachmentSearchResult,AttachmentSearchStatus,AttachmentUploadSession,BranchComparison,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,Dataset,DatasetCase,Experiment,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,UploadedAttachment,WorkflowSummary} from '../domain/types';
+import type {AgentApprovalRequest,AgentMemoryRouteNode,AgentRun,AgentRunEvents,AgentRunMetrics,AgentToolSpec,ApiErrorPayload,Artifact,AttachmentSearchResult,AttachmentSearchStatus,AttachmentUploadSession,BranchComparison,ChatRecoveryEvents,ConnectionDiagnostics,ContextPreview,CreateAgentRunInput,DatabaseBackups,DatabaseRestorePlan,DatabaseStatus,Dataset,DatasetCase,Experiment,HostConversationPage,AISettings,AISettingsInput,AIStatus,AIValidation,Graph,Message,MessageSnapshot,PrunePlan,ReasoningEffort,RetryAgentRunInput,Route,TurnCanvasSnapshot,UploadedAttachment,WorkflowSummary} from '../domain/types';
 const BASE='/api/v1';
 export class ApiError extends Error {
  constructor(message:string,public status:number,public code?:string,public runId?:string|number,public diagnostics?:ConnectionDiagnostics){super(message);this.name='ApiError'}
 }
-export type ChatStreamEvent={requestId?:string;userMessage?:Message;assistantMessage?:Message;delta?:string;code?:string;error?:string;replayed?:boolean;phase?:'connecting'|'waiting'|'receiving'|'reconnecting';attempt?:number;maxAttempts?:number;delayMs?:number;networkRoute?:'direct'|'system'}
+export type ChatStreamEvent={sequence?:number;requestId?:string;userMessage?:Message;assistantMessage?:Message;delta?:string;code?:string;error?:string;replayed?:boolean;phase?:'connecting'|'waiting'|'receiving'|'reconnecting';attempt?:number;maxAttempts?:number;delayMs?:number;networkRoute?:'direct'|'system'}
 async function request<T>(path:string,init?:RequestInit):Promise<T>{const response=await fetch(BASE+path,{...init,headers:{Accept:'application/json',...(init?.body?{'Content-Type':'application/json'}:{}),...init?.headers}});const data=await response.json().catch(()=>({}))as ApiErrorPayload;if(!response.ok)throw new ApiError(data.message||data.error||`HTTP ${response.status}`,response.status,data.code,data.runId,data.diagnostics);return data as T}
 const enc=encodeURIComponent;
 export const ATTACHMENT_CHUNK_SIZE=4*1024*1024;
@@ -28,6 +28,10 @@ export const api={
  resetAISettings:()=>request<AISettings>('/ai/settings',{method:'DELETE'}),
  validateAISettings:(body:AISettingsInput)=>request<AIValidation>('/ai/settings/validate',{method:'POST',body:JSON.stringify(body)}),
  aiModels:()=>request<{models:string[];count:number}>('/ai/models'),
+ databaseStatus:()=>request<DatabaseStatus>('/system/database'),
+ databaseBackups:(keepLast=5)=>request<DatabaseBackups>(`/system/database/backups?keepLast=${keepLast}`),
+ databaseRestorePlan:(manifestPath:string)=>request<DatabaseRestorePlan>('/system/database/restore-plan',{method:'POST',body:JSON.stringify({manifestPath})}),
+ commitDatabaseBackupRetention:(keepLast:number)=>request<{removeCount:number;removedPaths:string[]}>('/system/database/backups/retention',{method:'POST',body:JSON.stringify({keepLast,confirmed:true})}),
  switchAIModel:(model:string,reasoningEffort:ReasoningEffort|null=null)=>request<AISettings>('/ai/settings/model',{method:'PATCH',body:JSON.stringify({model,reasoningEffort})}),
  workflows:()=>request<{workflows:Graph[]}>('/workflows').then(x=>x.workflows.map(g=>({id:g.workflowId,name:g.name,activeInstanceId:g.activeInstanceId||undefined}))),
  createWorkflow:(body:{name?:string;rootTitle?:string;rootTopicId?:string})=>request<Graph>('/workflows',{method:'POST',body:JSON.stringify(body)}),
@@ -74,6 +78,8 @@ export const api={
  deleteAttachment:(w:string,i:string,id:string)=>request<{ok:boolean;attachmentId:string}>(`/workflows/${enc(w)}/instances/${enc(i)}/attachments/${enc(id)}`,{method:'DELETE'}),
  contextPreview:(w:string,i:string,maxChars=120000)=>request<ContextPreview>(`/workflows/${enc(w)}/instances/${enc(i)}/context-preview?maxChars=${maxChars}`),
  hostCapabilities:()=>request<{adapter:string;capabilities:Record<string,unknown>}>('/host/capabilities'),
+ hostConversations:(cursor?:string)=>request<HostConversationPage>(`/host/conversations${cursor?`?cursor=${enc(cursor)}`:''}`),
+ importHostConversation:(threadId:string,title?:string,workflowName?:string)=>request<{imported:boolean;graph:Graph;node:Graph['nodes'][number]}>('/host/conversations/import',{method:'POST',body:JSON.stringify({threadId,...(title?{title}:{}),...(workflowName?{workflowName}:{})})}),
  turns:(w:string,i:string)=>request<TurnCanvasSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/turn-tree`),
  regenerate:(w:string,i:string,messageId:string|number,content:string,expectedRevision:number)=>request<MessageSnapshot>(`/workflows/${enc(w)}/instances/${enc(i)}/messages/${enc(String(messageId))}/regenerate`,{method:'POST',body:JSON.stringify({content,expectedRevision})}),
  send:(w:string,i:string,content:string)=>request<Message>(`/workflows/${enc(w)}/instances/${enc(i)}/messages`,{method:'POST',body:JSON.stringify({role:'user',content})}),
@@ -86,6 +92,7 @@ export const api={
   const consume=(chunk:string)=>{buffer+=chunk;const frames=buffer.split(/\r?\n\r?\n/);buffer=frames.pop()||'';for(const frame of frames){let event='message',payload='';for(const line of frame.split(/\r?\n/)){if(line.startsWith('event:'))event=line.slice(6).trim();else if(line.startsWith('data:'))payload+=line.slice(5).trim()}if(payload){try{onEvent(event,JSON.parse(payload)as ChatStreamEvent)}catch{/* Ignore malformed provider frames. */}}}};
   try{while(true){const part=await reader.read();if(part.done)break;consume(decoder.decode(part.value,{stream:true}))}consume(decoder.decode())}finally{reader.releaseLock()}
  },
+ chatEvents:(w:string,i:string,requestId:string,afterSequence=0)=>request<ChatRecoveryEvents>(`/workflows/${enc(w)}/instances/${enc(i)}/chat/${enc(requestId)}/events?afterSequence=${afterSequence}`),
  cancelChat:(w:string,i:string,requestId:string)=>request<{ok:boolean;requestId:string;cancelled:boolean}>(`/workflows/${enc(w)}/instances/${enc(i)}/chat/${enc(requestId)}/cancel`,{method:'POST'}),
  fork:(w:string,i:string,body:{title?:string;topicId?:string;initialMessage?:string;anchorMessageId?:string|number;expectedContentRevision?:number;idempotencyKey?:string})=>request<ForkResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork`,{method:'POST',body:JSON.stringify(body)}),
  forkChat:(w:string,i:string,body:{title?:string;topicId?:string;initialMessage?:string;anchorMessageId?:string|number;expectedContentRevision?:number;idempotencyKey?:string})=>request<ForkChatResponse>(`/workflows/${enc(w)}/instances/${enc(i)}/fork-chat`,{method:'POST',body:JSON.stringify(body)}),
