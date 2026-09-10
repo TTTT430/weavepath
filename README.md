@@ -1,314 +1,344 @@
 # WeavePath
 
-> A visual, route-aware workspace for building, evaluating, and orchestrating AI agents.
+> 面向 Agent 开发的可视化、路线感知工作台：把对话、分支记忆、模型运行、工具、文件、实验和宿主任务放在同一张可追溯的图里。
 
-WeavePath（织径）是一个本地优先、跨 AI 宿主的 Agent 工程工作台。它把对话路线、上下文记忆、工具、实验、产物和外部 Agent 任务关联起来，让开发者可以从任意稳定 checkpoint 分支、评测、切换或交接一条执行路线。
+WeavePath（织径）是一个本地优先的 Agent 工程项目。它不是 Codex 或 Claude Code 的替代品，而是连接多个 AI 宿主、模型服务和实验资产的工作台。项目当前是 `0.x` 单用户本机预览版，不提供公网身份认证或生产级多租户隔离，请不要直接暴露到互联网。
 
-> [!WARNING]
-> 当前版本为 `0.x` 早期开发预览，面向单用户本机环境，不具备公网身份认证或生产级多租户隔离。请勿直接暴露到互联网。
+## 为什么需要 WeavePath
 
-> **P3/P4 收口（2026-09-10）**：当前本机切片已完成真实 Codex/Claude companion transport、跨宿主 operation Saga、verified backup/保留与停机恢复入口，并通过真实 Codex app-tools pipe、Claude Code 本机会话和 HTTP/SSE socket 断线恢复验收。详见 [P3/P4 真实连接与恢复验收](docs/p3-p4-live-acceptance.md)；文中早期的“待完成”描述仅保留作历史上下文。
-
-当前的 Conversation Workflow 是第一个业务模块，不是整个产品本身。Codex skill、MCP App 和未来的 Claude Code 插件都是宿主适配器或交互外壳，不是领域状态的长期真源。
-
-## 当前阶段
-
-项目已完成 **Phase 0：边界与架构冻结**，并开始 **Phase 1：Local Graph Chat**。Conversation Workflow 是第一个可运行纵向切片；长期方向是完整的 Agent Runtime、Memory、Evaluation、Observability、Artifacts 和 Multi-Agent Orchestration。详见 [Agent 工程路线图](docs/agent-engineering-roadmap.md)。
-
-- `conversation-workflow-bridge-v4` 冻结为 **legacy Codex adapter**。只接受缺陷修复和迁移所需变更，不再向其单体 `server.mjs`、`widget.html` 堆叠跨模块业务逻辑。
-- `conversation-workflow-skill-v4` 保留为 Codex 兼容规范、manifest v1 导入导出依据和行为参考。
-- `conversation-workflow-demo/public/*.html` 只是视觉与交互规格，不是长期前端实现；其布局将迁移到 React。
-- 新代码的长期中心是 graph-core、本地 Core Service 和全局 SQLite。
-
-当前仓库已有 SQLite `GraphStore`、schema v7 启动迁移、FastAPI `/api/v1` 路由和原生 React `WorkspaceShell`。默认界面可在同一页面切换“对话 / 工作流 / 实验室”：第一层画布只显示工作流级 `ConversationInstance`，每张卡片根据该节点最近一轮本地问答生成轻量概览，双击节点进入该对话内部的 Turn Tree。概览不调用模型、不混入父节点或兄弟路线，并随消息更新。两层画布采用统一的 Synapse 式卡片、连线、画布控制和右侧检查面板，并支持浅色/深色主题；这表示交互和视觉结构借鉴，不宣称与 dsh-synapse 完全一致。卡片右侧的 `＋` 可以直接创建子分支，不要求先填写名称或内容；第二层的空内部路线会立即以占位卡显示，仍不会泄漏为第一层工作流框。用户也可从任意轮次携带首条问题精确创建隔离路线并生成回答。在任一层画布选择具体对话或内部路线都会同步激活同一条路线，随后切回普通 Chat 时立即显示该路线；双击顶层节点还会进入其 Turn Tree，“继续对话”只负责返回 Chat。实验室提供分支对比、受控知识合并、版本化 Artifact、版本化数据集和实验快照。当前后端自动化套件为 197 项通过，并完成 compileall；前端 153 项测试、typecheck 和 production build 通过。`/graph` 只保留为兼容入口。
-
-第一版 OpenAI-compatible AI 链路和网页模型设置已经可用，并严格只向模型发送当前具体路线的有效上下文；聊天区默认只显示当前节点本地记录，继承路线记忆可按需展开。输入框底部可直接打开当前服务商的模型列表，切换模型和自动/低/中/高/极高推理强度；服务地址、API 密钥、安全保存和网络方式保持不变，完整连接配置仍在设置中管理。同一行的 `＋` 支持把 UTF-8 文本/代码/数据、PDF、DOCX、XLSX 和 PPTX 作为持久化消息上下文发送：当前边界为单文件 50 MiB、每条消息最多 5 个。超过 4 MiB 的文件使用 4 MiB 分片、逐片自动重试和可跨页面/服务重启继续的上传会话，并在输入框中显示进度；较小文件继续使用一次流式请求。文件写入本机 content-addressed object store，聊天消息只保存路线受限的附件引用；解析器生成带页码、工作表或幻灯片定位的派生分块，SQLite FTS5 trigram 索引持久化这些分块。路线文件面板可以查询当前路线及父路线的匹配内容、显示索引覆盖状态，但不会读取兄弟路线；一至两个字符的查询使用同一路线内的受限兼容查询。显式随消息添加的文件会确定性固化最多约 96,000 字符；未手动选择文件时，Chat 与 Agent Runtime 会在当前父路线中自动建立最多 6 个分块、约 24,000 字符的预算化检索计划。计划保存精确分块、路线、hash、匹配词和截断状态，回复或运行详情可检查并打开引用；历史请求复用已冻结的计划，父路线后续消息仍按实时 parent 链进入子节点。常见图片可安全保存，但在 OCR 配置完成前会明确标记为不可用于模型上下文。当前节点最后一次本地提问支持编辑、复制、取消和“保存并重新生成”：模型失败时零写入，并发修改时以 revision 冲突停止。聊天请求已支持 SSE 逐 token 输出、停止生成、失败回答独立重试和幂等键；连接中、等待模型、接收回答和自动重连以统一活动状态组件显示，并持续显示已处理时长。生成阶段没有固定回答时限，建立连接或传输中断会自动尝试三次；流中断时先清除未持久化的半截草稿再重建请求，只有完整回答才写入 assistant 消息。模型设置可显式选择自动、系统代理或直连；自动模式先直连，只在连接无法建立时尝试系统代理，并把每条路线的结果与耗时结构化显示。分支创建时的 checkpoint 快照继续保留用于审计，但有效上下文会沿父路线动态读取，因此父节点后续新增或修改的消息会进入已有子节点；兄弟路线仍然隔离。迁移前 verified backup、失败自动恢复和 HostAdapter contract v1 已完成；真实 Codex/Claude companion transport、host operation saga 与显式恢复 UI 仍未完成，因此 Phase 1 尚未完成。逐项状态见 [开发状态](docs/development-status.md)。
-
-### Agent Runtime v2 P0（本机自动化预览）
-
-仓库已在 Route-to-Agent Run v1 的基础上完成 Runtime v2 的本轮 P0：用户确认 execution brief 后，运行时按 `System Policy → 稳定排序 Tools → 当前 A→B→C 路线消息 → accepted knowledge → 当前请求` 装配模型输入。路线消息每次启动运行时都从父链动态读取，checkpoint 只保留审计快照；因此 C 会读取最新 A-B-C，而 A-B-C 与 A-B-E 只共享 A-B，兄弟内容不会串线。模型输入通过白名单投影排除 run ID、时间戳、幂等键和 UI 状态。应用不自建 KV cache，只为供应商 prompt cache 保持确定性前缀，并逐 model step 记录 OpenAI/DeepSeek 实际返回的 cached token；供应商未报告时界面明确显示“不可用”。
-
-Runtime v2 还加入持久化取消、重试 lineage、`awaiting_approval` 审批状态和安全工具边界。正式本机 app 使用单进程后台队列：创建 run 后 HTTP 立即返回，关闭面板或刷新页面不影响运行；进程重启会恢复尚未开始模型调用的 `queued` run、保留等待审批的 run，并将取消中的 run 收敛为已取消。已进入未知供应商调用边界的 `running` run 仍安全标记为中断，避免推测其结果或重复副作用。`safe_calculator` 无副作用；`propose_patch` 必须经用户批准，批准后只生成可审查的版本化 Artifact，不修改工作区文件；`read_file` 与 `workspace_search` 仅在显式配置 `WEAVEPATH_WORKSPACE_ROOT` 时开放。界面可查看审批、事件、Artifact、缓存复用率与数据覆盖率。完整合同、限制和测试路径见 [Runtime v2 P0](docs/runtime-v2-p0.md) 与 [Prompt cache / KV cache 策略](docs/prompt-cache-observability.md)。
-
-### Runtime v2 P2（可靠执行与自动上下文压缩）
-
-当前 P2 切片增加了持久化 run owner/lease、心跳与执行阶段，并为审批后的有副作用工具建立 root-run lineage 级 effect journal。相同重试链中，已经完成的完全相同 effect 会复用既有结果而不再执行；进程中断时仍处于执行中的 effect 被标记为 `toolOutcomeUnknown`，后续自动重放会被阻止。模型请求边界中断则标记为 `modelOutcomeUnknown`，不会把迟到响应写回路线。
-
-Chat 与 Agent Runtime 还会在实际路线内容超过预算时自动压缩较早消息。压缩是针对“具体目标路线 + 当前祖先 revision vector”的确定性请求投影，不删除、不替换、不改写 A/B/C 的原始消息；最近 8 条消息保持完整，较早消息以带 message ID、来源 instance、内容 hash 和摘录的审计摘要进入当次模型请求。父节点更新后下一次请求会沿 parent 链读取最新消息并生成新计划；`A-B-C-D` 与 `A-B-E` 可以共享原始 A-B，但各自的压缩计划与分支私有内容完全隔离。回复详情与 Agent run detail 会显示原始、压缩、完整保留消息数和压缩比例。默认预算为 240,000 字符，可用 `WEAVEPATH_CONTEXT_BUDGET_CHARS` 调整。完整边界见 [Runtime v2 P2](docs/runtime-v2-p2.md)。
-
-该 preview 当前仍是本机单进程/单 Uvicorn worker 设计；不要使用 `--workers` 启动多个 API 进程。数据库内的 lease 用于当前执行者所有权、心跳审计与安全恢复，官方 app factory 仍用数据库旁的 OS 单实例锁串行化 migration 和 startup recovery；它尚不代表多个 API 进程可以接管同一 run。所有启动实例必须使用同一规范化 `WEAVEPATH_DB` 路径，不能用 hard link、映射盘与 UNC 等不同别名指向同一 SQLite 文件。
-
-2026-09-10 的当前统一本机自动化基线包括后端 197 项测试、Python compileall、前端 153 项测试、TypeScript typecheck 和 production build；既有双层画布/Route-to-Agent Run/Engineering Lab 浏览器验收仍保留。Runtime v2 P0 的审批、取消、重试、cache-aware context 和 usage 可观测性，P1 的预算化路线文件自动检索，P2 的路线级自动压缩、run lease/heartbeat 和 effect 幂等 journal，以及 P3 的 HostAdapter bridge contract 与数据库发布恢复边界已完成自动化验证，尚未宣称完成新的真实供应商或宿主 companion 浏览器 E2E。schema v5 加入 Engineering Lab preview，schema v6 将精确轮次分支收纳为顶层对话内部的 Turn Tree 路线，schema v7 为自动分支标题增加持久化来源标记；Runtime、effect journal、压缩计划和检索计划使用独立的辅助迁移或既有运行记录，不改变 graph schema v7。Local Chat 的 SSE/取消/回答重试已完成；普通回复也会持久化实际用时、自动压缩计划和供应商返回的 OpenAI/DeepSeek 缓存 usage，并在回复下方的可展开详情中显示。任意 shell、自动写工作区、网络工具、自动 evaluator/scorer、多 Agent、多进程接管，以及真实 Codex/Claude companion transport 仍未包含。
-
-Chat 与 Turn Canvas 的跨 surface 生命周期同步仅用于本机 Web 界面的即时反馈：`BroadcastChannel`（兼容窗口另加同源 `postMessage`）携带按 workflow、route 和 `requestId` 隔离的刷新提示，接收方仍会重新读取当前路线的 SQLite/local snapshot。事件本身不是数据真源，也不保存 transcript；刷新页面后不保证恢复此前的连接阶段、自动重连和已处理时长等界面瞬时状态。该机制不是 WebSocket、跨进程消息总线或跨设备同步；持久化的聊天请求记录只承担幂等、重试和结果重放，不应被解释为完整的前端生命周期恢复。
-
-### Engineering Lab（本机预览）
-
-- 分支对比只返回路线元数据、本地消息计数、运行结果与 Artifact 元数据，不返回或拼接 transcript。
-- “知识合并”只保存用户勾选的结论/事实/决策/约束和 Artifact 引用；接纳知识只沿目标路线向后可见，并以独立 provenance 进入 Agent Run context。
-- Artifact 具有逻辑名称、递增版本、MIME/type、SHA-256、所属路线和可选来源 Run；Agent 结果可显式保存为 Artifact。
-- 数据集按名称版本化，实验冻结数据集版本/哈希、具体路线和所选 Run，当前不包含自动 scorer、参数矩阵或回归门禁。
-
-## 产品边界
-
-本产品负责：
-
-- route-aware conversation graph；
-- 稳定 checkpoint 与路线记忆隔离；
-- 宿主任务绑定、切换、检查、分支和级联归档；
-- 对话节点与 artifacts、执行简报、Agent 运行的关联；
-- 独立 Web/Desktop 工作台以及宿主内的轻量入口。
-
-本产品暂不负责：
-
-- 替代 Codex、Claude Code 或 IDE；
-- 自动合并兄弟路线 transcript；
-- 修改宿主私有安装包或向原生聊天栏强行注入控件；
-- 默认复制全部宿主 transcript；
-- 初期的云同步、多人协作或账户级永久删除；
-- 未经确认由 AI 自动改变图结构。
-
-## 模块
-
-1. **Conversation Workflow**：图拓扑、topic 多实例、路线选择、检查和级联归档。
-2. **Route Memory**：checkpoint、foundation、路线摘要、上下文预算与显式跨路线转移。
-3. **Local Chat**：已实现本地消息记录、可配置 OpenAI-compatible SSE/JSON 回复、停止生成、回答重试和幂等；后台 metabolize、judge 和 brief 仍按路线图推进，使产品不依赖外部宿主也能完成完整 AI 对话。
-4. **Artifacts & Experiments**：把数据集、代码、实验输出、指标和报告绑定到具体路线实例。
-5. **Handoff & Execution**：生成执行简报并跟踪外部 Agent 任务。
-6. **Search & Knowledge**：搜索结构元数据和用户明确允许索引的内容。
-7. **Templates & Automation**：可复用流程模板、定时任务和监控。
-8. **Collaboration / Sync**：本地单用户模型稳定后再评估。
-
-模块之间通过 graph-core 的稳定实体 ID 和事件协作；Workflow 不直接承担 LLM、文件管理或宿主 API 细节。
-
-## 总体架构
+普通聊天把所有尝试堆在一条时间线上，分支之间容易互相污染，也很难回答“这个答案来自哪条路线”。WeavePath 把每个对话作为图节点，把父子关系作为记忆路线：
 
 ```text
-WorkspaceShell (Chat · Workflow Graph · Turn Canvas)
-Compatible /graph · Desktop Shell · Codex Widget · Claude Command
-                               │
-                     HTTP · Browser events · MCP
-                               │
-                    Local Core Service (FastAPI)
-       ┌───────────────────────┼───────────────────────┐
-       │                       │                       │
-   graph-core              Route Memory          Application Services
-   纯领域规则              checkpoint/context     command/query/saga/events
-       │                       │                       │
-       └───────────────────────┼───────────────────────┘
-                               │ ports
-               ┌───────────────┴────────────────┐
-               │                                │
-       Global SQLite                     Host Adapters
-                                  Standalone · Codex · Claude
+A ── B ── C ── D
+      └── E
 ```
 
-graph-core 不调用 Codex/Claude、LLM、Widget 或文件系统宿主 API。外部能力只通过 ports/adapters 注入。
+切到 E 时，模型读取 `A-B-E`；切到 D 时，模型读取 `A-B-C-D`。C 创建以后，B 新增的消息会在下一次请求中动态进入 C；C 和 E 的私有消息不会互相进入上下文。checkpoint 保存创建分支时的审计快照，但不是运行时冻结的上下文。
 
-## 核心不变量
+## 当前完成度
 
-- 一个 `ConversationInstance` 只有一个 `parent_instance_id`，因此只有一条不可变祖先路线。
-- 多个实例可以共享同一个 `topic_id`，但绝不能共享可变 transcript。
-- `root_instance_id` 是图属性；`current`、`selected`、`last opened` 是不同来源的状态。
-- 分支绑定父节点的稳定 `Checkpoint` 锚点；checkpoint 快照用于审计和复现创建时状态，但有效上下文沿父路线动态读取，父节点后来新增或修改的消息会进入已创建子路线。
-- 默认禁止读取兄弟路线；跨路线内容必须由用户显式授权并记录 provenance。
-- 图结构变更使用 `graph_revision`；消息和摘要更新使用实例级 `content_revision`。
-- Turn Canvas 只投影具体实例的本地 turns；画布命令仍写入该具体实例的同一消息表，祖先路线消息作为动态继承记忆，checkpoint 快照和锚点仅用于审计摘要。
-- 未填写标题的分支先获得稳定的 `新分支 N` 名称；如果它仍是系统生成标题，第一条本地用户消息会生成最多 48 字的摘要标题并增加 `graph_revision`。显式重命名会把标题标记为用户所有，之后绝不被自动命名覆盖。
-- 画布 selection、路线选择和双击钻入都会先激活对应具体路线；Chat 与画布共享同一 `activeRouteInstanceId`，“继续对话”只切回 Chat，不再承担第二次激活。
-- “从工作流移除”表示 leaf-first 归档并保留 tombstone，不是永久删除账户数据。
+当前本机切片已完成：
 
-## 首个纵向切片
+- 路线感知对话图与双层画布；
+- OpenAI-compatible JSON/SSE Chat、模型切换、推理强度、连接诊断和自动重连；
+- 50 MiB 文件上传、分片续传、路线隔离检索和自动上下文压缩；
+- Runtime v2 的安全工具、审批、取消、重试、lease/heartbeat、effect journal 与 KV-cache-aware 上下文装配；
+- 运行时间线、Token、费用、工具记录和 OpenAI/DeepSeek cache usage 展示；
+- 分支对比、知识合并、Artifact、数据集和实验快照；
+- 真实 Codex companion、Claude Code companion、跨宿主 Saga、verified backup 与停机恢复；
+- 214 项后端测试、155 项前端测试、TypeScript、production build、真实宿主和 SSE 断线恢复验收。
 
-第一个可运行版本是 **Local Graph Chat**：
+当前仍是本机单用户切片：多宿主并发 registry、多用户授权、公网部署、自动 evaluator/scorer、多 Agent 协作和永久删除尚未实现。
 
-- FastAPI + React + schema v7 全局 SQLite；
-- StandaloneAdapter 拥有本地 transcript；
-- 原生 `WorkspaceShell` 在同一页面切换 Chat 和 Workflow surface，并保持草稿、滚动与画布状态；
-- 顶层 Workflow Graph 管理具体实例路线，选择节点即同步 Chat 的当前路线，双击按需进入并激活节点内部 local-only Turn Canvas；两层卡片均提供快捷 `＋` 分支入口，第二层还可继续对话或从具体 turn 创建并回答新分支；
-- 选择具体节点或 turn 路线即 activate；“继续对话”只切回已同步的 Chat；可以从具体 turn 精确分支；
-- 创建、fork、activate、inspect、topic route choice、prune plan/commit；
-- `/graph` 与 popup 仅为兼容入口，`BroadcastChannel + postMessage` 只发送按 route/requestId 隔离的刷新提示；真实 mutation 和消息 snapshot 仍以本地 SQLite 为准，WebSocket 与跨设备同步尚未实现；
-- 使用 checkpoint 锚点和动态父路线验证 `A-B-C-D1` 与 `A-E-D2` 的记忆隔离。
+## 核心概念
 
-完整验收见 [Local Graph Chat](docs/local-graph-chat.md)。
+| 概念 | 说明 |
+|---|---|
+| Workflow | 一组相关对话、运行和实验资产的容器。 |
+| ConversationInstance | 图中的一个具体对话节点，有且只有一个父节点。 |
+| Topic | 逻辑主题。同一主题可以有多条互相隔离的路线实例。 |
+| Memory route | 从根节点到当前节点的完整父链，例如 `A-B-C`。 |
+| Checkpoint | 创建分支时保存的 cursor、revision 和快照，用于审计；不阻止父节点后续消息进入子路线。 |
+| Turn Tree | 某个顶层对话内部的轮次/内部分支画布，不会把内部节点混到第一层工作流图。 |
+| Artifact | 绑定到路线或运行的版本化产物，带 MIME、SHA-256 和来源。 |
 
-## 开发启动说明
+## 功能详解
 
-环境要求：
+### 1. Chat 对话
 
-- Python 3.12+
-- Node.js 22+
-- npm 10+
-- Windows 推荐 PowerShell 7；macOS/Linux 可分别运行后端与前端命令
+- 左侧显示工作流和对话列表，中间显示当前路线消息，切换工作流节点后 Chat 自动跟随具体 `activeRouteInstanceId`。
+- 普通消息支持 Markdown/GFM、安全代码块、复制和最近一次提问编辑。
+- 编辑最近一次用户问题后可“保存并重新生成”；模型失败时不会写入半截 assistant 消息。
+- 失败回答可以单独重试，不重复写入 user 消息；请求带幂等键。
+- 生成过程中显示连接中、等待模型、接收回答、自动重连和已处理时长，可随时停止。
+- 首次连接或流传输中断时自动重试最多 3 次；没有固定的模型生成超时。
+- 回复详情可展开查看耗时、输入/输出 Token、缓存 Token、未缓存 Token、复用率、覆盖率、检索来源和压缩计划。供应商不返回 cache usage 时显示“不可用”。
 
-先安装一次依赖：
+### 2. 模型设置与输入框控制
+
+点击左下角“设置”可配置：
+
+- OpenAI、DeepSeek、LM Studio、Ollama 或自定义 OpenAI-compatible 服务；
+- Base URL、模型 ID、API Key、系统提示词；
+- 网络方式：自动、系统代理、直连。自动模式先直连，连接无法建立时才尝试系统代理；
+- 界面语言：中文/英文；界面主题：浅色/深色；
+- 是否保存非敏感设置，以及是否用当前 Windows 账户 DPAPI 安全保存 API Key。
+
+保存后，输入框发送按钮旁可以直接切换已发现的模型，并选择低、中、高、极高推理强度。完整连接测试会展示实际尝试的网络路线、错误类别和耗时。远程服务必须使用 HTTPS，HTTP 仅允许 loopback 地址。
+
+### 3. 第一层 Workflow 画布
+
+工作流页的第一层只显示工作流级对话节点。每张卡片包含：
+
+- 对话名称；
+- 最近本地问答的 extractive 摘要（不额外调用模型）；
+- 父子连线和当前路线状态；
+- 详情、轮次画布和快捷 `＋` 分支入口。
+
+单击节点只选择，双击进入该对话的第二层 Turn Tree；选择或双击成功后，回到 Chat 会显示同一个具体对话。标题为空时系统会生成“新分支 N”，收到首条消息后可自动生成摘要，用户显式重命名后不再被覆盖。
+
+### 4. 第二层 Turn Tree 画布
+
+双击第一层节点后进入该对话内部的轮次画布：
+
+- 一个框代表一轮用户提问及其 assistant/tool/failure 事件；
+- 内部分支仍有自己的路线和记忆，不会泄漏到第一层；
+- 可在卡片上直接点 `＋` 创建分支，暂时不填名称和首条内容也可以；
+- 可从具体 user turn 创建分支，带上 `anchorMessageId` 和当前 revision；
+- 选择内部路线后直接在画布输入框继续发送，消息写回同一 SQLite 真源；
+- 右侧 inspector 显示完整 memory path、继承消息数量、轮次详情和路线选择。
+
+画布布局借鉴 Synapse 式节点、连线、缩放、适应视图和右侧检查器，但不复制第三方项目的代码或数据。
+
+### 5. 分支、路线与归档
+
+从任意节点创建 sibling 分支：
+
+1. 点击节点右侧 `＋` 或轮次卡片的分支入口；
+2. 名称和首条问题都可以留空；
+3. 系统创建独立 ConversationInstance，记录父节点、topic、checkpoint cursor 和 revision；
+4. 选择新节点后自动切换 Chat；
+5. 若配置了模型并填写首条问题，系统会生成回答。
+
+级联归档不是永久删除：先生成带 revision 的 leaf-first 计划，确认后归档后代并保留 manifest tombstone。revision 变化、节点/宿主不匹配或部分远端归档失败时停止并保留可恢复状态。
+
+### 6. 文件、检索与上下文压缩
+
+输入框左侧 `＋` 支持每条消息最多 5 个文件，单文件最大 50 MiB：UTF-8 文本/代码/结构化数据、PDF、DOCX、XLSX、PPTX。超过 4 MiB 自动采用 4 MiB 分片上传、重试和跨页面/服务重启续传。
+
+- 原始字节按 SHA-256 保存到本机 content-addressed object store；
+- SQLite 保存文件元数据、解析状态、消息引用和派生分块；
+- PDF/Office 分块带页码、工作表或幻灯片定位；
+- FTS5 trigram 索引只搜索当前路线及其父路线，不搜索兄弟路线；
+- 显式附件按问题确定性固化上下文；未选文件时自动生成最多 6 个分块、约 24,000 字符的检索计划；
+- 路线超过默认 240,000 字符时自动压缩较早消息，最近 8 条消息保持完整；原始消息永不被删除或改写；
+- 压缩计划绑定具体路线和 revision vector，A-B-C 与 A-B-E 各自维护计划；
+- 图片可以保存，但 OCR 和 embedding/向量召回尚未启用，会明确显示不可用于模型上下文。
+
+### 7. Agent Runtime v2
+
+在实验室或运行入口填写 execution brief 并确认后，运行时固定按以下顺序装配上下文：
+
+```text
+System Policy
+→ 稳定排序的 Tools
+→ 当前路线 A → B → C 的动态消息
+→ accepted knowledge
+→ 当前请求
+```
+
+运行时不会把 runId、时间戳、UI 状态、随机请求键放入稳定前缀，也不在应用层自建 KV cache。每个 model step 记录供应商返回的 cache usage。
+
+当前安全工具：
+
+- `safe_calculator`：无副作用；
+- `propose_patch`：必须审批，只生成可审查 Artifact，不直接修改工作区；
+- `read_file`、`workspace_search`：只有显式设置 `WEAVEPATH_WORKSPACE_ROOT` 才开放。
+
+每次运行都保存时间线、运行阶段、工具调用、输入/输出 Token、费用、缓存统计、路线和上下文 hash。支持取消、失败重试、审批恢复、运行 lease/heartbeat、未知模型/工具结果保护和 root-run effect 幂等。
+
+### 8. Engineering Lab
+
+实验室包含三个区域：
+
+- 分支对比：比较 2–4 条路线的元数据、本地消息计数、运行结果和 Artifact，不拼接兄弟 transcript；
+- Artifact：创建带名称、版本、MIME、SHA-256、来源路线/Run 的版本化产物；
+- 数据集与实验：创建版本化数据集，选择路线和 Run，冻结数据集版本、哈希、指标与实验快照。
+
+知识合并必须由用户显式勾选结论、事实、决策或约束；合并后的知识只沿目标路线可见，并保留 provenance。
+
+### 9. Codex / Claude Code 宿主桥
+
+#### Codex
+
+个人插件 `weavepath-codex-companion` 通过 Codex 原生 app-tools pipe 建立随机端口、每进程 token 的 loopback bridge：
+
+- `list_threads` / `read_thread`：枚举和读取任务；
+- `fork_thread`：任务头分支；
+- `navigate_to_codex_page`：直接激活任务，不向 composer 写文本；
+- `set_thread_title` / `set_thread_archived`：重命名和归档。
+
+#### Claude Code
+
+`integrations/claude_code_companion` 读取本地 JSONL 会话，并使用 `claude --resume <session> --fork-session` 创建任务头分支。Claude CLI 没有可靠公开支持的历史 turn 分支、重命名和归档时，接口会明确返回 unsupported，而不是伪造能力。可参考 [Claude Code Sessions](https://code.claude.com/docs/en/sessions)。
+
+WeavePath API 提供：
+
+```text
+GET  /api/v1/host/capabilities
+GET  /api/v1/host/conversations
+POST /api/v1/host/conversations/import
+GET  /api/v1/workflows/{workflowId}/instances/{instanceId}/host-transcript
+GET  /api/v1/host/operations
+```
+
+导入只保存宿主类型和会话 ID；transcript 仍归宿主持有。
+
+### 10. 数据库备份与恢复
+
+启动迁移前会进行只读版本预检、SQLite online backup、SHA-256 和 `PRAGMA integrity_check`，然后才执行迁移。失败时自动恢复升级前快照，并把 manifest 标记为 `restored`。
+
+设置页可以查看：
+
+- 数据库路径、graph/runtime schema 版本和完整性；
+- verified backup 列表、状态和可恢复性；
+- 保留策略预览与确认清理；
+- 停机 restore plan。
+
+恢复必须先停止 API，再执行 CLI 给出的命令，并输入精确确认短语 `RESTORE <database filename>`。不提供反向 SQL migration，也不会在 API 运行中覆盖数据库。
+
+## 安装与启动
+
+### 环境要求
+
+- Windows 推荐 PowerShell 7；macOS/Linux 可分别启动两个进程；
+- Python 3.12+；
+- Node.js 22+；
+- npm 10+。
+
+### 安装依赖
 
 ```powershell
+git clone https://github.com/TTTT430/weavepath.git
+cd weavepath
+
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".\backend[test]"
+
 Push-Location .\apps\web
 npm ci
 Pop-Location
 ```
 
-推荐从项目根目录用统一脚本启动。API 固定监听 8000，Web 默认监听 5173；`Ctrl+C` 会停止两个子进程：
+### 启动 Web + API
 
 ```powershell
 .\scripts\dev.ps1
-
-# 可选：指定 Python 或 Web 端口
-.\scripts\dev.ps1 -Python C:\path\to\python.exe -WebPort 5174
 ```
 
-推荐统一验证：
+默认地址：
+
+- Web：<http://127.0.0.1:5173>
+- API health：<http://127.0.0.1:8000/api/v1/health>
+
+指定 Web 端口：
 
 ```powershell
-.\scripts\check.ps1
-
-# 可选：指定 Python
-.\scripts\check.ps1 -Python C:\path\to\python.exe
+.\scripts\dev.ps1 -WebPort 5174
 ```
 
-`check.ps1` 依次运行后端 pytest、Python compileall、前端测试和 production build。
-
-需要单独调试时，仍可手动启动后端：
+如需分开启动：
 
 ```powershell
+# PowerShell 1
 cd backend
-uvicorn api.app:create_app --factory --reload --host 127.0.0.1 --port 8000
+..\.venv\Scripts\python.exe -m uvicorn api.app:create_app --factory --host 127.0.0.1 --port 8000
 
-# 后端测试
-pytest
-```
-
-新安装的默认数据库位于 `%LOCALAPPDATA%\WeavePath\data\workspace.db`；可用 `WEAVEPATH_DATA_DIR` 指定数据目录，或用 `WEAVEPATH_DB` 直接指定数据库文件。若新路径尚无数据库，程序会原地复用旧版 `CoThinker Workspace` 数据库，不复制、不重命名、不删除；旧 `COTHINKER_*` 环境变量也继续兼容。受限 sandbox 无法写用户数据目录时会降级到系统临时目录，不会在源码目录创建新数据库。当前 health/SQLite schema version 为 7；graph snapshot 与 legacy manifest 协议仍为 schema v1。`GraphStore` 启动时运行记录在 `schema_migrations` 中的前向迁移。自动 downgrade、rollback 和发布级备份恢复流程仍未实现。
-
-在另一个 PowerShell 手动启动前端：
-
-```powershell
+# PowerShell 2
 cd apps\web
-npm ci
-npm run dev
-
-# 另行验证
-npm test
-npm run build
-```
-
-浏览器打开 Vite 输出的地址；开发服务器默认将 `/api` 代理到 `http://localhost:8000`。若 API 在其他 origin，启动 Vite 前设置 `WEAVEPATH_API_TARGET`；值只写 origin，不要附加 `/api`：
-
-```powershell
-$env:WEAVEPATH_API_TARGET = "http://127.0.0.1:8010"
 npm run dev
 ```
 
-`WEAVEPATH_API_TARGET` 只影响 Vite 开发代理，不改变浏览器可见 API 路径，也不修改数据库或模型 provider。统一 `scripts/dev.ps1` 默认启动 API:8000，因此通常无需设置。未配置 AI 时消息只持久化到当前路线；配置兼容服务后，同一输入框会调用 chat API 并写回 assistant 回复。
+不要使用 `uvicorn --workers`：当前数据库锁、聊天恢复和 Runtime lease 针对单 API 进程设计。
 
-### 在界面中连接 AI（推荐）
+## 配置模型
 
-未配置模型时，页面会明确显示“仅记录模式 · 尚未连接 AI”，消息仍会保存到当前路线，但不会伪造 assistant 回复。
+推荐在界面中配置：设置 → 选择服务商 → 填 Base URL、模型和 API Key → “测试并获取模型” → 保存。
 
-1. 点击聊天页左下角的 **设置**。
-2. 选择 OpenAI、DeepSeek、LM Studio、Ollama 或“自定义 / OpenAI 兼容”。
-3. 填写 API 密钥；LM Studio、Ollama 等本地服务通常可以留空。
-4. 点击“测试并获取模型”。本地预设允许先不填模型名，获取列表后再选择；不支持 `/models` 的兼容服务也可以手动填写模型名并直接保存。
-5. 选择“自动 / 系统代理 / 直连”；一般使用“自动”。连接测试会列出实际尝试过的路线、结果和耗时。
-6. 可勾选“在本机保存非敏感设置”；如需重启后继续使用密钥，再显式勾选“为当前 Windows 账户安全保存 API 密钥”，然后点击“保存”。
-
-保存连接后，可直接在发送按钮左侧切换模型与推理强度。输入框左侧的 `＋` 支持单文件不超过 50 MiB 的 UTF-8 文本/代码/结构化数据、PDF、DOCX、XLSX 和 PPTX，每条消息最多选择 5 个。原始字节按 SHA-256 独立保存在本机 `files/objects`，SQLite 只保留元数据、解析状态、派生分块、FTS5 trigram 全文索引、显式附件上下文和自动检索计划；消息只保存附件引用或普通用户问题。显式绑定文件时 Core 按问题确定性选取分块并固化来源；没有显式附件的普通 Chat 和 Agent brief 会自动搜索当前 instance 的父路线，按预算固化精确检索计划，兄弟文件不参与。历史请求、重试和审计复用当次内容及 hash，界面可查看候选/选中数量、截断状态和精确来源。图片会保留原件并明确显示 OCR 尚未配置；当前自动检索是 FTS5 词法检索，OCR 与 embedding/向量语义召回尚未实现。
-
-基础地址、模型名和网络方式可以持久化到应用数据目录的 `model-settings.json`。API 密钥从不写入 JSON、SQLite、工作流、日志或 API 响应；默认只保留在当前后端进程内存。用户显式启用安全保存后，密钥由 Windows 当前用户 DPAPI 加密到独立凭据文件，只有同一 Windows 账户可以解密。也可以使用下面的环境变量兜底。
-
-出于安全限制，远程服务必须使用 HTTPS；HTTP 只允许 `localhost`、`127.0.0.1` 或 `::1`。
-
-### 使用环境变量连接 AI（部署兜底）
-
-如果希望后端重启后自动读取密钥，可以在启动 `dev.ps1` 的同一个 PowerShell 中设置：
+也可以在启动前设置环境变量：
 
 ```powershell
 $env:WEAVEPATH_LLM_BASE_URL = "http://127.0.0.1:1234/v1"
-$env:WEAVEPATH_LLM_MODEL = "模型名称"
-$env:WEAVEPATH_LLM_API_KEY = "可选；本地服务通常不需要"
-$env:WEAVEPATH_LLM_CONNECT_TIMEOUT = "15" # 可选；只限制建连/写入，不限制模型生成时长
-$env:WEAVEPATH_LLM_NETWORK_MODE = "auto" # auto / system / direct
-$env:WEAVEPATH_CONTEXT_BUDGET_CHARS = "240000" # 可选；超出时按具体路线自动压缩较早消息
+$env:WEAVEPATH_LLM_MODEL = "your-model-id"
+$env:WEAVEPATH_LLM_API_KEY = "optional"
+$env:WEAVEPATH_LLM_NETWORK_MODE = "auto"       # auto / system / direct
+$env:WEAVEPATH_CONTEXT_BUDGET_CHARS = "240000"
 .\scripts\dev.ps1
 ```
 
-若只设置 `OPENAI_API_KEY`，后端会使用 `https://api.openai.com/v1`，但仍必须显式设置 `WEAVEPATH_LLM_MODEL`。旧 `COTHINKER_LLM_*` 和旧 timeout 变量继续作为兼容输入，但界面不再提供“模型响应超时”设置。聊天请求默认通过 SSE 流式返回；连接阶段自动重试三次，连接建立后读取不设固定生成时限。编辑最近提问并重新生成，以及失败后不修改提问的独立回答重试均已实现。
+只设置 `OPENAI_API_KEY` 时默认使用 `https://api.openai.com/v1`，但仍需设置 `WEAVEPATH_LLM_MODEL`。`WEAVEPATH_LLM_CONNECT_TIMEOUT` 只影响建连和写入，不限制模型生成时长；界面不提供固定响应超时设置。
 
-仓库中的 `backend/workflow.db` 是早期测试遗留物，不是当前默认数据库。`*.db` 已被 `.gitignore` 忽略；应由维护者确认无保留价值后手工删除，文档更新不代替数据删除确认。
+API Key 默认只存在后端进程内存；启用安全保存后，Windows 使用当前账户 DPAPI 加密。密钥不会写入 SQLite、JSON、日志、工作流或 Git。
 
-## 文档
+## Codex 插件安装
 
-- [总体架构与领域模型](docs/architecture.md)
-- [数据所有权](docs/data-ownership.md)
-- [manifest v1 迁移](docs/manifest-migration.md)
-- [阶段路线与首个切片](docs/local-graph-chat.md)
-- [开发状态](docs/development-status.md)
-- [Agent 工程路线图](docs/agent-engineering-roadmap.md)
-- [Codex 对话交互借鉴路线](docs/codex-interaction-roadmap.md)
-- [P3 HostAdapter 与数据库发布硬化](docs/host-and-release-p3.md)
-- [P3/P4 真实连接与恢复验收](docs/p3-p4-live-acceptance.md)
-- [Route-to-Agent Run v1 契约与本机验收记录](docs/route-to-agent-run-v1.md)
-- [Runtime v2 P2：可靠执行与路线级自动压缩](docs/runtime-v2-p2.md)
-- [ADR-0001：全局 SQLite 为长期真源](docs/adr/0001-global-sqlite-source-of-truth.md)
-- [ADR-0002：同 topic 使用多个路线实例](docs/adr/0002-topic-route-instances.md)
-- [ADR-0003：HostAdapter 与 operation saga](docs/adr/0003-host-adapter-operation-saga.md)
-- [ADR-0004：原生 WorkspaceShell 与双层对话画布](docs/adr/0004-native-workspace-double-canvas.md)
+仓库包含个人 marketplace 和插件：
 
-## Contributing、Security 与 License
-
-- 贡献流程与领域不变量见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-- 请按 [SECURITY.md](SECURITY.md) 私下报告安全问题，不要在公开 Issue 中粘贴对话、数据库或密钥。
-- 本项目采用 [Apache License 2.0](LICENSE)。
-
-## 目录：当前骨架与目标布局
-
-当前实际布局是：
-
-```text
-apps/web/                     React WorkspaceShell、Workflow/Turn 双层画布与 Agent Run 面板
-backend/graph_core/           SQLite GraphStore、schema v7 migrations、turn cursor checkpoint 与双层路线
-backend/agent_runtime/        Agent Run、event journal、OpenAI-compatible adapter 与安全工具注册表
-backend/api/                  FastAPI `api.app:create_app` factory 与 schemaVersion 7 API
-backend/tests/                graph-core、API、AI 设置/路线、迁移与 Agent Runtime 测试
-backend/pyproject.toml        Python 项目与测试依赖
-docs/                         Phase 0 文档与 Phase 1 验收说明
-scripts/dev.ps1               同时启动 API:8000 与 Web:5173
-scripts/check.ps1             后端/前端统一验证入口
+```powershell
+codex plugin marketplace add C:\path\to\weavepath
+codex plugin add weavepath-codex-companion@weavepath-local
 ```
 
-当前沿用扁平 Python 包布局，与 `pyproject.toml` 的 `include = ["graph_core*", "api*", "agent_runtime*"]` 保持一致：
+安装后新建一个 Codex task，使插件获得原生 app-tools pipe；然后重启 WeavePath API。更新插件时重新安装对应 marketplace 版本，并在新 task 中测试，避免旧缓存继续加载旧代码。
 
-```text
-backend/graph_core/              纯领域实体、命令、查询、不变量
-backend/api/                     FastAPI、application services、ports/adapters
-backend/agent_runtime/           durable run repository/service、model port 与 tool registry
-backend/tests/                   领域、API 和 adapter contract 测试
-apps/web/src/                    React WorkspaceShell + Workflow/Turn Canvas + model settings + Agent Run UI
+## Claude Code companion 启动
+
+```powershell
+.\scripts\start-claude-companion.ps1
 ```
 
-以下是模块增长后的**目标布局**，不是当前已存在的目录：
+companion 发布发现文件后，重启 WeavePath API。它只监听 `127.0.0.1`，每次进程生成随机 token。
 
-```text
-apps/web/                     React WorkspaceShell + workflow/turn canvas
-apps/desktop/                 后续 Tauri/Electron 壳
-backend/graph_core/           graph-core 与未来 memory 领域包
-backend/api/application/      command/query/saga/event 服务
-backend/api/ports/            repository、host、transcript、credential 接口
-backend/api/adapters/         SQLite、Standalone、Codex、Claude、LLM
-backend/api/routers/          FastAPI routers 与 WebSocket
-packages/graph-ui/            从 v4 widget 提炼的 React 图组件
-plugins/codex/                legacy bridge 的演化位置
-plugins/claude/               Claude Code 接入
-tools/legacy-manifest/        manifest v1 导入导出
-tests/domain/                 领域不变量
-tests/adapter-contract/       适配器契约
-tests/e2e/                    纵向验收
-docs/adr/                     架构决策记录
+## 验证与测试
+
+统一自动化检查：
+
+```powershell
+.\scripts\check.ps1
 ```
 
-如果未来决定采用 `src/cothinker/...` 包布局，必须先提交独立 ADR，并同步迁移 `pyproject.toml`、imports 和测试；不得仅修改文档制造第三种布局。
+真实本机连接与恢复检查：
+
+```powershell
+.\scripts\check-live.ps1
+```
+
+它会验证真实 Codex app-tools pipe、Claude Code 本机会话和 HTTP/SSE socket 断线恢复。SSE 故障注入使用本地可控 OpenAI-compatible provider，不代表任意公网服务当前可用；公网 provider 仍需使用用户自己的 URL、模型和密钥人工验证。
+
+详细验收记录见 [P3/P4 真实连接与恢复验收](docs/p3-p4-live-acceptance.md)，架构和逐项状态见 [总体架构](docs/architecture.md) 与 [开发状态](docs/development-status.md)。
+
+## 数据目录
+
+默认数据库：`%LOCALAPPDATA%\WeavePath\data\workspace.db`。
+
+可通过以下变量覆盖：
+
+```powershell
+$env:WEAVEPATH_DATA_DIR = "C:\path\to\data"
+# 或
+$env:WEAVEPATH_DB = "C:\path\to\workspace.db"
+```
+
+数据库旁的 `backups/` 保存版本化 verified backup；文件对象位于数据库数据目录下的 `files/objects`。旧 `COTHINKER_*` 环境变量仍兼容。仓库中的旧 `backend/workflow.db` 只是历史测试遗留物，不是默认数据库。
+
+## 安全与边界
+
+- 默认只绑定本机 loopback；不要把 API 或 companion 直接暴露到公网；
+- 不执行任意 shell、默认不写工作区、不自动合并兄弟路线；
+- 宿主返回的 workflow、instance、thread、provider identity 必须通过校验；
+- 外部操作失败或结果未知时不盲目重放副作用；
+- 归档保留 tombstone，不执行账户级永久删除；
+- 请不要在 Issue、日志、测试快照或提交中粘贴 API Key、宿主 token、数据库和私密 transcript。
+
+## 目录结构
+
+```text
+apps/web/                         React WorkspaceShell、Chat、Workflow/Turn Canvas、Lab
+backend/graph_core/               SQLite 图模型、路线、checkpoint、迁移与附件
+backend/agent_runtime/            Runtime、运行事件、工具注册表、审批与 effect journal
+backend/api/                      FastAPI 路由、模型设置、Chat SSE、宿主 Saga
+backend/host_adapters/            Standalone、Codex、Claude contract 与 transport
+integrations/claude_code_companion/ Claude Code 本机 companion
+plugins/weavepath-codex-companion/  Codex 个人插件
+scripts/                          dev、check、live recovery 和 companion 启动脚本
+docs/                             架构、ADR、验收和路线图
+```
+
+## 后续方向
+
+下一阶段重点是多宿主 registry、完整可视化宿主导入器、真实 provider 长上下文浏览器验收、metabolize/judge、自动 evaluator、Artifact diff、多 Agent 交接和签名桌面打包。所有新能力都必须保持路线记忆隔离、稳定前缀、幂等副作用和可恢复数据边界。
+
+## 许可证与贡献
+
+本项目采用 [Apache License 2.0](LICENSE)。贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题请按 [SECURITY.md](SECURITY.md) 私下报告。
