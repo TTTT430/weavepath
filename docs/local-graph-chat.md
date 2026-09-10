@@ -14,7 +14,7 @@
 
 目标是在不依赖宿主私有能力的情况下，完整验证图、路线记忆、原生 WorkspaceShell 和节点内部 Turn Canvas。独立 `/graph` 窗口降为可选兼容入口，不再定义默认交互。
 
-已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。AI 请求支持 SSE 逐 token 草稿、停止生成、失败回答重试、幂等键和本地化错误状态；连接中、等待模型、接收回答、自动重连和已处理时长使用统一图标活动组件显示。模型生成读取不设固定时限；可重试的建连和传输故障最多自动尝试三次，半截流式草稿会先清除再重建请求。编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；正式 HostAdapter 和 metabolize 尚未实现。
+已验证基线包含图存储、核心 HTTP API、React chat/graph 页面、可选独立浏览器窗口、OpenAI-compatible AI adapter 和网页模型设置。此前 Local Graph Chat 验收覆盖 create、message、模型设置入口、从非当前节点 branch、跨窗口广播刷新、同 topic 多路线选择、路线隔离、i18n、旧版双击单次 activate、非空草稿保持、节点本地记录/继承路线记忆分离、固定页面布局、独立消息滚动、安全 Markdown/GFM 渲染，以及最近提问的编辑/取消交互。AI 请求支持 SSE 逐 token 草稿、停止生成、失败回答重试、幂等键和本地化错误状态；连接中、等待模型、接收回答、自动重连和已处理时长使用统一图标活动组件显示。模型生成读取不设固定时限；可重试的建连和传输故障最多自动尝试三次，半截流式草稿会先清除再重建请求。编辑并重新生成采用只读 prepare + 原子 commit，模型失败零写入，并发修改返回 409，已有子节点不回写。节点切换使用请求防串线保护，同一路线具有同步发送锁。Route-to-Agent Run v1 已完成窄范围本机自动化与真实浏览器 E2E；HostAdapter contract v1 已实现，真实 Codex/Claude companion transport 和 metabolize 尚未实现。
 
 依据 [ADR-0004](adr/0004-native-workspace-double-canvas.md)，当前默认交互已改为同页“对话 / 工作流”切换：选择具体实例会同步激活 Chat 的当前路线，双击还会进入该实例的 local-only Turn Canvas；第二层选择具体 turn/内部路线时同样同步 `activeRouteInstanceId`，“继续对话”只返回 Chat。可以从选定本地用户 turn 记录精确 checkpoint 锚点。该 Standalone 纵向切片已完成自动化和真实浏览器 **Verified local preview**，但不代表正式宿主适配器或完整 Phase 1 已完成。
 
@@ -36,6 +36,8 @@ GET  /api/v1/workflows/{workflowId}/topics/{id}/routes
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-plan
 POST /api/v1/workflows/{workflowId}/instances/{id}/prune-commit
 GET  /api/v1/ai/status
+GET  /api/v1/host/capabilities                             # versioned descriptor + capabilities
+GET  /api/v1/system/database                               # read-only release diagnostics
 POST /api/v1/workflows/{workflowId}/instances/{id}/chat       # JSON by default; SSE when Accept: text/event-stream
 POST /api/v1/workflows/{workflowId}/instances/{id}/chat/stream # SSE stream
 POST /api/v1/workflows/{workflowId}/instances/{id}/chat/{requestId}/cancel # cooperative cancel
@@ -56,8 +58,8 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 
 实现范围：
 
-- FastAPI、React 和已验证的 schemaVersion 7 SQLite 前向迁移；rollback/downgrade 尚未完成；
-- GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port 已实现，正式 Standalone HostAdapter 尚未拆出；
+- FastAPI、React 和已验证的 schemaVersion 7 SQLite 前向迁移；受管理启动已有迁移前 verified backup 和失败自动恢复，不支持反向 SQL downgrade；
+- GraphStore 持有 Local Chat transcript；OpenAI-compatible LLM port、Standalone/Mock HostAdapter 与 companion bridge contract v1 已实现，真实 Codex/Claude transport 尚未接入；
 - workflow、topic、instance、checkpoint、local message、tombstone；
 - Turn projector 只读取具体实例的 local messages，将一个用户问题及下一用户问题前的 assistant/tool message 组织为一张 turn 卡片；沿祖先路线动态继承的消息不重复投影，failure/operation 事件扩展仍是后续工作；
 - Turn Canvas composer 与普通 Chat 调用同一条 route-aware 消息链路并写入同一 SQLite 消息真源，不复制 transcript；从 turn 卡片发起的 `fork-chat` 以精确 anchor 幂等创建 `surface_scope=turn` 的内部实例。首条问题可省略，空路线由 `routeNodes` 立即投影为占位卡；提供首条问题时可立即生成回答。内部实例只进入 owner 的 Turn Tree，不进入第一层 graph；
@@ -72,8 +74,8 @@ fork 请求支持 `anchorMessageId` 与 `expectedContentRevision`。选定本地
 1. `backend/graph_core`：checkpoint cursor、local-only turn read model、精确 turn fork 与 migration 测试已完成本机验证。
 2. `backend/api`：turns query 和带 revision 的 anchor fork 已落地；`backend/agent_runtime` 继续承载已验证本机 preview 的 run repository/service、model port 与 tool registry。
 3. `apps/web`：`WorkspaceShell` 已成为默认入口并保持 Chat surface；Workflow surface 在顶层实例图和节点内部 Turn Canvas 间按需钻入。
-4. Tool/Failure/Approval 完整 Timeline 仍待扩展；当前最小 turn 卡片不得把继承消息当成本地内容。
-5. Standalone/Host Mock capability contract 和正式 Codex/Claude 集成仍是后续，需明确 transcript、精确 cursor fork 和 navigation 的降级结果。
+4. Tool/Failure/Approval Runtime 时间线已完成当前切片；turn 卡片仍不得把继承消息当成本地内容。
+5. Standalone/Host Mock 与 capability-aware bridge contract v1 已完成；真实 Codex/Claude companion 集成和宿主 saga 仍是后续。
 6. 下方 A/B/C/D/turn 的 Standalone 自动化与主路径真实浏览器 E2E 已完成；跨宿主验收不能复用该完成声明。
 
 ### 必须通过的验收
@@ -99,11 +101,11 @@ A
 9. 服务重启后图、消息、checkpoint 和 tombstone 完整恢复。**持久化基础已实现，完整重启 E2E 仍待单独记录。**
 10. 中英文只改变 UI chrome，不改变 workflow、topic、节点名称和消息。**自动测试与手工真实浏览器验收已覆盖。**
 11. 后台摘要迟到时不能写入错误 instance 或改变 graph revision。**Planned：metabolize 尚未实现。**
-12. E2E 测试不依赖 Codex/Claude；Agent Runtime 使用测试专用 `ScriptedMockAgentAdapter` 复现 model turns，正式 HostAdapter mock 仍是后续工作。
+12. E2E 测试不依赖 Codex/Claude；Agent Runtime 使用测试专用 `ScriptedMockAgentAdapter` 复现 model turns，HostAdapter 使用独立的 deterministic Mock/bridge contract tests，两者不混用。**自动化已验证。**
 13. 进入 B 的 Turn Canvas 时，只显示 B 本地用户 turns 及其本地 assistant/tool message；A 的 checkpoint 内容只显示为路线与继承摘要，不能成为 B 的卡片。failure/operation 扩展仍是后续工作。**Verified local preview。**
 14. 从 B 的第 2 个本地用户 turn 创建 C 时，C 保留该精确 checkpoint 锚点和创建时快照；运行时上下文会继续跟随 B，因此 B3 及之后新增/修改的消息会进入 C；stale `expectedContentRevision` 仍返回 409。**Verified local preview。**
 15. 顶层与 B/D1/D2 各自的 viewport、节点位置和折叠独立恢复；重新进入 owner 时 route selection 与新激活的 owner 对齐。写入这些 UI metadata 或改变 active route 都不增加 graph/content revision。**Verified local preview。**
-16. 无 `can_read_local_turns` 的宿主不伪造 Turn Canvas；无精确 cursor fork 能力时禁用该动作或经确认降级到实例头；无 navigation 时不宣称已切换。**Planned adapter contract。**
+16. 无 `can_read_local_turns` 的宿主不伪造 Turn Canvas；无精确 cursor fork 能力时禁用该动作或经确认降级到实例头；无 navigation 时不宣称已切换。**Adapter contract 自动化已验证；真实宿主 UI E2E 待接入。**
 17. 进入或选择 B 的 Turn Canvas 时 B 已被激活；在画布发送问题后，刷新普通 Chat 与 Turn Canvas 必须看到同一条本地记录，发送动作本身不重复 activate。**Verified local preview。**
 18. 从 B 的任意 turn 卡片创建子分支时，首个问题写入新子实例并在模型可用时立即回答；幂等重放不得重复创建实例或回答，兄弟路线内容不得进入模型上下文。**Verified local preview。**
 19. 第 18 项创建的实例必须归属于 B 的内部 Turn Tree，第一层 Workflow Graph 仍只显示 B；选择内部路线后 Chat 立即跟随，标题仍为 B，但消息 API 使用该内部路线 ID。schema v6 会把旧版误入第一层的 exact-turn 子节点原地迁移，不删除记录。**Verified local preview。**
@@ -112,7 +114,7 @@ A
 
 21. schema v7 持久化 `title_is_generated`。系统生成标题会在第一条本地用户消息到达时更新为最多 48 字摘要并增加 `graphRevision`；用户显式重命名后永不自动覆盖。旧数据库标题升级时一律按用户所有处理。**后端自动化已验证。**
 
-当前本机验证使用统一套件：后端 108 项并通过 Python compileall；前端继续通过统一测试、TypeScript typecheck 和 production build 验证。这里的“通过”只覆盖 Standalone 本机预览；正式 HostAdapter、真实窄屏、failure/approval 完整时间线和生产部署不在范围内。
+当前本机统一套件为后端 197 项并通过 Python compileall；前端 153 项测试、TypeScript typecheck 和 production build 通过。这里的“通过”只覆盖 Standalone 本机预览与 HostAdapter transport contract；真实 Codex/Claude companion、真实窄屏和生产部署不在范围内。
 
 ## Phase 2：Agent Runtime 与 Tool Registry（本机预览切片）
 

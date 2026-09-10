@@ -4,6 +4,25 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 
+HOST_ADAPTER_CONTRACT_VERSION = 1
+
+
+class HostAdapterError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class HostCapabilityUnsupported(HostAdapterError):
+    def __init__(self, adapter_id: str, capability: str) -> None:
+        self.adapter_id = adapter_id
+        self.capability = capability
+        super().__init__(
+            "hostCapabilityUnsupported",
+            f"Host adapter '{adapter_id}' does not provide capability '{capability}'",
+        )
+
+
 @dataclass(frozen=True)
 class HostCapabilities:
     can_fork: bool = False
@@ -27,6 +46,28 @@ class HostCapabilities:
             "canRename": self.can_rename,
             "canOpenExternalWindow": self.can_open_external_window,
             "supportedCheckpointCursorKinds": list(self.supported_checkpoint_cursor_kinds),
+        }
+
+
+@dataclass(frozen=True)
+class HostDescriptor:
+    adapter_id: str
+    host_kind: str
+    display_name: str
+    capabilities: HostCapabilities
+    contract_version: int = HOST_ADAPTER_CONTRACT_VERSION
+    connected: bool = True
+    limitations: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "adapterId": self.adapter_id,
+            "hostKind": self.host_kind,
+            "displayName": self.display_name,
+            "contractVersion": self.contract_version,
+            "connected": self.connected,
+            "capabilities": self.capabilities.as_dict(),
+            "limitations": list(self.limitations),
         }
 
 
@@ -65,6 +106,7 @@ class Page:
 
 @runtime_checkable
 class HostAdapter(Protocol):
+    def descriptor(self) -> HostDescriptor: ...
     def capabilities(self) -> HostCapabilities: ...
     async def resolve_current_context(self, request_context: dict[str, Any]) -> HostContext: ...
     async def list_conversations(self, cursor: str | None = None) -> Page: ...

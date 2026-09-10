@@ -4,6 +4,68 @@ import sqlite3
 from datetime import datetime, timezone
 
 
+LATEST_GRAPH_SCHEMA_VERSION = 7
+LATEST_RUNTIME_SCHEMA_VERSION = 2
+
+
+class DatabaseSchemaError(RuntimeError):
+    """Raised before migration when the recorded schema history is unsafe."""
+
+    def __init__(self, code: str, message: str, *, graph_versions: tuple[int, ...] = (),
+                 runtime_versions: tuple[int, ...] = ()) -> None:
+        super().__init__(message)
+        self.code = code
+        self.graph_versions = graph_versions
+        self.runtime_versions = runtime_versions
+
+
+def _recorded_versions(conn: sqlite3.Connection, table: str) -> tuple[int, ...]:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    if exists is None:
+        return ()
+    return tuple(int(row[0]) for row in conn.execute(
+        f"SELECT version FROM {table} ORDER BY version"
+    ).fetchall())
+
+
+def inspect_schema_versions(conn: sqlite3.Connection) -> dict[str, object]:
+    graph = _recorded_versions(conn, "schema_migrations")
+    runtime = _recorded_versions(conn, "runtime_schema_migrations")
+    return {
+        "graphVersions": graph,
+        "runtimeVersions": runtime,
+        "graphVersion": graph[-1] if graph else 0,
+        "runtimeVersion": runtime[-1] if runtime else 0,
+    }
+
+
+def assert_schema_compatible(conn: sqlite3.Connection) -> dict[str, object]:
+    versions = inspect_schema_versions(conn)
+    graph = versions["graphVersions"]
+    runtime = versions["runtimeVersions"]
+    assert isinstance(graph, tuple) and isinstance(runtime, tuple)
+    for label, recorded, latest in (
+        ("graph", graph, LATEST_GRAPH_SCHEMA_VERSION),
+        ("runtime", runtime, LATEST_RUNTIME_SCHEMA_VERSION),
+    ):
+        if recorded and recorded != tuple(range(1, recorded[-1] + 1)):
+            raise DatabaseSchemaError(
+                "databaseSchemaHistoryInvalid",
+                f"The {label} migration history is not contiguous: {recorded}",
+                graph_versions=graph, runtime_versions=runtime,
+            )
+        if recorded and recorded[-1] > latest:
+            raise DatabaseSchemaError(
+                "databaseSchemaTooNew",
+                f"The database {label} schema is version {recorded[-1]}, "
+                f"but this build only supports up to {latest}",
+                graph_versions=graph, runtime_versions=runtime,
+            )
+    return versions
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -341,6 +403,10 @@ ON tool_effects(root_run_id,created_at);
 
 
 def run_migrations(conn: sqlite3.Connection) -> None:
+    # Refuse unknown or damaged histories before issuing any DDL. This is the
+    # release rollback boundary: an older application must never silently
+    # open and mutate a database created by a newer build.
+    assert_schema_compatible(conn)
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS runtime_schema_migrations("

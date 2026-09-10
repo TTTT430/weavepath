@@ -16,6 +16,7 @@ from typing import Any, Iterator
 
 from graph_core.attachments import (MAX_ATTACHMENT_BYTES, AttachmentParseError,
                                     parse_attachment, supports_attachment)
+from graph_core.database_lifecycle import assert_database_file_compatible
 from graph_core.migrations import run_migrations
 
 
@@ -249,21 +250,30 @@ class GraphStore:
         self.db_path = str(db_path)
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            # This read-only guard runs before WAL mode or migrations can
+            # mutate a database from a newer or damaged release history.
+            assert_database_file_compatible(self.db_path)
         self._owned_attachment_temp: tempfile.TemporaryDirectory[str] | None = None
         self._attachment_root = (Path(attachment_root) if attachment_root is not None
                                  else (Path(self.db_path).parent / "files"
                                        if self.db_path != ":memory:" else None))
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=5)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._init_schema()
-        self._migrate_legacy_attachment_payloads()
-        self._recover_processing_attachments()
-        self._recover_attachment_uploads()
-        self.cleanup_orphan_attachment_objects()
+        try:
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._init_schema()
+            self._migrate_legacy_attachment_payloads()
+            self._recover_processing_attachments()
+            self._recover_attachment_uploads()
+            self.cleanup_orphan_attachment_objects()
+        except BaseException:
+            # A constructor failure must not retain a file handle that blocks
+            # managed startup from restoring its verified pre-migration copy.
+            self._conn.close()
+            raise
 
     def close(self) -> None:
         if self._attachment_root is not None:

@@ -185,7 +185,7 @@ checkpoint 同时保留不可变消息快照，cursor 只提供可审计锚点�
 - completion 只有在 instance 仍 active 且 content revision 未变化时，才原子写入本地 assistant message；run 另存不可变 `final_answer`。
 - 启动时遗留且尚未调用模型的 `queued` run 会校验冻结 context 与模型配置后恢复；模型请求或副作用执行边界中的 `running` run 分别以 `modelOutcomeUnknown` / `toolOutcomeUnknown` 转为 `interrupted`，`awaiting_approval` 保留，`cancelling` 收敛为 `cancelled`。
 
-schema v3 引入且在当前 schema v7 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线；schema v7 增加 `title_is_generated`，让自动标题和用户标题在重启后仍可可靠区分。旧数据迁移时统一视为用户标题，避免升级覆盖历史名称。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行；自动 downgrade/rollback 尚未实现。
+schema v3 引入且在当前 schema v7 中继续使用的 runtime 表包括 `agent_runs`、`run_steps`、`run_events`、`tool_calls` 和 `tool_results`。schema v4 为 checkpoint 增加精确 cursor 字段；schema v5 增加 Artifact、accepted knowledge merge、dataset 和 experiment snapshot 表；schema v6 为 `conversation_instances` 增加 `surface_scope` 与 `owner_instance_id`，并将旧版误入顶层的精确 turn 分支原地迁移为内部路线；schema v7 增加 `title_is_generated`，让自动标题和用户标题在重启后仍可可靠区分。旧数据迁移时统一视为用户标题，避免升级覆盖历史名称。迁移由 `schema_migrations` 记录并在 `GraphStore` 打开数据库时前向执行。受管理启动会在实际版本升级前创建 verified SQLite backup，失败时在独占锁内自动恢复；反向 SQL downgrade 不受支持，旧版回退必须显式恢复对应 pre-migration backup。
 
 Runtime 辅助迁移独立记录在 `runtime_schema_migrations`，不提升 GraphStore schema v7。runtime v2 增加 run lineage/provider call journal；runtime v2 reliability 增加 lease/heartbeat/execution phase、`tool_calls.effect_key` 和 `tool_effects`。普通 Chat 的压缩计划随 assistant response details 保存，Agent 的压缩计划随不可变 context snapshot 保存，不建立第二份可变 transcript 表。
 
@@ -197,13 +197,15 @@ Chat SSE 与 Agent Run journal 共用 `runtime_events.py` 的事件词汇和 sch
 
 ## HostAdapter 能力协议
 
-当前代码提供 `host_adapters.ports.HostAdapter`、`StandaloneHostAdapter` 和
-确定性的 `MockHostAdapter`。适配器只负责宿主能力翻译，GraphStore 仍是
+当前代码提供 version 1 的 `host_adapters.ports.HostAdapter`、`HostDescriptor`、
+`StandaloneHostAdapter`、确定性的 `MockHostAdapter`，以及 capability-aware 的
+`CodexHostAdapter` / `ClaudeCodeHostAdapter` companion transport 边界。适配器只负责宿主能力翻译，GraphStore 仍是
 parent/topic/prune 与路线记忆的唯一真源。UI 可通过
 `GET /api/v1/host/capabilities` 协商能力后决定显示哪些动作。
 
 ```python
 class HostAdapter(Protocol):
+    def descriptor(self) -> HostDescriptor: ...
     def capabilities(self) -> HostCapabilities: ...
     async def resolve_current_context(self, request_context) -> HostContext: ...
     async def list_conversations(self, cursor=None) -> Page: ...
@@ -233,8 +235,8 @@ UI 根据 capability 显示动作。缺失导航能力时保留画布并提供 c
 ### 适配器职责
 
 - StandaloneAdapter：Core Service 持有消息；从 checkpoint 创建本地子会话。
-- CodexAdapter：从 legacy v4 的 metadata、`callHostTool` 和验证逻辑演化；默认只保存 task binding 和图元数据。
-- ClaudeAdapter：只实现公开能力；无法原生导航时返回明确降级结果。
+- CodexAdapter：已建立受信任 companion transport、operation ID、capability 与返回 binding 验证合同；真实插件 transport 仍需接入。
+- ClaudeAdapter：使用同一 canonical transport 边界但独立声明真实能力；无法原生导航时返回明确降级结果，真实 companion 尚未接入。
 - Host MockAdapter（目标）：用于 host saga、revision 和错误恢复的确定性测试；不要与当前 Agent Runtime 的测试专用 `ScriptedMockAgentAdapter` 混为生产 adapter。
 
 适配器不能决定 parent/topic/prune 语义，也不能绕过 graph-core 直接改数据库。

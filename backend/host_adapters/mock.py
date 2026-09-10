@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from host_adapters.ports import HostBinding, HostCapabilities, HostContext, HostResult, Page
+from host_adapters.ports import (
+    HostBinding, HostCapabilities, HostContext, HostDescriptor, HostResult, Page,
+)
 
 
 class MockHostAdapter:
@@ -20,6 +22,12 @@ class MockHostAdapter:
 
     def capabilities(self) -> HostCapabilities:
         return self._capabilities
+
+    def descriptor(self) -> HostDescriptor:
+        return HostDescriptor(
+            adapter_id="mock", host_kind="test", display_name="Deterministic Mock Host",
+            capabilities=self.capabilities(), limitations=("Test-only adapter",),
+        )
 
     async def resolve_current_context(self, request_context: dict[str, Any]) -> HostContext:
         return HostContext(workflow_id=request_context.get("workflowId"),

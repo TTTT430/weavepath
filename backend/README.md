@@ -19,6 +19,16 @@ the same database exits with `databaseInstanceAlreadyRunning` instead of
 recovering the first process's active Runs. Uvicorn's `--reload` supervisor only
 imports the factory module; its serving child owns the lock.
 
+Managed startup also validates the graph/runtime migration history before WAL
+or DDL changes. When an existing database needs an upgrade, it creates and
+integrity-checks a SQLite snapshot under the adjacent `backups/` directory. A
+failed migration restores that snapshot while the process lock is still held.
+Newer or non-contiguous schema histories are rejected, and a required backup
+failure never falls back to an empty temporary workspace. Reverse SQL
+migrations are intentionally unsupported; release rollback restores the
+matching verified pre-migration backup. Inspect the active release state with
+`GET /api/v1/system/database`.
+
 Route-to-Agent Run v1 still supports only one local API process, so do not add a
 Uvicorn `--workers` value greater than one. Cross-process Run owner/lease and
 worker coordination remain future work. Passing an existing `GraphStore` to

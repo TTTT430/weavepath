@@ -23,8 +23,15 @@ from agent_runtime.compaction import compact_route_messages
 from api.llm import LLMClient, LLMUnavailable, OpenAICompatibleLLM
 from api.model_settings import RuntimeModelSettings
 from engineering import EngineeringRepository
-from graph_core import Conflict, GraphStore, NotFound, Validation
+from graph_core import Conflict, DatabaseMigrationError, GraphStore, NotFound, Validation
 from graph_core.attachments import MAX_ATTACHMENT_BYTES, supports_attachment
+from graph_core.database_lifecycle import (
+    complete_database_upgrade,
+    connection_database_status,
+    prepare_database_upgrade,
+    restore_database_upgrade,
+)
+from graph_core.migrations import LATEST_GRAPH_SCHEMA_VERSION
 from host_adapters.standalone import StandaloneHostAdapter
 from runtime_events import event_payload
 
@@ -202,14 +209,43 @@ def open_default_store() -> GraphStore:
 
 def _open_locked_store(database_path: str | Path) -> tuple[GraphStore, _ProcessFileLock | None]:
     if str(database_path) == ":memory:":
-        return GraphStore(":memory:"), None
+        store = GraphStore(":memory:")
+        store.database_lifecycle = complete_database_upgrade(None, store._conn, ":memory:")
+        return store, None
     instance_lock = _ProcessFileLock(database_path)
     instance_lock.acquire()
+    upgrade = None
+    store: GraphStore | None = None
     try:
-        # GraphStore performs all migrations in its constructor, after the
-        # process lock has been acquired.
-        return GraphStore(database_path), instance_lock
-    except BaseException:
+        # Prepare and verify a rollback snapshot while the exact database is
+        # exclusively owned, then migrate. No old/new process may race this
+        # release boundary.
+        upgrade = prepare_database_upgrade(database_path)
+        store = GraphStore(database_path)
+        store.database_lifecycle = complete_database_upgrade(
+            upgrade, store._conn, database_path
+        )
+        return store, instance_lock
+    except BaseException as exc:
+        if store is not None:
+            # Avoid application-level cleanup queries against a partially
+            # migrated schema; only release SQLite before byte restoration.
+            store._conn.close()
+        if upgrade is not None:
+            try:
+                restore_database_upgrade(upgrade, exc)
+            except BaseException as recovery_exc:
+                instance_lock.release()
+                raise DatabaseMigrationError(
+                    upgrade.database_path, upgrade.backup_path,
+                    recovered=False,
+                    cause=RuntimeError(f"{exc}; recovery failed: {recovery_exc}"),
+                ) from recovery_exc
+            instance_lock.release()
+            raise DatabaseMigrationError(
+                upgrade.database_path, upgrade.backup_path,
+                recovered=True, cause=exc,
+            ) from exc
         instance_lock.release()
         raise
 
@@ -524,6 +560,12 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     app.state.agent_dispatcher = run_dispatcher
     app.state.engineering = engineering
     app.state.host_adapter = host_adapter
+    database_lifecycle = connection_database_status(
+        graph_store._conn,
+        graph_store.db_path,
+        getattr(graph_store, "database_lifecycle", None),
+    )
+    app.state.database_lifecycle = database_lifecycle
     # Fast same-process cancellation state; durable request identity/results
     # live in GraphStore.chat_requests.
     chat_state_lock = Lock()
@@ -694,11 +736,22 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     @app.get(prefix + "/health")
     def health():
         return {"ok": True, "service": "weavepath", "version": app.version,
-                "schemaVersion": 7, "aiConfigured": bool(llm.status()["configured"])}
+                "schemaVersion": LATEST_GRAPH_SCHEMA_VERSION,
+                "databaseStatus": database_lifecycle["status"],
+                "aiConfigured": bool(llm.status()["configured"])}
+
+    @app.get(prefix + "/system/database")
+    def database_status():
+        """Read-only release diagnostics; never mutates or restores data."""
+        return database_lifecycle
 
     @app.get(prefix + "/host/capabilities")
     def host_capabilities():
-        return {"adapter": "standalone", "capabilities": host_adapter.capabilities().as_dict()}
+        descriptor = host_adapter.descriptor().as_dict()
+        # Keep the original two fields during the contract-v1 transition.
+        return {"adapter": descriptor["adapterId"],
+                "capabilities": descriptor["capabilities"],
+                "descriptor": descriptor}
 
     @app.get(prefix + "/ai/status")
     def ai_status():

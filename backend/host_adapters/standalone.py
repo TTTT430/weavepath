@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from graph_core import GraphStore, NotFound, Validation
-from host_adapters.ports import HostBinding, HostCapabilities, HostContext, HostResult, Page
+from host_adapters.ports import (
+    HostBinding, HostCapabilities, HostContext, HostDescriptor, HostResult, Page,
+)
 
 
 class StandaloneHostAdapter:
@@ -23,6 +25,18 @@ class StandaloneHostAdapter:
             can_read_transcript=True, can_read_local_turns=True, can_archive=True,
             can_rename=True, can_open_external_window=False,
             supported_checkpoint_cursor_kinds=("instanceHead", "localUserTurn"),
+        )
+
+    def descriptor(self) -> HostDescriptor:
+        return HostDescriptor(
+            adapter_id="standalone",
+            host_kind="standalone",
+            display_name="WeavePath Local",
+            capabilities=self.capabilities(),
+            limitations=(
+                "No operating-system external conversation window",
+                "Transcript and navigation are local to this workspace database",
+            ),
         )
 
     async def resolve_current_context(self, request_context: dict[str, Any]) -> HostContext:

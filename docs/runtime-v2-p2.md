@@ -112,7 +112,7 @@ prepared → executing → completed
 - 中断且结果未知的 effect 禁止自动重放；
 - model/tool 未知边界恢复使用不同稳定错误码。
 
-当前统一基线为后端 187 项、前端 153 项、Python compileall、TypeScript typecheck 和 production build 通过。
+P2 完成时的统一基线为后端 187 项、前端 153 项、Python compileall、TypeScript typecheck 和 production build 通过；后续 P3 测试在此基础上继续累加。
 
 ## 后续边界
 
