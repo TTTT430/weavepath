@@ -24,7 +24,7 @@ A ── B ── C ── D
 - 50 MiB 文件上传、分片续传、路线隔离检索和自动上下文压缩；
 - Runtime v2 的安全工具、审批、取消、重试、lease/heartbeat、effect journal 与 KV-cache-aware 上下文装配；
 - 运行时间线、Token、费用、工具记录和 OpenAI/DeepSeek cache usage 展示；
-- 分支对比、知识合并、Artifact、数据集和实验快照；
+- 分支摘要对比、路线差异研判、受控知识合并和版本化 Artifact；
 - 真实 Codex companion、Claude Code companion、跨宿主 Saga、verified backup 与停机恢复；
 - 214 项后端测试、155 项前端测试、TypeScript、production build、真实宿主和 SSE 断线恢复验收。
 
@@ -117,7 +117,7 @@ A ── B ── C ── D
 
 ### 7. Agent Runtime v2
 
-在实验室或运行入口填写 execution brief 并确认后，运行时固定按以下顺序装配上下文：
+在 Agent 运行入口填写 execution brief 并确认后，运行时固定按以下顺序装配上下文：
 
 ```text
 System Policy
@@ -137,15 +137,16 @@ System Policy
 
 每次运行都保存时间线、运行阶段、工具调用、输入/输出 Token、费用、缓存统计、路线和上下文 hash。支持取消、失败重试、审批恢复、运行 lease/heartbeat、未知模型/工具结果保护和 root-run effect 幂等。
 
-### 8. Engineering Lab
+### 8. 工作流研判
 
-实验室包含三个区域：
+“分支对比”入口服务于对话工作流本身：
 
-- 分支对比：比较 2–4 条路线的元数据、本地消息计数、运行结果和 Artifact，不拼接兄弟 transcript；
-- Artifact：创建带名称、版本、MIME、SHA-256、来源路线/Run 的版本化产物；
-- 数据集与实验：创建版本化数据集，选择路线和 Run，冻结数据集版本、哈希、指标与实验快照。
+- 选择 2–4 条路线，对比每条路线的本地对话摘要、共同记忆前缀和分支独有路径；
+- 并列查看消息规模、模型、最近的 Agent 结论和已保存成果；
+- 显式勾选需要沿用的结论或 Artifact，并写入指定目标路线；
+- 在成果库保存带名称、版本、MIME、SHA-256 和来源路线/Run 的版本化产物。
 
-知识合并必须由用户显式勾选结论、事实、决策或约束；合并后的知识只沿目标路线可见，并保留 provenance。
+知识合并只携带用户明确选中的结论、事实、决策、约束或 Artifact 引用。合并后的知识只沿目标路线及其后代可见，并保留 provenance；兄弟路线的 transcript 不会被拼接。旧版小型数据集/实验快照 API 暂时保留兼容，但不再作为主界面能力。GB 级数据处理将在后续通过本地路径、对象存储或外部训练运行器引用，而不是上传进浏览器内存。
 
 ### 9. Codex / Claude Code 宿主桥
 
@@ -215,6 +216,12 @@ Pop-Location
 
 ```powershell
 .\scripts\dev.ps1
+```
+
+启动后自动打开浏览器：
+
+```powershell
+.\scripts\dev.ps1 -OpenBrowser
 ```
 
 默认地址：
@@ -337,7 +344,7 @@ docs/                             架构、ADR、验收和路线图
 
 ## 后续方向
 
-下一阶段重点是多宿主 registry、完整可视化宿主导入器、真实 provider 长上下文浏览器验收、metabolize/judge、自动 evaluator、Artifact diff、多 Agent 交接和签名桌面打包。所有新能力都必须保持路线记忆隔离、稳定前缀、幂等副作用和可恢复数据边界。
+下一阶段重点是多宿主 registry、完整可视化宿主导入器、真实 provider 长上下文浏览器验收、分支总结与研判、Artifact diff、多 Agent 交接和签名桌面打包。大型数据或模型训练能力通过外部运行器接入。所有新能力都必须保持路线记忆隔离、稳定前缀、幂等副作用和可恢复数据边界。
 
 ## 许可证与贡献
 

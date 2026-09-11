@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
   [string]$Python = "",
-  [int]$WebPort = 5173
+  [int]$WebPort = 5173,
+  [switch]$OpenBrowser
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +45,21 @@ Write-Host "WeavePath is starting:" -ForegroundColor Cyan
 Write-Host "  Web: http://127.0.0.1:$WebPort/"
 Write-Host "  API: http://127.0.0.1:$ApiPort/api/v1/health"
 Write-Host "Press Ctrl+C to stop both processes."
+
+if ($OpenBrowser) {
+  Write-Host "Waiting for the web app before opening the browser..." -ForegroundColor DarkCyan
+  $webReady = $false
+  for ($attempt = 0; $attempt -lt 30 -and -not $webReady; $attempt++) {
+    try {
+      $response = Invoke-WebRequest -Uri "http://127.0.0.1:$WebPort/" -UseBasicParsing -TimeoutSec 1
+      $webReady = $response.StatusCode -ge 200 -and $response.StatusCode -lt 500
+    }
+    catch {
+      Start-Sleep -Seconds 1
+    }
+  }
+  Start-Process "http://127.0.0.1:$WebPort/"
+}
 
 try {
   while (-not $api.HasExited -and -not $web.HasExited) {

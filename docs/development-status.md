@@ -1,6 +1,6 @@
 # 开发状态
 
-更新日期：2026-09-09
+更新日期：2026-09-11
 
 ## 状态定义
 
@@ -22,7 +22,7 @@
 | `backend/graph_core/` | In progress | 已验证 SQLite GraphStore、动态 parent 路线记忆（checkpoint 创建快照用于审计）、同 topic 多实例、leaf-first prune、实例级 `contentRevision`、workflow `eventRevision`、schema v1→v7 前向迁移、checkpoint cursor、空内部路线投影、系统/用户标题来源和从具体用户 turn 创建分支；仍未拆稳定 repository/ports，也没有自动 rollback/downgrade |
 | `backend/api/` | In progress | health/SQLite schema version 为 7；核心 `/api/v1`、OpenAI-compatible Local Chat（JSON 与 SSE）、取消/幂等、50 MiB 路线文件上传、分片续传/重启恢复、对象存储、PDF/Office 解析、路线隔离的持久化 FTS5 索引、显式绑定与预算化自动检索计划、模型设置、Route-to-Agent Run、Engineering Lab、Turn Tree 和 revision-safe rename 已完成自动化验证；graph snapshot 与 legacy manifest 协议仍为 schema v1，尚无 WebSocket、认证/多租户边界和完整 application service 分层 |
 | `backend/tests/` | In progress | graph/API、路线隔离、AI 设置、Agent Runtime、工程记录、工具安全、turn cursor、路线文件对象存储/解析/分块/引用隔离、分片续传/重启恢复/持久化全文搜索、自动检索计划、路线级自动压缩、lease/heartbeat、effect 幂等与结果未知恢复、HostAdapter bridge contract、迁移前备份/失败恢复/版本拒绝、空分支/自动命名/手动重命名和 v1→v7 migration 已纳入套件；2026-09-10 当前完整后端套件为 197 项通过 |
-| `apps/web/` | In progress | React chat/model settings、输入框快捷模型/推理强度切换、路线文件上传进度/透明续传、独立文件面板、路线全文搜索与索引覆盖状态、解析状态/来源/分块预览、回复与 Agent 运行的自动检索/压缩计划、可读 Agent 执行时间线、双栏独立滚动的运行详情、审批/取消/重试与缓存 usage、原生 `WorkspaceShell`、可操作双层画布和 Engineering Lab 已实现；前端 153 项测试、typecheck/production build 和既有主路径 E2E 已建立，Runtime v2/P1/P2 新路径的真实 provider 浏览器 E2E、实验室写入路径和真实窄屏仍待补验 |
+| `apps/web/` | In progress | React chat/model settings、输入框快捷模型/推理强度切换、路线文件上传进度/透明续传、独立文件面板、路线全文搜索与索引覆盖状态、解析状态/来源/分块预览、回复与 Agent 运行的自动检索/压缩计划、可读 Agent 执行时间线、双栏独立滚动的运行详情、审批/取消/重试与缓存 usage、原生 `WorkspaceShell`、可操作双层画布和工作流研判已实现；前端自动化、typecheck/production build 和既有主路径 E2E 已建立，Runtime v2/P1/P2 新路径的真实 provider 浏览器 E2E、研判写入路径和真实窄屏仍待补验 |
 | WorkspaceShell / 双层画布 | Verified local preview | 默认入口为同页“对话 / 工作流”；顶层只显示 `surface_scope=workflow` 的对话，并以节点最近一轮本地问答的无模型 extractive overview 帮助识别内容。摘要不继承父节点且不读取兄弟路线。选择节点即同步 Chat 的具体路线，双击还会钻入已激活 owner 的内部 Turn Tree。两层使用统一的 Synapse 式卡片、连线和 inspector；卡片 `＋` 可直接创建并激活对应 scope 的子分支，空 turn 路线立即显示。第二层 route selection/composer 与 Chat 共用消息真源，内部路线不会进入第一层；“继续对话”只返回已经同步的 Chat。边界见 ADR-0004 |
 | `scripts/dev.ps1` | Done for current slice | 从仓库根目录启动 API:8000 和 Web:5173，可用 `-WebPort` 覆盖 Web 端口 |
 | `scripts/check.ps1` | Done for current slice | 统一执行后端测试/compileall 与前端测试/build |
@@ -31,7 +31,7 @@
 | Local AI Chat | In progress | 已实现网页/环境变量配置、模型发现、连接验证、输入框快捷模型/推理强度切换、自动/系统代理/直连与逐路线诊断、OpenAI-compatible JSON/SSE 回复、逐 token 草稿、停止生成、失败回答独立重试、请求幂等、编辑最近提问并原子重新生成、思考/内联错误状态、稳定错误码和当前路线消息写回。`＋` 支持 UTF-8 文本/代码/数据、PDF、DOCX、XLSX、PPTX（单文件 50 MiB、每条消息最多 5 个），超过 4 MiB 时可跨重启分片续传。原件进入本机对象存储，显式附件按问题固化上下文；未选文件时从实时父路线生成预算化 FTS5 检索计划。路线历史超过默认 240,000 字符时会自动压缩较早消息，计划绑定具体路线/revision 并在回复详情显示；原始消息不变，父更新动态进入，兄弟内容隔离。图片 OCR 和 embedding/向量语义召回尚未实现；API key 默认仅进程内存，用户显式选择时由 Windows 当前用户 DPAPI 加密保存；仍无 metabolize |
 | Agent Runtime v2 P0–P2 | Done for current slice | cache-aware 请求按 policy/tools/live route/accepted knowledge/current request 装配；checkpoint 仅审计，动态父记忆和兄弟隔离已验证。逐 model step 记录 OpenAI/DeepSeek cache usage，缺失时保持不可用；加入持久化取消、重试 lineage、审批、patch Artifact、路线级自动压缩、run lease/heartbeat/execution phase 和 root-lineage effect journal。已完成 effect 只复用不重做，未知 model/tool 结果阻止自动重放。仍由 OS 锁限制为单 API 进程，不代表生产级多 worker Runtime 完成 |
 | HostAdapter / release P3 | Done for current slice | HostAdapter contract v1、真实 Codex/Claude companion transport、host task 枚举/导入、operation/identity validation、跨宿主 Saga 幂等/补偿/崩溃续交、迁移前 verified SQLite backup、completed/restored manifest、失败自动恢复、备份保留与停机 restore plan 已完成；当前仍是单用户本机、单活动 companion。|
-| Engineering Lab v1 | Done for current slice | schema v5 已加入不读取 transcript 的 2–4 分支对比、显式知识/Artifact 合并、路线作用域接纳知识、版本化 Artifact/数据集和实验快照；schema v6 加入双层路线分类，当前 schema v7 继续沿用这些表并增加标题来源；自动 evaluator/scorer、参数矩阵、Artifact diff/外部文件引用仍未实现 |
+| 工作流研判 v1 | Done for current slice | 主界面提供不读取兄弟 transcript 的 2–4 分支摘要对比、共同前缀/独有路线展示、显式知识/Artifact 合并、路线作用域接纳知识和版本化 Artifact。旧数据集与实验快照表/API 暂时保留兼容，但已退出主界面；GB 级数据与训练以后通过外部运行器引用。自动分支归纳、冲突检测、Artifact diff 仍未实现 |
 | Route Memory / metabolize | Planned | Phase 3 |
 | `conversation-workflow-bridge-v4` | Legacy frozen | 当前最完整的 Codex 原型；不再承载新的全局业务状态 |
 | `conversation-workflow-skill-v4` | Legacy frozen | 兼容规范、manifest v1 和迁移依据 |
