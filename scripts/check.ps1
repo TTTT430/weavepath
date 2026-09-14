@@ -8,6 +8,7 @@ $workspaceRoot = Split-Path -Parent $PSScriptRoot
 $backendRoot = Join-Path $workspaceRoot "backend"
 $webRoot = Join-Path $workspaceRoot "apps\web"
 $pluginRoot = Join-Path $workspaceRoot "plugins\weavepath-codex-companion"
+$desktopRoot = Join-Path $workspaceRoot "apps\desktop"
 
 if (-not $Python) {
   $venvPython = Join-Path $workspaceRoot ".venv\Scripts\python.exe"
@@ -44,6 +45,8 @@ if (-not $node) { throw "Node.js was not found; the Codex companion cannot be ve
 if ($LASTEXITCODE -ne 0) { throw "Codex companion syntax check failed." }
 & $node.Source (Join-Path $pluginRoot "tests\smoke.mjs")
 if ($LASTEXITCODE -ne 0) { throw "Codex companion loopback smoke test failed." }
+& $node.Source --check (Join-Path $desktopRoot "main.cjs")
+if ($LASTEXITCODE -ne 0) { throw "Desktop shell syntax check failed." }
 $pluginValidator = Join-Path $env:USERPROFILE ".codex\skills\.system\plugin-creator\scripts\validate_plugin.py"
 if (Test-Path -LiteralPath $pluginValidator) {
   & $Python $pluginValidator $pluginRoot

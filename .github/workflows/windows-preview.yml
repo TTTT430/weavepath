@@ -1,0 +1,40 @@
+name: Windows Preview Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            apps/desktop/package-lock.json
+      - run: python -m pip install -e "./backend[test]" "pyinstaller>=6.15,<7"
+      - run: npm ci
+        working-directory: apps/web
+      - run: npm ci
+        working-directory: apps/desktop
+      - shell: pwsh
+        run: ./scripts/package-windows.ps1 -Python python -SkipDependencyInstall
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WeavePath-Windows-Preview
+          path: release/WeavePath-Setup-*.exe
+          if-no-files-found: error

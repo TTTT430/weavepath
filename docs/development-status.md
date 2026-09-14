@@ -38,7 +38,7 @@
 | `conversation-workflow-demo/public/*.html` | Visual spec only | 仅迁移其布局和交互语言，不继续补成长期原生 JS 应用 |
 | Codex 正式适配器 | Planned | Phase 9，与 Claude 共用 capability-aware HostAdapter 契约 |
 | Claude Code 正式适配器 | Planned | Phase 9，不假设与 Codex 具有相同会话语义 |
-| Desktop companion / packaging | Planned | Phase 11，loopback authentication 与凭据/权限治理必须同时设计 |
+| Desktop companion / packaging | Done for current slice | 已加入 Electron + PyInstaller Windows x64 NSIS 安装包、桌面/开始菜单快捷方式、单实例启动、sidecar health gate 和退出回收；GitHub Actions 可构建并上传 preview artifact。当前仍是单用户本机 preview，loopback authentication、凭据/权限治理、自动更新和签名发布仍属后续 Phase 11 |
 
 ## Phase 0 变更纪律
 

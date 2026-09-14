@@ -1,0 +1,55 @@
+{
+  "name": "weavepath-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WeavePath Windows desktop shell",
+  "author": "WeavePath contributors",
+  "license": "Apache-2.0",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "org.weavepath.desktop",
+    "productName": "WeavePath",
+    "asar": true,
+    "directories": {
+      "output": "../../release"
+    },
+    "files": [
+      "main.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../dist/WeavePathBackend",
+        "to": "backend",
+        "filter": ["**/*"]
+      }
+    ],
+    "artifactName": "WeavePath-Setup-${version}.${ext}",
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WeavePath",
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

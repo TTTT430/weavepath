@@ -9,6 +9,7 @@ pytest-of-*/
 venv/
 *.egg-info/
 build/
+release/
 
 # Node / frontend
 node_modules/

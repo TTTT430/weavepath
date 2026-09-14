@@ -249,6 +249,26 @@ npm run dev
 
 不要使用 `uvicorn --workers`：当前数据库锁、聊天恢复和 Runtime lease 针对单 API 进程设计。
 
+### Windows 桌面安装包（Preview）
+
+仓库会在 GitHub Actions 的 `Windows Preview` workflow 中构建 x64 安装包；也可以在 Windows 本机生成：
+
+```powershell
+.\scripts\package-windows.ps1
+```
+
+完成后运行 `release\\WeavePath-Setup-0.1.0.exe`，安装程序会创建桌面和开始菜单快捷方式，点击即可启动 WeavePath（内置本地 API，不需要每次手动开两个终端）。用户数据默认保存在 `%LOCALAPPDATA%\\WeavePath\\data`，卸载不会删除数据库。首次使用仍需在设置中填写模型服务地址、模型 ID 和 API Key。
+
+如果下载 Electron 依赖时遇到网络重置，可在 PowerShell 中使用镜像后重试：
+
+```powershell
+$env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+$env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-builder-binaries/"
+.\scripts\package-windows.ps1 -SkipTests
+```
+
+桌面包是当前单用户本机预览版：只监听 `127.0.0.1`，不提供云端账号、多用户权限或自动更新服务。
+
 ## 配置模型
 
 推荐在界面中配置：设置 → 选择服务商 → 填 Base URL、模型和 API Key → “测试并获取模型” → 保存。
