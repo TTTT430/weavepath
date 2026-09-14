@@ -35,7 +35,7 @@ WeavePath 将每个对话作为节点，将父子关系作为记忆路线：切�
 
 ### Windows 一键安装（推荐）
 
-下载并运行 [WeavePath-Setup-0.1.0.exe](https://github.com/TTTT430/weavepath/releases)。安装程序会创建桌面和开始菜单快捷方式；以后直接点击快捷方式即可启动，数据默认保存在 `%LOCALAPPDATA%\\WeavePath\\data`。
+从仓库的 [Releases](https://github.com/TTTT430/weavepath/releases) 下载最新的 `WeavePath-Setup-*.exe`，运行安装程序并按提示完成安装。安装程序会创建桌面和开始菜单快捷方式；以后直接点击快捷方式即可启动 WeavePath。首次打开后，在“设置”中填写自己的模型服务地址、模型 ID 和 API Key。
 
 > 当前仓库的 Windows Preview 安装包也可由 GitHub Actions 手动构建或通过 `v*` tag 生成。
 
@@ -58,12 +58,7 @@ Pop-Location
 .\\scripts\\dev.ps1 -OpenBrowser
 ```
 
-默认地址：
-
-- Web：<http://127.0.0.1:5173>
-- API health：<http://127.0.0.1:8000/api/v1/health>
-
-这里的 `127.0.0.1` 是“当前电脑自己”。每位用户在自己的电脑上执行启动命令后，都会使用这两个地址访问自己的本地实例；它们不是共享的公网地址。必须先启动 WeavePath，再打开 Web 地址；API health 仅用于检查后端是否正常运行。
+执行最后一条命令后，脚本会自动启动本机服务并打开 WeavePath 页面。源码方式适合开发者；普通用户直接使用 Windows 安装包即可。
 
 ## 使用指南
 
@@ -146,6 +141,8 @@ $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-
 - [开发状态](docs/development-status.md)
 - [Windows 桌面预览](docs/desktop-preview.md)
 - [P3/P4 真实连接与恢复验收](docs/p3-p4-live-acceptance.md)
+
+开发者排障时，源码启动的 Web 页面默认监听 `http://127.0.0.1:5173`，API 健康检查为 `http://127.0.0.1:8000/api/v1/health`。这些是启动脚本在用户自己电脑上临时使用的本地地址，不是供他人访问的公共网址。
 
 ## 数据、安全与限制
 
