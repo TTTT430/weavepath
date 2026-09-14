@@ -11,14 +11,18 @@ from PIL import Image, ImageDraw
 def create_icon(output: Path) -> None:
     scale = 4
     size = 256 * scale
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    # Use an opaque white base so the icon stays crisp on both light and dark
+    # Windows taskbars and does not inherit a muddy dark square background.
+    image = Image.new("RGBA", (size, size), (255, 255, 255, 255))
     draw = ImageDraw.Draw(image)
     margin = 18 * scale
     radius = 52 * scale
     draw.rounded_rectangle(
         (margin, margin, size - margin, size - margin),
         radius=radius,
-        fill=(20, 33, 54, 255),
+        fill=(255, 255, 255, 255),
+        outline=(205, 218, 238, 255),
+        width=5 * scale,
     )
 
     # Three connected routes form a compact W / branching-workflow mark.
@@ -32,9 +36,12 @@ def create_icon(output: Path) -> None:
     draw.line(scaled, fill=route, width=stroke, joint="curve")
     branch = [(128 * scale, 104 * scale), (128 * scale, 55 * scale)]
     draw.line(branch, fill=highlight, width=stroke, joint="curve")
-    for x, y in scaled + [branch[-1]]:
+    for index, (x, y) in enumerate(scaled + [branch[-1]]):
         r = 11 * scale
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=(244, 248, 255, 255))
+        fill = highlight if index == len(scaled) else route
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
+        inner = 4 * scale
+        draw.ellipse((x - inner, y - inner, x + inner, y + inner), fill=(255, 255, 255, 255))
 
     output.parent.mkdir(parents=True, exist_ok=True)
     image.resize((256, 256), Image.Resampling.LANCZOS).save(

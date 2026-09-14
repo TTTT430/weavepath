@@ -117,7 +117,9 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose,onCo
  useEffect(()=>{if(!visible||layer.kind!=='turn')return;void loadTurns(layer.instanceId)},[visible,layer.kind,layer.kind==='turn'?layer.instanceId:'',loadTurns]);
  useEffect(()=>{
   if(!visible||layer.kind!=='turn'||(canvasSendingOwner!==activeCanvasRouteKey&&activeCanvasReply?.state!=='thinking'))return;
-  const timer=window.setInterval(()=>{void loadTurns(layer.instanceId)},650);
+  // A modest cadence keeps cross-surface updates responsive without issuing
+  // a request on every animation frame while the canvas is open.
+  const timer=window.setInterval(()=>{void loadTurns(layer.instanceId)},1200);
   return()=>window.clearInterval(timer);
  },[activeCanvasReply?.state,activeCanvasRouteKey,canvasSendingOwner,layer,loadTurns,visible]);
  useEffect(()=>{

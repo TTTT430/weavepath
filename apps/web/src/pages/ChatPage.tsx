@@ -326,7 +326,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   if(!owner||replyState!=='thinking'||!graph||sendLocks.current.has(owner))return;
   const timer=window.setInterval(()=>{
    void refreshRouteMessages(graph.workflowId,activeRouteId,0,true);
-  },650);
+  },1200);
   return()=>window.clearInterval(timer);
  },[activeRouteId,graph,owner,refreshRouteMessages,replyState]);
  useEffect(()=>()=>{
