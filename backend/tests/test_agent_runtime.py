@@ -690,7 +690,7 @@ def test_schema_v1_database_upgrades_to_latest_without_losing_graph_data(tmp_pat
     conn.close()
     store = GraphStore(path)
     versions = [row[0] for row in store._conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-    assert versions == [1, 2, 3, 4, 5, 6, 7]
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
     assert store._conn.execute(
         "SELECT title_is_generated FROM conversation_instances WHERE id='A'"
     ).fetchone()[0] == 0
@@ -740,7 +740,7 @@ def test_schema_v2_upgrade_backfills_immutable_completed_run_result(tmp_path):
     assert repo.get("run_legacy")["finalAnswer"] == "durable answer"
     assert [row[0] for row in store._conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    )] == [1, 2, 3, 4, 5, 6, 7]
+    )] == [1, 2, 3, 4, 5, 6, 7, 8]
     assert [row[0] for row in store._conn.execute(
         "SELECT version FROM runtime_schema_migrations ORDER BY version"
     )] == [1, 2, 3]

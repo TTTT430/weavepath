@@ -1852,6 +1852,21 @@ class GraphStore:
                 "completedAt": request["completed_at"],
             }
 
+    def rename_turn(self, workflow_id: str, instance_id: str, message_id: int, *, title: str, expected_revision: int) -> dict[str, Any]:
+        title = title.strip()
+        if not title or len(title) > 240:
+            raise Validation("title must contain 1 to 240 characters")
+        with self.tx() as cx:
+            wf = self._workflow(cx, workflow_id)
+            self._instance(cx, workflow_id, instance_id, active=True)
+            if wf["graph_revision"] != expected_revision:
+                raise Conflict("stale graph revision")
+            if not cx.execute("SELECT id FROM local_messages WHERE id=? AND instance_id=? AND workflow_id=? AND role='user'", (message_id, instance_id, workflow_id)).fetchone():
+                raise Validation("turn does not belong to this conversation")
+            cx.execute("INSERT INTO turn_titles(message_id,title) VALUES(?,?) ON CONFLICT(message_id) DO UPDATE SET title=excluded.title", (message_id, title))
+            cx.execute("UPDATE workflows SET graph_revision=graph_revision+1 WHERE id=?", (workflow_id,))
+            return {"title": title, "graphRevision": wf["graph_revision"] + 1}
+
     def list_turns(self, workflow_id: str, instance_id: str) -> dict[str, Any]:
         """Project one instance's local transcript into user-anchored turns.
 
@@ -1866,6 +1881,7 @@ class GraphStore:
             instance = self._instance(self._conn, workflow_id, instance_id)
             wf = self._workflow(self._conn, workflow_id)
             local = self._local_messages(self._conn, instance_id)
+            titles = dict(self._conn.execute("SELECT t.message_id,t.title FROM turn_titles t JOIN local_messages m ON m.id=t.message_id WHERE m.instance_id=?", (instance_id,)).fetchall())
             inherited_message_count = sum(
                 1 for message in self._effective_messages(self._conn, workflow_id, instance_id)
                 if message.get("inherited")
@@ -1889,6 +1905,7 @@ class GraphStore:
                     "id": str(message["id"]),
                     "sequence": len(turns) + 1,
                     "anchorMessageId": message["id"],
+                    "title": titles.get(message["id"]),
                     "userMessage": message,
                     "responses": [],
                     "status": "pending",

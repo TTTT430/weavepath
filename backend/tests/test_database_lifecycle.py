@@ -45,7 +45,7 @@ def test_managed_startup_creates_verified_pre_migration_backup(monkeypatch, tmp_
         status = client.get("/api/v1/system/database").json()
         assert health["databaseStatus"] == "migrated"
         assert status["status"] == "migrated"
-        assert status["graphVersion"] == 7
+        assert status["graphVersion"] == 8
         assert status["runtimeVersion"] == 3
         assert status["integrity"] == "ok"
         assert status["downgradeSupported"] is False
@@ -56,7 +56,7 @@ def test_managed_startup_creates_verified_pre_migration_backup(monkeypatch, tmp_
         journal = json.loads(manifest.read_text(encoding="utf-8"))
         assert journal["status"] == "completed"
         assert journal["source"]["graphVersion"] == 1
-        assert journal["target"] == {"graphVersion": 7, "runtimeVersion": 3}
+        assert journal["target"] == {"graphVersion": 8, "runtimeVersion": 3}
         assert journal["backupIntegrity"] == "ok"
 
 
@@ -92,7 +92,7 @@ def test_newer_schema_is_rejected_read_only_before_wal_or_migration(tmp_path):
         )
         conn.executemany(
             "INSERT INTO schema_migrations VALUES(?, 'future')",
-            [(version,) for version in range(1, 9)],
+            [(version,) for version in range(1, 10)],
         )
         conn.commit()
     finally:

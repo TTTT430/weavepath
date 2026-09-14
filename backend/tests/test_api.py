@@ -168,7 +168,7 @@ def test_camel_case_api_round_trip():
     with TestClient(create_app(store)) as client:
         health = client.get("/api/v1/health").json()
         assert health["ok"] is True
-        assert health["schemaVersion"] == 7
+        assert health["schemaVersion"] == 8
         created = client.post("/api/v1/workflows", json={
             "name": "Workflow", "rootTitle": "A", "rootTopicId": "A", "rootInstanceId": "A"
         })

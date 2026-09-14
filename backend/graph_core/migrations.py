@@ -4,7 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 
-LATEST_GRAPH_SCHEMA_VERSION = 7
+LATEST_GRAPH_SCHEMA_VERSION = 8
 LATEST_RUNTIME_SCHEMA_VERSION = 3
 
 
@@ -568,6 +568,9 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         # Existing titles predate explicit provenance tracking. Treat them as
         # user-owned so an upgrade can never overwrite a historical name.
         conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)", (_now(),))
+    if 8 not in applied:
+        conn.execute("CREATE TABLE IF NOT EXISTS turn_titles (message_id INTEGER PRIMARY KEY REFERENCES local_messages(id) ON DELETE CASCADE, title TEXT NOT NULL)")
+        conn.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(8,?)", (_now(),))
     # Chat request durability is an auxiliary table and does not change the
     # graph schema contract (currently v7). Create it for both fresh and
     # already-migrated databases without advancing the graph schema version.

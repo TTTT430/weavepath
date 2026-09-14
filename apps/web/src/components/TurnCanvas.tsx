@@ -26,7 +26,7 @@ interface TurnData extends Record<string,unknown>{
  onSelect:(id:string,routeInstanceId:string)=>void
  onToggleCollapse:(id:string)=>void
  onBranch?:(turn:ConversationTurn)=>void
- onRename?:(id:string,title:string)=>void
+ onRename?:(id:string,title:string,anchorMessageId?:number)=>void
 }
 type TurnFlowNode=Node<TurnData,'turn'>;
 
@@ -35,10 +35,10 @@ function excerpt(value:string,limit=420){const clean=value.slice(0,limit+1).trim
 function TurnCard({data,selected=false}:{data:TurnData;selected?:boolean}){
  const{turn}=data;
  const placeholder=!!turn.isRoutePlaceholder,routeId=turn.routeInstanceId||'';
- const title=turn.routeTitle||`${data.turnLabel} ${turn.sequence}`;
+ const title=turn.title||(placeholder?turn.routeTitle:`${data.turnLabel} ${turn.sequence}`)||data.turnLabel;
  const[editing,setEditing]=useState(false),[draft,setDraft]=useState(title);
  useEffect(()=>{if(!editing)setDraft(title)},[title,editing]);
- const commit=()=>{const value=draft.trim();setEditing(false);if(value&&value!==title&&routeId)data.onRename?.(routeId,value);else setDraft(title)};
+ const commit=()=>{const value=draft.trim();setEditing(false);if(value&&value!==title&&routeId)data.onRename?.(routeId,value,placeholder?undefined:turn.anchorMessageId);else setDraft(title)};
  return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''} ${placeholder?'is-route-placeholder':''}`} onClick={event=>{event.stopPropagation();if(event.detail<2)data.onSelect(turn.id,routeId)}} title={data.detailsLabel}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
   <button type="button" className="turn-collapse icon-button" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} title={data.collapsed?data.expandLabel:data.collapseLabel} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}><AppIcon name={data.collapsed?'plus':'minus'}/></button>
@@ -64,7 +64,7 @@ export interface TurnCanvasProps{
  onViewportChange?:(viewport:Viewport)=>void
  onNodePositionChange?:(id:string,position:CanvasPosition)=>void
  onBranch?:(turn:ConversationTurn)=>void
- onRename?:(id:string,title:string)=>void
+ onRename?:(id:string,title:string,anchorMessageId?:number)=>void
  hiddenRouteIds?:string[]
  labels:{locate:string;fit:string;collapse:string;expand:string;responses:string;empty:string;emptyBranch:string;turn:string;branch:string;details:string;statusLabels:Record<string,string>;roleLabels:Record<string,string>}
 }

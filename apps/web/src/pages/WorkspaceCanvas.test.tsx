@@ -5,7 +5,7 @@ import{ApiError}from'../lib/api';
 import{WorkspaceCanvas}from'./WorkspaceCanvas';
 
 const apiMock=vi.hoisted(()=>({
- graph:vi.fn(),turns:vi.fn(),messages:vi.fn(),routes:vi.fn(),activate:vi.fn(),fork:vi.fn(),forkChat:vi.fn(),renameInstance:vi.fn(),renameWorkflow:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),aiStatus:vi.fn(),chat:vi.fn(),send:vi.fn(),
+ graph:vi.fn(),turns:vi.fn(),messages:vi.fn(),routes:vi.fn(),activate:vi.fn(),fork:vi.fn(),forkChat:vi.fn(),renameInstance:vi.fn(),renameTurn:vi.fn(),renameWorkflow:vi.fn(),prunePlan:vi.fn(),pruneCommit:vi.fn(),aiStatus:vi.fn(),chat:vi.fn(),send:vi.fn(),
 }));
 
 vi.mock('../lib/api',()=>({
@@ -365,7 +365,7 @@ describe('native double canvas workspace',()=>{
  it.each([false,true])('preserves the actual focused input during Chinese composition (turn layer: %s)',async(turnLayer)=>{
   renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
   if(turnLayer){fireEvent.doubleClick(screen.getByText('open-leaf-canvas'));await screen.findByTestId('turn-canvas')}
-  fireEvent.doubleClick(screen.getByRole('button',{name:'对话名称: 大模型实验'}));
+  fireEvent.doubleClick(screen.getByRole('button',{name:turnLayer?'对话名称: 轮次 1':'对话名称: 大模型实验'}));
   const input=screen.getByLabelText('对话名称');
   input.focus();fireEvent.compositionStart(input);
   for(const value of ['RAG','RAGx','RAGxue']){
@@ -377,7 +377,7 @@ describe('native double canvas workspace',()=>{
   expect(apiMock.renameInstance).not.toHaveBeenCalled();
   fireEvent.compositionEnd(input,{data:'学'});fireEvent.change(input,{target:{value:'RAG学习'}});
   fireEvent.click(screen.getByRole('button',{name:'保存'}));
-  await waitFor(()=>expect(apiMock.renameInstance).toHaveBeenCalledWith('wf','leaf','RAG学习',3));
+  await waitFor(()=>turnLayer?expect(apiMock.renameTurn).toHaveBeenCalledWith('wf','leaf',77,'RAG学习',3):expect(apiMock.renameInstance).toHaveBeenCalledWith('wf','leaf','RAG学习',3));
  });
  it('renames the selected conversation from the inspector with revision protection',async()=>{
   renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));

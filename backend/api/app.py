@@ -1151,6 +1151,10 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def turns(workflow_id: str, instance_id: str):
         return graph_store.list_turns(workflow_id, instance_id)
 
+    @app.patch(prefix + "/workflows/{workflow_id}/instances/{instance_id}/turns/{message_id}")
+    def rename_turn(workflow_id: str, instance_id: str, message_id: int, body: RenameInstanceInput):
+        return graph_store.rename_turn(workflow_id, instance_id, message_id, title=body.title, expected_revision=body.expected_revision)
+
     @app.get(prefix + "/workflows/{workflow_id}/instances/{instance_id}/turn-tree")
     def turn_tree(workflow_id: str, instance_id: str):
         return graph_store.list_turn_tree(workflow_id, instance_id)
