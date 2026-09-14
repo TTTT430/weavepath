@@ -18,7 +18,6 @@ jobs:
     env:
       # Companion and TestClient probes must never traverse a runner proxy.
       NO_PROXY: 127.0.0.1,localhost
-      no_proxy: 127.0.0.1,localhost
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
