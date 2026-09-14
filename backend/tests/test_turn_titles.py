@@ -38,3 +38,16 @@ def test_generated_titles_use_each_turn_and_preserve_manual_names(store=None):
     assert turns[1]['title'].startswith('向量数据库')
     assert len(turns[1]['title']) <= 28
     store.close()
+
+
+def test_canvas_counts_live_ancestors_without_loading_their_bodies(monkeypatch):
+    store = GraphStore(':memory:')
+    wf = store.create_workflow(name='Test', root_title='Root', root_instance_id='A')['workflowId']
+    store.append_message(wf, 'A', role='user', content='large parent ' * 10000)
+    store.fork(wf, 'A', title='Child', instance_id='B')
+    store.append_message(wf, 'A', role='user', content='latest parent')
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Canvas must not load effective message bodies for a count')
+    monkeypatch.setattr(store, '_effective_messages', forbidden)
+    assert store.list_turns(wf, 'B')['inheritedMessageCount'] == 2
+    store.close()

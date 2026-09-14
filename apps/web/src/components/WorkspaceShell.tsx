@@ -29,7 +29,7 @@ export function WorkspaceShell(){
   </header>
   <section className="workspace-stage">
    <div className={`workspace-surface chat-surface ${view==='chat'?'is-active':''}`} aria-hidden={view!=='chat'}>
-    <ChatPage onOpenWorkflow={openWorkflow} onWorkspaceChange={workspaceChanged} activeConversationSignal={conversationActivation}/>
+    <ChatPage visible={view==='chat'} onOpenWorkflow={openWorkflow} onWorkspaceChange={workspaceChanged} activeConversationSignal={conversationActivation}/>
    </div>
    <div className={`workspace-surface workflow-surface ${view==='workflow'?'is-active':''}`} aria-hidden={view!=='workflow'}>
     <WorkspaceCanvas workflowId={workflowId} visible={view==='workflow'} onContinue={()=>setView('chat')} onConversationActivated={conversationActivated}/>

@@ -1495,7 +1495,8 @@ html .canvas-chat-composer {
   border-color: var(--ui-border-strong);
   border-radius: 11px;
   box-shadow: 0 9px 26px rgba(33,48,67,.17);
-  backdrop-filter: blur(8px);
+  /* Avoid re-blurring moving canvas cards underneath the composer. */
+  backdrop-filter: none;
 }
 html .canvas-chat-composer textarea { color: var(--ui-text); }
 html .canvas-chat-composer span,

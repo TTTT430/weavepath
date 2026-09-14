@@ -54,12 +54,13 @@ function responseDuration(milliseconds:number,locale:'zh-CN'|'en'){
 }
 
 export interface ChatPageProps{
+ visible?:boolean
  onOpenWorkflow?:(workflowId:string)=>void
  onWorkspaceChange?:(context:{workflowId:string;graph:Graph|null})=>void
  activeConversationSignal?:{workflowId:string;instanceId:string;revision:number}|null
 }
 
-export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSignal}:ChatPageProps={}){
+export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSignal,visible=true}:ChatPageProps={}){
  const{t,locale}=useI18n();
  const[settingsOpen,setSettingsOpen]=useState(false);
  const[workflows,setWorkflows]=useState<WorkflowSummary[]>([]);
@@ -314,8 +315,8 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
    setAttachments([]);
    setAttachmentError('');
   }
-  if(graph&&activeRouteId&&owner)void refreshRouteMessages(graph.workflowId,activeRouteId,graph.activeRouteContentRevision||0);
- },[owner,graph?.workflowId,activeRouteId,graph?.activeRouteContentRevision,refreshRouteMessages]);
+  if(visible&&graph&&activeRouteId&&owner)void refreshRouteMessages(graph.workflowId,activeRouteId,graph.activeRouteContentRevision||0);
+ },[owner,graph?.workflowId,activeRouteId,graph?.activeRouteContentRevision,refreshRouteMessages,visible]);
  // A canvas request is durable before the model finishes.  Polling while a
  // request is in flight makes that user turn (and its pending status) appear
  // in the chat surface without waiting for the assistant response.
@@ -323,12 +324,12 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
   // Local sends already own the request lifecycle and refresh on completion.
   // Poll only when another surface (for example Turn Canvas) started the
   // request; otherwise the poll can race the local optimistic snapshot.
-  if(!owner||replyState!=='thinking'||!graph||sendLocks.current.has(owner))return;
+  if(!visible||!owner||replyState!=='thinking'||!graph||sendLocks.current.has(owner))return;
   const timer=window.setInterval(()=>{
    void refreshRouteMessages(graph.workflowId,activeRouteId,0,true);
   },1200);
   return()=>window.clearInterval(timer);
- },[activeRouteId,graph,owner,refreshRouteMessages,replyState]);
+ },[activeRouteId,graph,owner,refreshRouteMessages,replyState,visible]);
  useEffect(()=>()=>{
   for(const controller of streamControllers.current.values())controller.abort();
   streamControllers.current.clear();
@@ -744,7 +745,7 @@ export function ChatPage({onOpenWorkflow,onWorkspaceChange,activeConversationSig
  };
  const memoryPanel=(active?.parentId||activeRouteId!==graph?.activeInstanceId)?<section className="inherited-memory"><button type="button" aria-expanded={memoryOpen} onClick={()=>void toggleMemory()}><AppIcon name={memoryOpen?'chevronDown':'chevronRight'}/><span>{t('inheritedMemory')}</span></button>{memoryOpen&&<div className="inherited-memory-body">{memoryLoading?<p>{t('loadingInherited')}</p>:inherited.length?inherited.map(message=>renderMessage(message)):<p>{t('noInherited')}</p>}</div>}</section>:null;
  const progressText=replyPhase==='connecting'?t('connecting'):replyPhase==='waiting'?t('waitingForModel'):replyPhase==='receiving'?t('receivingResponse'):replyPhase==='reconnecting'?`${t('reconnecting')}${reply.attempt&&reply.attempt>1?` (${reply.attempt}/3)`:''}`:t('thinking');
- const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking"><div>{streamingText&&<MarkdownMessage content={streamingText}/>}<ActivityStatus label={progressText} detail={`${t('elapsed')} ${elapsedLabel(replyClock-(replyStartedAt||replyClock))}`} phase={replyPhase}>{canStop&&<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button>}</ActivityStatus></div></article>}{replyState==='error'&&<article className="message system reply-error"><ActivityStatus label={replyError} tone="error"><button type="button" onClick={()=>void retryAnswer()} disabled={busy}><AppIcon name="retry" size={14}/><span>{t('retryAnswer')}</span></button></ActivityStatus></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled"><ActivityStatus label={t('cancelled')} tone="muted" compact/></article>}</div>;
+ const stream=<div className="messages" ref={messagesRef}>{memoryPanel}{!messages.length&&replyState==='idle'&&<p className="empty">{workflowId?t('empty'):t('selectWorkflow')}</p>}{visible&&messages.map(message=>renderMessage(message,true))}{replyState==='thinking'&&<article className="message assistant reply-thinking"><div>{streamingText&&<MarkdownMessage content={streamingText}/>}<ActivityStatus label={progressText} detail={`${t('elapsed')} ${elapsedLabel(replyClock-(replyStartedAt||replyClock))}`} phase={replyPhase}>{canStop&&<button type="button" className="stop-generating" onClick={()=>void stopGenerating()}>{t('stopGenerating')}</button>}</ActivityStatus></div></article>}{replyState==='error'&&<article className="message system reply-error"><ActivityStatus label={replyError} tone="error"><button type="button" onClick={()=>void retryAnswer()} disabled={busy}><AppIcon name="retry" size={14}/><span>{t('retryAnswer')}</span></button></ActivityStatus></article>}{replyState==='cancelled'&&<article className="message system reply-cancelled"><ActivityStatus label={t('cancelled')} tone="muted" compact/></article>}</div>;
 
  return <main className="chat-shell">
   <aside className="sidebar">

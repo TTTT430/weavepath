@@ -1890,11 +1890,12 @@ class GraphStore:
             wf = self._workflow(self._conn, workflow_id)
             local = self._local_messages(self._conn, instance_id)
             titles = dict(self._conn.execute("SELECT t.message_id,t.title FROM turn_titles t JOIN local_messages m ON m.id=t.message_id WHERE m.instance_id=?", (instance_id,)).fetchall())
-            inherited_message_count = sum(
-                1 for message in self._effective_messages(self._conn, workflow_id, instance_id)
-                if message.get("inherited")
-            )
             route_ids = self._route_ids(self._conn, workflow_id, instance_id)
+            # Canvas needs a count, not ancestor bodies and response telemetry.
+            inherited_message_count = sum(
+                self._conn.execute("SELECT COUNT(*) FROM local_messages WHERE instance_id=?", (route_id,)).fetchone()[0]
+                for route_id in route_ids if route_id != instance_id
+            )
             memory_route = [
                 {
                     "instanceId": route_id,
