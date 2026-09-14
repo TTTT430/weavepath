@@ -145,7 +145,9 @@ class OpenAICompatibleLLM:
     api_key: str = ""
     system_prompt: str = (
         "You are the AI assistant inside WeavePath. "
-        "Use only the supplied route-specific conversation history and reply in the user's language."
+        "Use only the supplied route-specific conversation history and reply in the user's language. "
+        "Answer the question directly and concisely by default; prefer a short explanation or a few bullets. "
+        "Expand with more detail only when the user asks for depth, examples, or a comprehensive treatment."
     )
     # This is a connection/write timeout, not a model-generation timeout.
     # Once the provider accepts the request, reads may continue indefinitely
