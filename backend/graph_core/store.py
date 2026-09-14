@@ -145,6 +145,14 @@ def _prompt_branch_title(initial_message: str | None) -> str | None:
     return summary if len(summary) <= 48 else summary[:47].rstrip() + "…"
 
 
+def _turn_title(content: str) -> str:
+    """Extract a compact topic from this turn, without a model request on read."""
+    text = _summary_excerpt(content, 240)
+    text = re.sub(r"^(?:你好[，,！!]?\s*)?(?:请问|请你|请|帮我|能不能|可以帮我)\s*", "", text)
+    sentences = [part.strip() for part in re.split(r"[。！？!?\n]+", text) if part.strip()]
+    return _summary_excerpt(sentences[0] if sentences else text, 28) or "新对话"
+
+
 def _summary_excerpt(content: str, limit: int) -> str:
     """Turn message content into a compact, readable canvas-card excerpt."""
     value = re.sub(r"```(?:[^\n]*)\n?", " ", _display_message_content(content))
@@ -1905,7 +1913,7 @@ class GraphStore:
                     "id": str(message["id"]),
                     "sequence": len(turns) + 1,
                     "anchorMessageId": message["id"],
-                    "title": titles.get(message["id"]),
+                    "title": titles.get(message["id"]) or _turn_title(message["content"]),
                     "userMessage": message,
                     "responses": [],
                     "status": "pending",
