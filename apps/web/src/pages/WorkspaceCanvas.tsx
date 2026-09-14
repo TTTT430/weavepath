@@ -272,7 +272,7 @@ export function WorkspaceCanvas({workflowId,visible=true,onContinue,onClose,onCo
   setBusy(true);setError('');
   try{
    await api.renameInstance(graph.workflowId,instanceId,title,graph.graphRevision);
-   setRenamingId('');setRenameDraft('');await load();if(layer.kind==='turn')await loadTurns(layer.instanceId);
+   setRenamingId('');setRenameDraft('');await Promise.all([load(),...(layer.kind==='turn'?[loadTurns(layer.instanceId)]:[])]);
    notifyChange({type:'conversation-workflow-changed',workflowId:graph.workflowId,instanceId});
   }catch(caught){if(caught instanceof ApiError&&caught.status===409){await load();if(layer.kind==='turn')await loadTurns(layer.instanceId);setError(t('renameConflict'))}else setError(caught instanceof Error?caught.message:String(caught))}finally{setBusy(false)}
  }

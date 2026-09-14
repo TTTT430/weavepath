@@ -1,10 +1,14 @@
-import{useEffect,useMemo,useRef,useState,type MouseEvent}from'react';
+import{memo,useEffect,useMemo,useRef,useState,type MouseEvent}from'react';
 import{Background,Controls,Handle,MiniMap,Panel,Position,ReactFlow,useNodesState,type Node,type NodeProps,type ReactFlowInstance,type Viewport}from'@xyflow/react';
 import'@xyflow/react/dist/style.css';
 import type{Graph,Instance}from'../domain/types';
 import{graphEdges,memoryPath}from'../domain/graph';
 import type{CanvasPosition}from'../lib/canvasState';
 import{AppIcon}from'./AppIcon';
+
+const EMPTY_IDS:string[]=[];
+const EMPTY_POSITIONS:Record<string,CanvasPosition>={};
+import{useCanvasCallback}from'../lib/useCanvasCallback';
 
 interface ConversationData extends Record<string,unknown>{
  instance:Instance
@@ -64,7 +68,7 @@ export function ConversationCard({data,selected=false}:{data:ConversationData;se
  </div>;
 }
 
-function ConversationNode({data,selected}:NodeProps<ConversationFlowNode>){return <><Handle type="target" position={Position.Left}/><ConversationCard data={data} selected={selected}/><Handle type="source" position={Position.Right}/></>}
+const ConversationNode=memo(function ConversationNode({data,selected}:NodeProps<ConversationFlowNode>){return <><Handle type="target" position={Position.Left}/><ConversationCard data={data} selected={selected}/><Handle type="source" position={Position.Right}/></>});
 const nodeTypes={conversation:ConversationNode};
 export function reactFlowNodePointerProps(onOpenCanvas:(id:string)=>void){return{onNodeClick:()=>{},onNodeDoubleClick:(_event:MouseEvent,node:Node)=>onOpenCanvas(node.id)}}
 
@@ -87,7 +91,8 @@ export interface WorkflowGraphProps{
 
 const DEFAULT_LABELS={locate:'Locate selection',fit:'Fit view',collapse:'Collapse branch',expand:'Expand branch',branch:'New branch',openCanvas:'Canvas',details:'Details',emptySummary:'Continue this conversation or create a branch.'};
 
-export function WorkflowGraph({graph,selectedId,collapsedNodeIds=[],nodePositions={},initialViewport,onSelect,onOpenCanvas,onBranch,onToggleCollapse=()=>{},onRename,onViewportChange,onNodePositionChange,focusRequest,labels}:WorkflowGraphProps){
+export function WorkflowGraph({graph,selectedId,collapsedNodeIds=EMPTY_IDS,nodePositions=EMPTY_POSITIONS,initialViewport,onSelect:selectCallback,onOpenCanvas:openCallback,onBranch:branchCallback,onToggleCollapse:collapseCallback,onRename:renameCallback,onViewportChange,onNodePositionChange,focusRequest,labels}:WorkflowGraphProps){
+ const onSelect=useCanvasCallback(selectCallback),onOpenCanvas=useCanvasCallback(openCallback),onBranch=useCanvasCallback(branchCallback),onToggleCollapse=useCanvasCallback(collapseCallback),onRename=useCanvasCallback(renameCallback);
  const[instance,setInstance]=useState<ReactFlowInstance<ConversationFlowNode>|null>(null);
  const appliedFocus=useRef('');
  const resolvedLabels=useMemo(()=>({...DEFAULT_LABELS,...labels}),[labels]);

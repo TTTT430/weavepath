@@ -3,14 +3,14 @@ import{afterEach,describe,expect,it,vi}from'vitest';
 import type{Graph}from'../domain/types';
 import{WorkflowGraph}from'./WorkflowGraph';
 
-const flowMock=vi.hoisted(()=>({fitView:vi.fn()}));
+const flowMock=vi.hoisted(()=>({fitView:vi.fn(),nodes:[] as any[]}));
 
 vi.mock('@xyflow/react',async()=>{
  const React=await vi.importActual<typeof import('react')>('react');
  return{
   Background:()=>null,Controls:()=>null,Handle:()=>null,MiniMap:()=>null,
   Panel:(props:any)=>React.createElement(React.Fragment,null,props.children),
-  ReactFlow:(props:any)=>{React.useEffect(()=>props.onInit?.({fitView:flowMock.fitView}),[props.onInit]);return React.createElement('div',{'data-testid':'react-flow'},props.children)},
+  ReactFlow:(props:any)=>{flowMock.nodes=props.nodes;React.useEffect(()=>props.onInit?.({fitView:flowMock.fitView}),[props.onInit]);return React.createElement('div',{'data-testid':'react-flow'},props.children)},
   useNodesState:(initial:any[])=>{const[nodes,setNodes]=React.useState(initial);return[nodes,setNodes,vi.fn()]},
   MarkerType:{ArrowClosed:'arrow-closed'},Position:{Left:'left',Right:'right'},
  };
@@ -25,6 +25,16 @@ const handlers={collapsedNodeIds:[],nodePositions:{},onSelect:vi.fn(),onOpenCanv
 afterEach(()=>{cleanup();vi.clearAllMocks()});
 
 describe('workflow focus request',()=>{
+ it('keeps a large graph stable across unrelated callback updates with default geometry',()=>{
+  const graph={...baseGraph,nodes:Array.from({length:300},(_,i)=>({...root,id:`n${i}`}))};
+  const select=vi.fn();
+  const {rerender}=render(<WorkflowGraph graph={graph} selectedId="n0" onSelect={()=>{}} onOpenCanvas={()=>{}}/>);
+  const previous=flowMock.nodes;
+  rerender(<WorkflowGraph graph={graph} selectedId="n0" onSelect={select} onOpenCanvas={()=>{}}/>);
+  expect(flowMock.nodes).toBe(previous);
+  flowMock.nodes[0].data.onSelect('n0');
+  expect(select).toHaveBeenCalledWith('n0');
+ });
  it('waits for the new child, focuses it once, and does not steal focus again on later graph renders',async()=>{
   const focusRequest={id:'child',revision:2};
   const{rerender}=render(<WorkflowGraph graph={baseGraph} selectedId="root" focusRequest={focusRequest}{...handlers}/>);
