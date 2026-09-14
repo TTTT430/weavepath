@@ -1641,6 +1641,8 @@ html .run-events.timeline li.failed > i { color: var(--ui-danger); background: v
 /* Long generated names and unbroken model output must stay inside cards. */
 html .flow-node-head strong,
 html .turn-node > header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html .node-title-input { min-width: 0; width: 100%; padding: 3px 6px; color: var(--ui-text); background: var(--ui-panel-raised); border: 1px solid var(--ui-accent); border-radius: 4px; font: inherit; font-weight: 700; }
+html .node-title-input:focus { outline: 2px solid color-mix(in srgb,var(--ui-accent) 35%,transparent); outline-offset: 1px; }
 html .flow-node-summary,
 html .turn-user,
 html .turn-response,

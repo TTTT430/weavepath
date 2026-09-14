@@ -21,6 +21,7 @@ interface ConversationData extends Record<string,unknown>{
  onOpenCanvas:(id:string)=>void
  onToggleCollapse:(id:string)=>void
  onBranch?:(id:string)=>void
+ onRename?:(id:string,title:string)=>void
 }
 type ConversationFlowNode=Node<ConversationData,'conversation'>;
 
@@ -30,14 +31,14 @@ function hiddenByCollapsed(node:Instance,map:Map<string,Instance>,collapsed:Set<
  return false;
 }
 
-function layout(graph:Graph,collapsedIds:string[],positions:Record<string,CanvasPosition>,onSelect:(id:string)=>void,onOpenCanvas:(id:string)=>void,onToggleCollapse:(id:string)=>void,onBranch:((id:string)=>void)|undefined,labels:{collapse:string;expand:string;branch:string;openCanvas:string;details:string;emptySummary:string}):ConversationFlowNode[]{
+function layout(graph:Graph,collapsedIds:string[],positions:Record<string,CanvasPosition>,onSelect:(id:string)=>void,onOpenCanvas:(id:string)=>void,onToggleCollapse:(id:string)=>void,onBranch:((id:string)=>void)|undefined,onRename:((id:string,title:string)=>void)|undefined,labels:{collapse:string;expand:string;branch:string;openCanvas:string;details:string;emptySummary:string}):ConversationFlowNode[]{
  const activeNodes=graph.nodes.filter(node=>node.status!=='pruned');
  const collapsed=new Set(collapsedIds),map=new Map(activeNodes.map(node=>[node.id,node]));
  const visible=activeNodes.filter(node=>!hiddenByCollapsed(node,map,collapsed));
  const depths=new Map<string,number>();
  const depth=(node:Instance):number=>{if(depths.has(node.id))return depths.get(node.id)!;const value=node.parentId&&map.has(node.parentId)?depth(map.get(node.parentId)!)+1:0;depths.set(node.id,value);return value};
  const rows=new Map<number,number>();
- return visible.map(node=>{const column=depth(node),row=rows.get(column)||0;rows.set(column,row+1);return{id:node.id,type:'conversation',position:positions[node.id]||{x:48+column*365,y:52+row*320},data:{instance:node,active:node.id===graph.activeInstanceId,collapsed:collapsed.has(node.id),hasChildren:activeNodes.some(candidate=>candidate.parentId===node.id),collapseLabel:labels.collapse,expandLabel:labels.expand,branchLabel:labels.branch,openCanvasLabel:labels.openCanvas,detailsLabel:labels.details,emptySummaryLabel:labels.emptySummary,onSelect,onOpenCanvas,onToggleCollapse,onBranch}}});
+ return visible.map(node=>{const column=depth(node),row=rows.get(column)||0;rows.set(column,row+1);return{id:node.id,type:'conversation',position:positions[node.id]||{x:48+column*365,y:52+row*320},data:{instance:node,active:node.id===graph.activeInstanceId,collapsed:collapsed.has(node.id),hasChildren:activeNodes.some(candidate=>candidate.parentId===node.id),collapseLabel:labels.collapse,expandLabel:labels.expand,branchLabel:labels.branch,openCanvasLabel:labels.openCanvas,detailsLabel:labels.details,emptySummaryLabel:labels.emptySummary,onSelect,onOpenCanvas,onToggleCollapse,onBranch,onRename}}});
 }
 
 export function nodeSubtitle(instance:Instance){return instance.summary?.trim()||''}
@@ -47,11 +48,14 @@ export function useClickArbitration(onSingle:()=>void,onDouble:()=>void){const t
 
 export function ConversationCard({data,selected=false}:{data:ConversationData;selected?:boolean}){
  const node=data.instance,subtitle=nodeSubtitle(node),branchLabel=data.branchLabel||'New branch',openCanvasLabel=data.openCanvasLabel||'Canvas',detailsLabel=data.detailsLabel||'Details',emptySummaryLabel=data.emptySummaryLabel||'Continue this conversation or create a branch.',events=useClickArbitration(()=>data.onSelect(node.id),()=>data.onOpenCanvas(node.id));
+ const[editing,setEditing]=useState(false),[draft,setDraft]=useState(node.title);
+ useEffect(()=>{if(!editing)setDraft(node.title)},[node.title,editing]);
+ const commit=()=>{const value=draft.trim();setEditing(false);if(value&&value!==node.title)data.onRename?.(node.id,value);else setDraft(node.title)};
  return <div className={`flow-node ${data.active?'is-active':''} ${node.status==='pruned'?'is-pruned':''} ${selected?'is-selected':''}`} data-instance-id={node.id} {...events}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
   {data.hasChildren&&<button type="button" className="node-collapse icon-button" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${node.title}`} title={data.collapsed?data.expandLabel:data.collapseLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onToggleCollapse(node.id)}}><AppIcon name={data.collapsed?'plus':'minus'}/></button>}
   {data.onBranch&&node.status!=='pruned'&&<button type="button" className="node-branch-action icon-button" aria-label={`${branchLabel}: ${node.title}`} title={branchLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onBranch?.(node.id)}}><AppIcon name="plus"/></button>}
-  <header className="flow-node-head"><i aria-hidden="true"/><strong>{node.title}</strong>{data.active&&<b aria-hidden="true"/>}</header>
+  <header className="flow-node-head"><i aria-hidden="true"/>{editing?<input className="node-title-input" autoFocus value={draft} maxLength={240} aria-label="Rename conversation" onClick={event=>event.stopPropagation()} onChange={event=>setDraft(event.target.value)} onBlur={commit} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commit()}if(event.key==='Escape'){event.preventDefault();setEditing(false);setDraft(node.title)}}}/>:<strong onDoubleClick={event=>{event.preventDefault();event.stopPropagation();setDraft(node.title);setEditing(true)}} title="Double-click to rename">{node.title}</strong>}{data.active&&<b aria-hidden="true"/>}</header>
   <p className={`flow-node-summary ${subtitle?'':'is-empty'}`}>{subtitle||emptySummaryLabel}</p>
   <footer className="flow-node-footer">
    <button type="button" onClick={event=>{event.stopPropagation();data.onSelect(node.id)}}><AppIcon name="details"/><span>{detailsLabel}</span></button>
@@ -74,6 +78,7 @@ export interface WorkflowGraphProps{
  onOpenCanvas:(id:string)=>void
  onBranch?:(id:string)=>void
  onToggleCollapse?:(id:string)=>void
+ onRename?:(id:string,title:string)=>void
  onViewportChange?:(viewport:Viewport)=>void
  onNodePositionChange?:(id:string,position:CanvasPosition)=>void
  focusRequest?:{id:string;revision:number}|null
@@ -82,11 +87,11 @@ export interface WorkflowGraphProps{
 
 const DEFAULT_LABELS={locate:'Locate selection',fit:'Fit view',collapse:'Collapse branch',expand:'Expand branch',branch:'New branch',openCanvas:'Canvas',details:'Details',emptySummary:'Continue this conversation or create a branch.'};
 
-export function WorkflowGraph({graph,selectedId,collapsedNodeIds=[],nodePositions={},initialViewport,onSelect,onOpenCanvas,onBranch,onToggleCollapse=()=>{},onViewportChange,onNodePositionChange,focusRequest,labels}:WorkflowGraphProps){
+export function WorkflowGraph({graph,selectedId,collapsedNodeIds=[],nodePositions={},initialViewport,onSelect,onOpenCanvas,onBranch,onToggleCollapse=()=>{},onRename,onViewportChange,onNodePositionChange,focusRequest,labels}:WorkflowGraphProps){
  const[instance,setInstance]=useState<ReactFlowInstance<ConversationFlowNode>|null>(null);
  const appliedFocus=useRef('');
  const resolvedLabels=useMemo(()=>({...DEFAULT_LABELS,...labels}),[labels]);
- const calculated=useMemo(()=>layout(graph,collapsedNodeIds,nodePositions,onSelect,onOpenCanvas,onToggleCollapse,onBranch,resolvedLabels).map(node=>({...node,selected:node.id===selectedId})),[graph,selectedId,collapsedNodeIds,nodePositions,onSelect,onOpenCanvas,onToggleCollapse,onBranch,resolvedLabels]);
+ const calculated=useMemo(()=>layout(graph,collapsedNodeIds,nodePositions,onSelect,onOpenCanvas,onToggleCollapse,onBranch,onRename,resolvedLabels).map(node=>({...node,selected:node.id===selectedId})),[graph,selectedId,collapsedNodeIds,nodePositions,onSelect,onOpenCanvas,onToggleCollapse,onBranch,onRename,resolvedLabels]);
  const[nodes,setNodes,onNodesChange]=useNodesState<ConversationFlowNode>(calculated);
  useEffect(()=>setNodes(calculated),[calculated,setNodes]);
  const visibleIds=useMemo(()=>new Set(nodes.map(node=>node.id)),[nodes]);

@@ -21,6 +21,7 @@ interface TurnData extends Record<string,unknown>{
  onSelect:(id:string,routeInstanceId:string)=>void
  onToggleCollapse:(id:string)=>void
  onBranch?:(turn:ConversationTurn)=>void
+ onRename?:(id:string,title:string)=>void
 }
 type TurnFlowNode=Node<TurnData,'turn'>;
 
@@ -29,11 +30,15 @@ function excerpt(value:string,limit=420){const clean=value.trim();return clean.l
 function TurnCard({data,selected=false}:{data:TurnData;selected?:boolean}){
  const{turn}=data;
  const placeholder=!!turn.isRoutePlaceholder,routeId=turn.routeInstanceId||'';
+ const title=turn.routeTitle||`${data.turnLabel} ${turn.sequence}`;
+ const[editing,setEditing]=useState(false),[draft,setDraft]=useState(title);
+ useEffect(()=>{if(!editing)setDraft(title)},[title,editing]);
+ const commit=()=>{const value=draft.trim();setEditing(false);if(value&&value!==title&&routeId)data.onRename?.(routeId,value);else setDraft(title)};
  return <article className={`turn-node ${selected?'is-selected':''} ${data.collapsed?'is-collapsed':''} ${placeholder?'is-route-placeholder':''}`} onClick={event=>{event.stopPropagation();if(event.detail<2)data.onSelect(turn.id,routeId)}} title={data.detailsLabel}>
   <span className="node-drag-handle" aria-hidden="true">•••</span>
   <button type="button" className="turn-collapse icon-button" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${turn.sequence}`} title={data.collapsed?data.expandLabel:data.collapseLabel} onClick={event=>{event.stopPropagation();data.onToggleCollapse(turn.id)}}><AppIcon name={data.collapsed?'plus':'minus'}/></button>
   {!placeholder&&data.onBranch&&<button type="button" className="turn-branch icon-button" aria-label={`${data.branchLabel}: ${turn.sequence}`} title={data.branchLabel} onClick={event=>{event.stopPropagation();data.onBranch?.(turn)}}><AppIcon name="plus"/></button>}
-  <header><strong>{placeholder?(turn.routeTitle||data.turnLabel):`${data.turnLabel} ${turn.sequence}`}</strong>{!placeholder&&turn.routeTitle&&<small className="turn-route-title">{turn.routeTitle}</small>}<span className={`turn-status ${turn.status}`}>{data.statusLabels[turn.status]||turn.status}</span></header>
+  <header>{editing?<input className="node-title-input" autoFocus value={draft} maxLength={240} aria-label="Rename conversation" onClick={event=>event.stopPropagation()} onChange={event=>setDraft(event.target.value)} onBlur={commit} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commit()}if(event.key==='Escape'){event.preventDefault();setEditing(false);setDraft(title)}}}/>:<strong onDoubleClick={event=>{event.preventDefault();event.stopPropagation();if(routeId){setDraft(title);setEditing(true)}}} title={routeId?'Double-click to rename':undefined}>{title}</strong>}<span className={`turn-status ${turn.status}`}>{data.statusLabels[turn.status]||turn.status}</span></header>
   <p className="turn-user">{(()=>{const content=parseChatMessage(turn.userMessage.content);return excerpt(content.prompt||content.attachments.map(file=>file.name).join(', '))})()}</p>
   {!data.collapsed&&<div className="turn-responses"><small>{data.responseLabel}: {turn.responses.length}</small>{turn.responses.map(message=><p key={message.id} className={`turn-response ${message.role}`}><small>{data.roleLabels[message.role]||message.role}</small>{excerpt(message.content)}</p>)}</div>}
   <footer className="turn-node-footer"><button type="button" onClick={event=>{event.stopPropagation();data.onSelect(turn.id,routeId)}}><AppIcon name="details"/><span>{data.detailsLabel}</span></button></footer>
@@ -54,6 +59,7 @@ export interface TurnCanvasProps{
  onViewportChange?:(viewport:Viewport)=>void
  onNodePositionChange?:(id:string,position:CanvasPosition)=>void
  onBranch?:(turn:ConversationTurn)=>void
+ onRename?:(id:string,title:string)=>void
  hiddenRouteIds?:string[]
  labels:{locate:string;fit:string;collapse:string;expand:string;responses:string;empty:string;emptyBranch:string;turn:string;branch:string;details:string;statusLabels:Record<string,string>;roleLabels:Record<string,string>}
 }
@@ -77,10 +83,10 @@ export function canvasTurns(snapshot:TurnCanvasSnapshot,emptyBranchLabel:string,
 
 type TurnRouteNodeWithStatus=TurnCanvasSnapshot['routeNodes'] extends Array<infer T>?T&{status?:string}:{status?:string};
 
-export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPositions={},initialViewport,onSelect,onToggleCollapse,onViewportChange,onNodePositionChange,onBranch,hiddenRouteIds=[],labels}:TurnCanvasProps){
+export function TurnCanvas({snapshot,selectedTurnId,collapsedTurnIds=[],turnPositions={},initialViewport,onSelect,onToggleCollapse,onViewportChange,onNodePositionChange,onBranch,onRename,hiddenRouteIds=[],labels}:TurnCanvasProps){
  const[instance,setInstance]=useState<ReactFlowInstance<TurnFlowNode>|null>(null),collapsed=new Set(collapsedTurnIds);
  const normalizedTurns=useMemo(()=>{const items=canvasTurns(snapshot,labels.emptyBranch,hiddenRouteIds);return items.map((turn,index)=>({...turn,parentTurnId:turn.parentTurnId===undefined?(items[index-1]?.id||null):turn.parentTurnId}))},[snapshot,labels.emptyBranch,hiddenRouteIds]);
- const calculated=useMemo<TurnFlowNode[]>(()=>{const map=new Map(normalizedTurns.map(turn=>[turn.id,turn])),depths=new Map<string,number>(),rows=new Map<number,number>();const depth=(turn:CanvasTurn):number=>{if(depths.has(turn.id))return depths.get(turn.id)!;const value=turn.parentTurnId&&map.has(turn.parentTurnId)?depth(map.get(turn.parentTurnId)!)+1:0;depths.set(turn.id,value);return value};return normalizedTurns.map(turn=>{const column=depth(turn),row=rows.get(column)||0;rows.set(column,row+1);return{id:turn.id,type:'turn',position:turnPositions[turn.id]||{x:48+column*365,y:52+row*320},selected:turn.id===selectedTurnId,data:{turn,collapsed:collapsed.has(turn.id),collapseLabel:labels.collapse,expandLabel:labels.expand,responseLabel:labels.responses,turnLabel:labels.turn,branchLabel:labels.branch,detailsLabel:labels.details,emptyBranchLabel:labels.emptyBranch,statusLabels:labels.statusLabels,roleLabels:labels.roleLabels,onSelect,onToggleCollapse,onBranch}}})},[normalizedTurns,selectedTurnId,collapsedTurnIds,turnPositions,labels,onSelect,onToggleCollapse,onBranch]);
+ const calculated=useMemo<TurnFlowNode[]>(()=>{const map=new Map(normalizedTurns.map(turn=>[turn.id,turn])),depths=new Map<string,number>(),rows=new Map<number,number>();const depth=(turn:CanvasTurn):number=>{if(depths.has(turn.id))return depths.get(turn.id)!;const value=turn.parentTurnId&&map.has(turn.parentTurnId)?depth(map.get(turn.parentTurnId)!)+1:0;depths.set(turn.id,value);return value};return normalizedTurns.map(turn=>{const column=depth(turn),row=rows.get(column)||0;rows.set(column,row+1);return{id:turn.id,type:'turn',position:turnPositions[turn.id]||{x:48+column*365,y:52+row*320},selected:turn.id===selectedTurnId,data:{turn,collapsed:collapsed.has(turn.id),collapseLabel:labels.collapse,expandLabel:labels.expand,responseLabel:labels.responses,turnLabel:labels.turn,branchLabel:labels.branch,detailsLabel:labels.details,emptyBranchLabel:labels.emptyBranch,statusLabels:labels.statusLabels,roleLabels:labels.roleLabels,onSelect,onToggleCollapse,onBranch,onRename}}})},[normalizedTurns,selectedTurnId,collapsedTurnIds,turnPositions,labels,onSelect,onToggleCollapse,onBranch,onRename]);
  const[nodes,setNodes,onNodesChange]=useNodesState<TurnFlowNode>(calculated);
  useEffect(()=>setNodes(calculated),[calculated,setNodes]);
  const edges=useMemo(()=>normalizedTurns.filter(turn=>turn.parentTurnId).map(turn=>({id:`turn-edge-${turn.parentTurnId}-${turn.id}`,source:turn.parentTurnId!,target:turn.id,type:'default',className:turn.id===selectedTurnId?'is-path-active':''})),[normalizedTurns,selectedTurnId]);
