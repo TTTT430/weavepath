@@ -362,6 +362,23 @@ describe('native double canvas workspace',()=>{
   post.mockRestore();
  });
 
+ it.each([false,true])('preserves the actual focused input during Chinese composition (turn layer: %s)',async(turnLayer)=>{
+  renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
+  if(turnLayer){fireEvent.doubleClick(screen.getByText('open-leaf-canvas'));await screen.findByTestId('turn-canvas')}
+  fireEvent.doubleClick(screen.getByRole('button',{name:'对话名称: 大模型实验'}));
+  const input=screen.getByLabelText('对话名称');
+  input.focus();fireEvent.compositionStart(input);
+  for(const value of ['RAG','RAGx','RAGxue']){
+   fireEvent.change(input,{target:{value}});
+   expect(screen.getByLabelText('对话名称')).toBe(input);
+   expect(input).toHaveFocus();
+  }
+  fireEvent.keyDown(input,{key:'Enter',keyCode:229,isComposing:true});
+  expect(apiMock.renameInstance).not.toHaveBeenCalled();
+  fireEvent.compositionEnd(input,{data:'学'});fireEvent.change(input,{target:{value:'RAG学习'}});
+  fireEvent.click(screen.getByRole('button',{name:'保存'}));
+  await waitFor(()=>expect(apiMock.renameInstance).toHaveBeenCalledWith('wf','leaf','RAG学习',3));
+ });
  it('renames the selected conversation from the inspector with revision protection',async()=>{
   renderCanvas();await waitFor(()=>expect(screen.getByTestId('workflow-graph')).toHaveAttribute('data-selected','leaf'));
   const title=screen.getByRole('button',{name:'对话名称: 大模型实验'});expect(screen.queryByRole('button',{name:'重命名'})).not.toBeInTheDocument();fireEvent.doubleClick(title);fireEvent.change(screen.getByLabelText('对话名称'),{target:{value:'大模型分析'}});fireEvent.click(screen.getByRole('button',{name:'保存'}));

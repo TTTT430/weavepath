@@ -5,6 +5,7 @@ import type{Graph,Instance}from'../domain/types';
 import{graphEdges,memoryPath}from'../domain/graph';
 import type{CanvasPosition}from'../lib/canvasState';
 import{AppIcon}from'./AppIcon';
+import{reconcileCanvasNodes}from'../lib/reconcileCanvasNodes';
 
 const EMPTY_IDS:string[]=[];
 const EMPTY_POSITIONS:Record<string,CanvasPosition>={};
@@ -59,7 +60,7 @@ export function ConversationCard({data,selected=false}:{data:ConversationData;se
   <span className="node-drag-handle" aria-hidden="true">•••</span>
   {data.hasChildren&&<button type="button" className="node-collapse icon-button" aria-label={`${data.collapsed?data.expandLabel:data.collapseLabel}: ${node.title}`} title={data.collapsed?data.expandLabel:data.collapseLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onToggleCollapse(node.id)}}><AppIcon name={data.collapsed?'plus':'minus'}/></button>}
   {data.onBranch&&node.status!=='pruned'&&<button type="button" className="node-branch-action icon-button" aria-label={`${branchLabel}: ${node.title}`} title={branchLabel} onClick={event=>{event.preventDefault();event.stopPropagation();data.onBranch?.(node.id)}}><AppIcon name="plus"/></button>}
-  <header className="flow-node-head"><i aria-hidden="true"/>{editing?<input className="node-title-input" autoFocus value={draft} maxLength={240} aria-label="Rename conversation" onClick={event=>event.stopPropagation()} onChange={event=>setDraft(event.target.value)} onBlur={commit} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commit()}if(event.key==='Escape'){event.preventDefault();setEditing(false);setDraft(node.title)}}}/>:<strong onDoubleClick={event=>{event.preventDefault();event.stopPropagation();setDraft(node.title);setEditing(true)}} title="Double-click to rename">{node.title}</strong>}{data.active&&<b aria-hidden="true"/>}</header>
+  <header className="flow-node-head"><i aria-hidden="true"/>{editing?<input className="node-title-input" autoFocus value={draft} maxLength={240} aria-label="Rename conversation" onClick={event=>event.stopPropagation()} onChange={event=>setDraft(event.target.value)} onBlur={commit} onKeyDown={event=>{event.stopPropagation();if(event.nativeEvent.isComposing||event.keyCode===229)return;if(event.key==='Enter'){event.preventDefault();commit()}if(event.key==='Escape'){event.preventDefault();setEditing(false);setDraft(node.title)}}}/>:<strong onDoubleClick={event=>{event.preventDefault();event.stopPropagation();setDraft(node.title);setEditing(true)}} title="Double-click to rename">{node.title}</strong>}{data.active&&<b aria-hidden="true"/>}</header>
   <p className={`flow-node-summary ${subtitle?'':'is-empty'}`}>{subtitle||emptySummaryLabel}</p>
   <footer className="flow-node-footer">
    <button type="button" onClick={event=>{event.stopPropagation();data.onSelect(node.id)}}><AppIcon name="details"/><span>{detailsLabel}</span></button>
@@ -98,7 +99,7 @@ export function WorkflowGraph({graph,selectedId,collapsedNodeIds=EMPTY_IDS,nodeP
  const resolvedLabels=useMemo(()=>({...DEFAULT_LABELS,...labels}),[labels]);
  const calculated=useMemo(()=>layout(graph,collapsedNodeIds,nodePositions,onSelect,onOpenCanvas,onToggleCollapse,onBranch,onRename,resolvedLabels).map(node=>({...node,selected:node.id===selectedId})),[graph,selectedId,collapsedNodeIds,nodePositions,onSelect,onOpenCanvas,onToggleCollapse,onBranch,onRename,resolvedLabels]);
  const[nodes,setNodes,onNodesChange]=useNodesState<ConversationFlowNode>(calculated);
- useEffect(()=>setNodes(calculated),[calculated,setNodes]);
+ useEffect(()=>setNodes(previous=>reconcileCanvasNodes(previous,calculated)),[calculated,setNodes]);
  const visibleIds=useMemo(()=>new Set(nodes.map(node=>node.id)),[nodes]);
  const edges=useMemo(()=>graphEdges(graph).filter(edge=>visibleIds.has(edge.source)&&visibleIds.has(edge.target)).map(edge=>({...edge,type:'default',className:edge.target===selectedId?'is-path-active':''})),[graph,visibleIds,selectedId]);
  const wrapperEvents=useMemo(()=>reactFlowNodePointerProps(onOpenCanvas),[onOpenCanvas]);
