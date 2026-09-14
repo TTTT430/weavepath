@@ -11,33 +11,23 @@ from PIL import Image, ImageDraw
 def create_icon(output: Path) -> None:
     scale = 4
     size = 256 * scale
-    # Use an opaque white base so the icon stays crisp on both light and dark
-    # Windows taskbars and does not inherit a muddy dark square background.
-    image = Image.new("RGBA", (size, size), (255, 255, 255, 255))
+    # Transparent canvas; the branching W is the complete application mark.
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    margin = 18 * scale
-    radius = 52 * scale
-    draw.rounded_rectangle(
-        (margin, margin, size - margin, size - margin),
-        radius=radius,
-        fill=(255, 255, 255, 255),
-        outline=(205, 218, 238, 255),
-        width=5 * scale,
-    )
 
     # Three connected routes form a compact W / branching-workflow mark.
-    stroke = 17 * scale
-    route = (103, 157, 255, 255)
-    highlight = (112, 220, 190, 255)
+    stroke = 19 * scale
+    route = (65, 123, 240, 255)
+    highlight = (27, 184, 164, 255)
     points = [
-        (55, 78), (87, 184), (128, 104), (169, 184), (201, 78),
+        (28, 68), (73, 207), (128, 112), (183, 207), (228, 68),
     ]
     scaled = [(x * scale, y * scale) for x, y in points]
     draw.line(scaled, fill=route, width=stroke, joint="curve")
-    branch = [(128 * scale, 104 * scale), (128 * scale, 55 * scale)]
+    branch = [(128 * scale, 112 * scale), (128 * scale, 35 * scale)]
     draw.line(branch, fill=highlight, width=stroke, joint="curve")
     for index, (x, y) in enumerate(scaled + [branch[-1]]):
-        r = 11 * scale
+        r = 13 * scale
         fill = highlight if index == len(scaled) else route
         draw.ellipse((x - r, y - r, x + r, y + r), fill=fill)
         inner = 4 * scale

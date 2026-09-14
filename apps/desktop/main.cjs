@@ -88,6 +88,7 @@ function startBackend(port) {
 
 function createWindow(port) {
   mainWindow = new BrowserWindow({
+    icon: path.join(process.resourcesPath, 'weavepath-mark-v2.ico'),
     width: 1440,
     height: 900,
     minWidth: 1024,

@@ -1468,7 +1468,10 @@ html .turn-node.is-collapsed { height: 132px; }
 html .turn-node.is-collapsed .turn-node-footer { display: none; }
 html .turn-node.is-route-placeholder { border-style: dashed; }
 html .turn-node.is-route-placeholder .turn-responses > small { display: none; }
-html .turn-node > header { padding: 16px 15px 8px; }
+html .turn-node > header { min-width: 0; max-width: 100%; overflow: hidden; padding: 16px 15px 8px; }
+html .turn-node { grid-template-columns: minmax(0,1fr); }
+html .turn-node > * { min-width: 0; }
+html .turn-node > header .turn-status { flex: 0 0 auto; }
 html .turn-node > header strong,
 html[data-appearance="light"] .turn-node strong,
 html .turn-user,

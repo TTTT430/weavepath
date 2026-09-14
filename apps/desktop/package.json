@@ -26,6 +26,7 @@
       "package.json"
     ],
     "extraResources": [
+      { "from": "build/icon.ico", "to": "weavepath-mark-v2.ico" },
       {
         "from": "../../dist/WeavePathBackend",
         "to": "backend",
@@ -43,10 +44,11 @@
       ]
     },
     "nsis": {
+      "include": "build-installer.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "WeavePath",
       "deleteAppDataOnUninstall": false
