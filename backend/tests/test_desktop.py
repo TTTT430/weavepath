@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from desktop import create_desktop_app
+from backend.desktop import create_desktop_app
 from graph_core import GraphStore
 
 
