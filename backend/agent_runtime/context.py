@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from agent_runtime.compaction import compact_route_messages
+from api.response_policy import COMMUNICATION_POLICY
 
 
 PROMPT_LAYOUT_VERSION = "agent-cache-v3"
@@ -133,6 +134,10 @@ def build_system_policy(provider_system_prompt: str = "") -> dict[str, str]:
         raise ValueError("provider system prompt must be a string")
     configured = provider_system_prompt.replace("\r\n", "\n").replace("\r", "\n").strip()
     content = SYSTEM_POLICY
+    # The default provider prompt already includes this guidance. Avoid a
+    # duplicate while also covering agents without a provider-specific prompt.
+    if COMMUNICATION_POLICY not in configured:
+        content += "\n\n" + COMMUNICATION_POLICY
     if configured:
         content += "\n\nConfigured agent instructions:\n" + configured
     return {"role": "system", "content": content}

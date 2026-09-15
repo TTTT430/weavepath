@@ -10,6 +10,8 @@ from typing import Any, Literal, Protocol
 
 import httpx
 
+from api.response_policy import COMMUNICATION_POLICY
+
 
 CONNECT_RETRY_ATTEMPTS = 3
 CONNECT_RETRY_DELAYS = (0.25, 1.0)
@@ -146,6 +148,7 @@ class OpenAICompatibleLLM:
     system_prompt: str = (
         "You are the AI assistant inside WeavePath. "
         "Use only the supplied route-specific conversation history and reply in the user's language."
+        "\n\n" + COMMUNICATION_POLICY
     )
     # This is a connection/write timeout, not a model-generation timeout.
     # Once the provider accepts the request, reads may continue indefinitely
