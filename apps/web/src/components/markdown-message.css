@@ -1,6 +1,8 @@
 .markdown-message {
   min-width: 0;
   color: inherit;
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 14px;
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
@@ -22,11 +24,11 @@
 }
 
 .markdown-message h1 {
-  font-size: 1.45em;
+  font-size: 1.3em;
 }
 
 .markdown-message h2 {
-  font-size: 1.25em;
+  font-size: 1.15em;
 }
 
 .markdown-message h3 {
@@ -50,7 +52,7 @@
   border-radius: 4px;
   background: var(--ui-panel-muted, #f3f6f8);
   color: var(--ui-text, #172033);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: var(--font-mono, ui-monospace, Consolas, monospace);
   font-size: 0.9em;
 }
 

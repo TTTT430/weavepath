@@ -1,6 +1,9 @@
 :root {
   --chat-content-width: clamp(780px, 78vw, 1180px);
-  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", Consolas, "SFMono-Regular", monospace;
+  font-family: var(--font-ui);
+  font-size: 14px;
   color: #172126;
   background: #f7f8f8;
   font-synthesis: none;
@@ -1157,7 +1160,45 @@ html .inherited-memory > button:hover { background: var(--ui-accent-soft); }
 html .inherited-memory-body { color: var(--ui-muted); }
 html .message-actions button { color: var(--ui-muted); background: var(--ui-panel-muted); border-color: var(--ui-border); }
 html .message-edit label { color: var(--ui-muted); }
-html .message-edit textarea { color: var(--ui-text); background: var(--ui-input); border-color: var(--ui-border-strong); }
+html .message.user > div:has(.message-edit) {
+  width: min(640px, 100%);
+  max-width: 100%;
+  padding: 12px;
+  color: var(--ui-text);
+  background: var(--ui-panel-muted);
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+}
+html .message-edit { min-width: 0; gap: 10px; white-space: normal; }
+html .message-edit label { gap: 6px; font-size: 12px; }
+html .message-edit textarea {
+  min-height: 64px;
+  max-height: 280px;
+  padding: 4px 0;
+  color: var(--ui-text);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+html .message-edit textarea:focus-visible { outline: 1px solid var(--ui-accent); outline-offset: 3px; }
+html .message-edit > div:last-child { flex-wrap: wrap; gap: 8px; }
+html .message-edit > div:last-child button {
+  min-height: 32px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+html .message-edit > div:last-child button.primary {
+  color: var(--ui-panel);
+  background: var(--ui-text);
+  border-color: var(--ui-text);
+}
 html .composer {
   width: min(var(--chat-content-width),calc(100% - 48px));
   margin: 7px auto 14px;
