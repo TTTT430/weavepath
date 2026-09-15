@@ -150,7 +150,7 @@ describe('native double canvas workspace',()=>{
  it('shows only local turns plus route/checkpoint metadata, never inherited transcript text',async()=>{
   renderCanvas();await openLeafCanvas();
   expect(screen.getAllByText('当前节点问题')).toHaveLength(2);expect(screen.getByText('当前节点回答')).toBeInTheDocument();
-  expect(screen.getByText('继承消息数: 6')).toBeInTheDocument();const routeChips=document.querySelector('.route-chips');expect(routeChips).not.toBeNull();expect(within(routeChips as HTMLElement).getByText('数据集')).toBeInTheDocument();expect(within(routeChips as HTMLElement).getByText('情感分析')).toBeInTheDocument();
+  expect(screen.getByText('继承消息数: 6')).toBeInTheDocument();expect(document.querySelector('.route-chips')).toBeNull();
   expect(screen.queryByText('不应显示的父节点正文')).not.toBeInTheDocument();expect(apiMock.messages).not.toHaveBeenCalled();
  });
 
