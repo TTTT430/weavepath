@@ -13,6 +13,30 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
+from api.llm import OpenAICompatibleLLM
+import httpx
+
+
+class DiagnosticLLM(OpenAICompatibleLLM):
+    """Record only allowlisted metadata, never upstream bodies or credentials."""
+    diagnostic: dict | None = None
+
+    def _transport_error(self, exc):
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        hints = {
+            400: "请求被拒绝：检查模型是否支持工具调用及 reasoning_effort 参数。",
+            401: "认证失败：请在当前 PowerShell 重新输入该服务商的有效 API 密钥。",
+            403: "访问被拒绝：检查密钥的模型权限、账户状态或服务端访问限制。",
+            404: "地址或模型不存在：检查 BASE_URL 是否以 /v1 结尾，以及模型 ID。",
+            402: "服务商要求付费：检查账户余额。",
+            422: "参数不兼容：检查工具调用和思考强度支持情况。",
+            429: "限流或额度不足：检查服务商配额，稍后重试。",
+        }
+        error = super()._transport_error(exc)
+        self.diagnostic = {"httpStatus": status, "errorCode": error.code,
+                           "hint": hints.get(status, "服务商或网络异常；检查服务状态与连接配置。")}
+        return error
+
 
 def offline(output: Path) -> int:
     cases = json.loads((ROOT / "evals/scenarios.json").read_text(encoding="utf-8"))
@@ -43,7 +67,7 @@ def live(output: Path) -> int:
     base, model, key = (os.getenv("EVAL_BASE_URL"), os.getenv("EVAL_MODEL"), os.getenv("EVAL_API_KEY"))
     if not all((base, model, key)):
         raise SystemExit("Live evaluation requires EVAL_BASE_URL, EVAL_MODEL and EVAL_API_KEY; no saved app credentials are read.")
-    llm = OpenAICompatibleLLM(base_url=base, model=model, api_key=key,
+    llm = DiagnosticLLM(base_url=base.strip().rstrip("/"), model=model.strip(), api_key=key.strip(),
                               reasoning_effort=os.getenv("EVAL_REASONING_EFFORT") or None)
     cases = [
         ("calculator", "Use safe_calculator to calculate 47 * 128. Return the result.", "6016"),
@@ -59,6 +83,8 @@ def live(output: Path) -> int:
             settings = RuntimeModelSettings(Path(temporary) / "settings.json", env={})
             with TestClient(create_app(store, llm_client=llm, model_settings=settings, background_agent_runs=False)) as client:
                 for name, prompt, expected in cases:
+                    llm.diagnostic = None
+                    print(f"正在测评：{name}", flush=True)
                     graph = client.post("/api/v1/workflows", json={"name": name, "rootTitle": "Evaluation", "rootInstanceId": name}).json()
                     response = client.post(f"/api/v1/workflows/{graph['workflowId']}/instances/{name}/runs", json={
                         "objective": prompt, "constraints": [], "deliverables": ["Answer"],
@@ -72,14 +98,26 @@ def live(output: Path) -> int:
                     calls = detail.get("toolCalls", [])
                     rule = None if expected is None else expected in answer and any(c.get("toolName") == "safe_calculator" for c in calls)
                     rows.append({"id": name, "status": detail.get("status"), "answer": answer,
+                                 "errorCode": detail.get("errorCode"), "diagnostic": llm.diagnostic,
                                  "characters": len(answer), "rulePassed": rule, "humanReview": "pending",
                                  "metrics": detail.get("metrics"), "toolCalls": calls,
                                  "events": client.get(f"/api/v1/runs/{run['runId']}/events").json().get("events", [])})
+                    print(f"{name}: {detail.get('status')}，正文 {len(answer)} 字符", flush=True)
+                    if llm.diagnostic:
+                        print(f"HTTP {llm.diagnostic['httpStatus']}：{llm.diagnostic['hint']}", flush=True)
+                        # A shared connection/config failure cannot assess quality.
+                        # Do not spend two more requests on the same failing setup.
+                        for skipped, _, _ in cases[len(rows):]:
+                            rows.append({"id": skipped, "status": "skipped", "reason": "provider_failure"})
+                        break
         finally:
             store.close()
     output.write_text(json.dumps({"mode": "live-agent", "model": model,
         "note": "Human review required; no aggregate quality pass is inferred. Missing provider usage/cost is unavailable.",
         "results": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"报告已保存：{output.resolve()}")
+    print("执行完成，仍需人工评审。" if all(r["status"] == "completed" for r in rows)
+          else "测评未通过：存在失败或跳过，请查看上方诊断；这不是模型质量评分。")
     return 0 if all(r["status"] == "completed" and r.get("rulePassed") is not False for r in rows) else 1
 
 
