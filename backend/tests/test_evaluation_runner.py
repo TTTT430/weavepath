@@ -32,6 +32,32 @@ def test_diagnostics_preserve_status_without_provider_secrets(status):
     assert "secret" not in json.dumps(llm.diagnostic)
 
 
+def test_provider_parameter_error_and_request_id_are_reported_safely():
+    llm = runner().DiagnosticLLM(base_url="https://example.test/v1", model="test", api_key="sensitive-test-key")
+    response = httpx.Response(400, json={"error": {"type": "invalid_request_error",
+        "code": "unsupported_parameter", "param": "reasoning_effort",
+        "message": "Invalid reasoning_effort; bearer sensitive-test-key is unsupported"}},
+        headers={"x-request-id": "req_test-123"},
+        request=httpx.Request("POST", "https://example.test/v1/chat/completions"))
+    llm._transport_error(httpx.HTTPStatusError("bad request", request=response.request, response=response))
+    diagnostic = llm.diagnostic
+    assert diagnostic["providerType"] == "invalid_request_error"
+    assert diagnostic["providerCode"] == "unsupported_parameter"
+    assert diagnostic["providerParam"] == "reasoning_effort"
+    assert diagnostic["requestId"] == "req_test-123"
+    assert "sensitive-test-key" not in json.dumps(diagnostic)
+
+
+def test_provider_body_with_echoed_prompt_is_not_persisted():
+    llm = runner().DiagnosticLLM(base_url="https://example.test/v1", model="test")
+    response = httpx.Response(400, json={"error": {"message": "Request rejected: " +
+        "user prompt with private fact " * 25 + " tools"}},
+        request=httpx.Request("POST", "https://example.test/v1/chat/completions"))
+    llm._transport_error(httpx.HTTPStatusError("bad request", request=response.request, response=response))
+    assert llm.diagnostic["providerMessage"] == "[provider message omitted]"
+    assert "private fact" not in json.dumps(llm.diagnostic)
+
+
 def test_live_runner_uses_runtime_and_keeps_human_review_pending(monkeypatch, tmp_path):
     monkeypatch.setenv("EVAL_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("EVAL_MODEL", "test-model")

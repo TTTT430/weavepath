@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -21,6 +22,47 @@ class DiagnosticLLM(OpenAICompatibleLLM):
     """Record only allowlisted metadata, never upstream bodies or credentials."""
     diagnostic: dict | None = None
 
+    @staticmethod
+    def _safe_field(value):
+        if not isinstance(value, str):
+            return None
+        value = value.strip()
+        return value[:80] if re.fullmatch(r"[a-zA-Z0-9_.:-]{1,80}", value) else None
+
+    def _provider_error_metadata(self, response):
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            body = None
+        error = body.get("error") if isinstance(body, dict) else None
+        if not isinstance(error, dict):
+            error = {}
+        request_id = None
+        for key in ("x-request-id", "request-id", "x-trace-id", "cf-ray"):
+            request_id = self._safe_field(response.headers.get(key))
+            if request_id:
+                break
+        # Provider messages may echo user prompts or credentials. Report only
+        # a known request field plus a sanitized parameter-related excerpt.
+        raw_message = error.get("message")
+        message = None
+        if isinstance(raw_message, str):
+            terms = ("reasoning_effort", "parallel_tool_calls", "tools", "tool_choice",
+                     "model", "messages", "unsupported", "invalid parameter")
+            if any(term in raw_message.lower() for term in terms):
+                redacted = raw_message
+                for secret in (self.api_key, self.base_url):
+                    if secret:
+                        redacted = redacted.replace(secret, "[redacted]")
+                redacted = re.sub(r"(?i)bearer\s+\S+", "Bearer [redacted]", redacted)
+                redacted = re.sub(r"https?://\S+|[\w.+-]+@[\w.-]+\.\w+", "[redacted]", redacted)
+                redacted = re.sub(r"\b[A-Za-z0-9_-]{24,}\b", "[redacted]", redacted)
+                message = redacted[:240] if len(redacted) <= 500 else "[provider message omitted]"
+        return {"providerType": self._safe_field(error.get("type")),
+                "providerCode": self._safe_field(error.get("code")),
+                "providerParam": self._safe_field(error.get("param")),
+                "providerMessage": message, "requestId": request_id}
+
     def _transport_error(self, exc):
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
         hints = {
@@ -35,6 +77,8 @@ class DiagnosticLLM(OpenAICompatibleLLM):
         error = super()._transport_error(exc)
         self.diagnostic = {"httpStatus": status, "errorCode": error.code,
                            "hint": hints.get(status, "服务商或网络异常；检查服务状态与连接配置。")}
+        if status is not None:
+            self.diagnostic.update(self._provider_error_metadata(exc.response))
         return error
 
 
