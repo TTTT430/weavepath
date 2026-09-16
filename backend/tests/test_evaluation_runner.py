@@ -58,6 +58,17 @@ def test_provider_body_with_echoed_prompt_is_not_persisted():
     assert "private fact" not in json.dumps(llm.diagnostic)
 
 
+def test_provider_quota_code_overrides_generic_http_400_hint():
+    llm = runner().DiagnosticLLM(base_url="https://example.test/v1", model="test")
+    response = httpx.Response(400, json={"error": {"type": "invalid_request_error",
+        "code": "insufficient_quota"}},
+        request=httpx.Request("POST", "https://example.test/v1/chat/completions"))
+    llm._transport_error(httpx.HTTPStatusError("bad request", request=response.request, response=response))
+    assert llm.diagnostic["providerCode"] == "insufficient_quota"
+    assert "额度不足" in llm.diagnostic["hint"]
+    assert "reasoning_effort" not in llm.diagnostic["hint"]
+
+
 def test_live_runner_uses_runtime_and_keeps_human_review_pending(monkeypatch, tmp_path):
     monkeypatch.setenv("EVAL_BASE_URL", "https://example.test/v1")
     monkeypatch.setenv("EVAL_MODEL", "test-model")

@@ -75,10 +75,20 @@ class DiagnosticLLM(OpenAICompatibleLLM):
             429: "限流或额度不足：检查服务商配额，稍后重试。",
         }
         error = super()._transport_error(exc)
+        metadata = self._provider_error_metadata(exc.response) if status is not None else {}
+        provider_code = metadata.get("providerCode")
+        provider_hints = {
+            "insufficient_quota": "API 额度不足或账户配额已用尽；请在服务商后台检查余额与额度。",
+            "model_not_found": "服务商未找到该模型或当前密钥没有模型权限。",
+            "unsupported_parameter": "服务商不支持请求中的某个参数；查看 providerParam。",
+        }
         self.diagnostic = {"httpStatus": status, "errorCode": error.code,
-                           "hint": hints.get(status, "服务商或网络异常；检查服务状态与连接配置。")}
+                           "hint": provider_hints.get(
+                               provider_code,
+                               hints.get(status, "服务商或网络异常；检查服务状态与连接配置。"),
+                           )}
         if status is not None:
-            self.diagnostic.update(self._provider_error_metadata(exc.response))
+            self.diagnostic.update(metadata)
         return error
 
 
