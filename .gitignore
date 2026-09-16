@@ -53,3 +53,4 @@ backups/
 Thumbs.db
 .idea/
 .vscode/
+evals/*.local.json

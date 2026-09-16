@@ -1,0 +1,122 @@
+[
+  {
+    "id": "stable_prefix_ignores_runtime_ui_metadata_and_tool_registration_order",
+    "category": "route",
+    "node": "backend/tests/test_agent_context.py::test_stable_prefix_ignores_runtime_ui_metadata_and_tool_registration_order"
+  },
+  {
+    "id": "parent_route_update_changes_full_request_but_keeps_existing_prefix",
+    "category": "route",
+    "node": "backend/tests/test_agent_context.py::test_parent_route_update_changes_full_request_but_keeps_existing_prefix"
+  },
+  {
+    "id": "live_graph_routes_share_only_the_parent_prefix_and_never_siblings",
+    "category": "route",
+    "node": "backend/tests/test_agent_context.py::test_live_graph_routes_share_only_the_parent_prefix_and_never_siblings"
+  },
+  {
+    "id": "message_knowledge_and_current_request_order_is_deterministic",
+    "category": "route",
+    "node": "backend/tests/test_agent_context.py::test_message_knowledge_and_current_request_order_is_deterministic"
+  },
+  {
+    "id": "untrusted_route_content_never_creates_an_additional_system_message",
+    "category": "route",
+    "node": "backend/tests/test_agent_context.py::test_untrusted_route_content_never_creates_an_additional_system_message"
+  },
+  {
+    "id": "happy_tool_run_persists_steps_events_and_final_message",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_happy_tool_run_persists_steps_events_and_final_message"
+  },
+  {
+    "id": "unknown_and_invalid_tools_fail_before_execution",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_unknown_and_invalid_tools_fail_before_execution"
+  },
+  {
+    "id": "tool_failure_is_safe_and_durable",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_tool_failure_is_safe_and_durable"
+  },
+  {
+    "id": "idempotency_returns_original_run_and_rejects_changed_request",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_idempotency_returns_original_run_and_rejects_changed_request"
+  },
+  {
+    "id": "approval_never_executes_an_unallowlisted_side_effect_tool",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_approval_never_executes_an_unallowlisted_side_effect_tool"
+  },
+  {
+    "id": "cancel_before_approval_prevents_the_side_effect_and_closes_the_request",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_cancel_before_approval_prevents_the_side_effect_and_closes_the_request"
+  },
+  {
+    "id": "rejected_approval_cancels_run_without_artifact",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_rejected_approval_cancels_run_without_artifact"
+  },
+  {
+    "id": "workspace_tools_require_explicit_root_and_reject_escape_or_secrets",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_workspace_tools_require_explicit_root_and_reject_escape_or_secrets"
+  },
+  {
+    "id": "recovery_journals_unfinished_approved_tools_without_replaying_them",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_recovery_journals_unfinished_approved_tools_without_replaying_them"
+  },
+  {
+    "id": "retry_blocks_an_interrupted_side_effect_with_unknown_outcome",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_retry_blocks_an_interrupted_side_effect_with_unknown_outcome"
+  },
+  {
+    "id": "agent_runtime_materializes_bound_attachment_references_before_model_call",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_agent_runtime_materializes_bound_attachment_references_before_model_call"
+  },
+  {
+    "id": "agent_runtime_automatically_retrieves_only_the_live_route_and_exposes_plan",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_agent_runtime_automatically_retrieves_only_the_live_route_and_exposes_plan"
+  },
+  {
+    "id": "model_usage_and_cache_metrics_are_persisted",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_model_usage_and_cache_metrics_are_persisted"
+  },
+  {
+    "id": "cache_ratio_uses_only_reported_calls_and_coverage_uses_all_model_steps",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_cache_ratio_uses_only_reported_calls_and_coverage_uses_all_model_steps"
+  },
+  {
+    "id": "usage_parser_normalizes_openai_and_deepseek_cache_fields",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_usage_parser_normalizes_openai_and_deepseek_cache_fields"
+  },
+  {
+    "id": "parent_route_revision_change_rejects_stale_child_run_writeback",
+    "category": "runtime",
+    "node": "backend/tests/test_agent_runtime.py::test_parent_route_revision_change_rejects_stale_child_run_writeback"
+  },
+  {
+    "id": "compaction_is_deterministic_auditable_and_keeps_recent_messages_complete",
+    "category": "compaction",
+    "node": "backend/tests/test_context_compaction.py::test_compaction_is_deterministic_auditable_and_keeps_recent_messages_complete"
+  },
+  {
+    "id": "route_compaction_never_writes_back_or_leaks_sibling_history",
+    "category": "compaction",
+    "node": "backend/tests/test_context_compaction.py::test_route_compaction_never_writes_back_or_leaks_sibling_history"
+  },
+  {
+    "id": "compaction_changes_only_route_projection_not_stable_policy_tool_prefix",
+    "category": "compaction",
+    "node": "backend/tests/test_context_compaction.py::test_compaction_changes_only_route_projection_not_stable_policy_tool_prefix"
+  }
+]

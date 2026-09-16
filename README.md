@@ -156,3 +156,6 @@ $env:ELECTRON_BUILDER_BINARIES_MIRROR = "https://npmmirror.com/mirrors/electron-
 ## 许可证
 
 Apache-2.0
+# Agent 验收
+
+项目提供独立的 [Agent 验收入口](evals/README.md)：24 项无费用规则回归，以及显式开启的真实模型冒烟测评。报告区分规则通过与人工质量评审，不以 Token 或回答长度代替正确性。
