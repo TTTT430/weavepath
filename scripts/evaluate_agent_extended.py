@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 from contextlib import contextmanager
@@ -14,6 +15,11 @@ from graph_core import GraphStore
 
 SCENARIOS = ("parent-update", "sibling-isolation", "compression", "attachment-evidence",
              "approval-approve", "approval-reject", "recovery")
+
+
+def correct_budget(answer):
+    # Accept conventional thousands separators, but not 17319 or 7319.5.
+    return bool(re.search(r"(?<![\d.,])(?:7319|7,319)(?![\d,]|\.\d)", answer))
 
 
 @contextmanager
@@ -137,7 +143,7 @@ def scenario(name, llm, directory):
                 checks["constraintPreserved"] = "REQUIRED-7391" in answer and "NOW-2468" in answer
             else:
                 checks["evidenceInInput"] = "7319 credits" in sent
-                checks["budgetAndSource"] = "7319" in answer and "evaluation-facts.txt" in answer
+                checks["budgetAndSource"] = correct_budget(answer) and "evaluation-facts.txt" in answer
                 checks["unknownDate"] = "UNKNOWN" in answer
         for node, original in before.items():
             after = store.list_messages(wf, node, scope="local")["messages"]
@@ -150,16 +156,19 @@ def scenario(name, llm, directory):
         store.close()
 
 
-def extended(llm, output: Path, repeat=1):
+def extended(llm, output: Path, repeat=1, scenarios=None):
+    selected = tuple(scenarios) if scenarios is not None else SCENARIOS
+    if not selected or any(name not in SCENARIOS for name in selected):
+        raise ValueError("Unknown or empty scenario selection")
     rows = []
     report = {"mode": "extended-live-agent", "model": llm.model, "reasoningEffort": llm.reasoning_effort,
-              "repeat": repeat, "humanReview": "pending", "results": rows}
+              "repeat": repeat, "selectedScenarios": selected, "humanReview": "pending", "results": rows}
     with tempfile.TemporaryDirectory(prefix="weavepath-extended-") as temporary, environment(
         WEAVEPATH_CONTEXT_BUDGET_CHARS="16000", WEAVEPATH_HOST_BRIDGE_URL="",
         WEAVEPATH_HOST_BRIDGE_DISCOVERY=str(Path(temporary) / "absent.json")):
         stopped = False
         for attempt in range(1, repeat + 1):
-            for name in SCENARIOS:
+            for name in selected:
                 if stopped:
                     rows.append({"id": name, "attempt": attempt, "status": "skipped", "passed": False})
                     continue

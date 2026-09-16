@@ -39,6 +39,23 @@ def test_wrong_answer_fails_rule_gate(monkeypatch, tmp_path):
     assert not module().scenario("parent-update", llm, tmp_path)["passed"]
 
 
+@pytest.mark.parametrize("answer,expected", [("7319 credits", True), ("**7,319 credits**", True),
+    ("17319", False), ("73190", False), ("7,319.5", False), ("7319.50", False)])
+def test_budget_formatting(answer, expected):
+    assert module().correct_budget(answer) is expected
+
+
+def test_selected_scenario_report(monkeypatch, tmp_path):
+    mod = module()
+    llm = OpenAICompatibleLLM(base_url="https://example.test", model="test")
+    monkeypatch.setattr(mod, "scenario", lambda name, *_: {"id": name, "status": "completed", "passed": True})
+    output = tmp_path / "selected.json"
+    assert mod.extended(llm, output, scenarios=["recovery"]) == 0
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert len(report["results"]) == 1
+    assert report["selectedScenarios"] == ["recovery"]
+
+
 def test_extended_stops_provider_failure_and_restores_environment(monkeypatch, tmp_path):
     mod = module()
     llm = OpenAICompatibleLLM(base_url="https://example.test", model="test")

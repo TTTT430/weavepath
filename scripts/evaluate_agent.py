@@ -127,15 +127,20 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, default=ROOT / "evals/report.local.json")
     parser.add_argument("--extended", action="store_true", help="Run the seven extended live scenarios; requires --live")
     parser.add_argument("--repeat", type=int, choices=range(1, 4), default=1)
+    parser.add_argument("--scenarios", nargs="+", help="Extended scenario IDs to run; defaults to all")
     args = parser.parse_args()
     if args.extended:
         if not args.live:
             parser.error("--extended requires --live (paid API calls)")
-        from evaluate_agent_extended import extended
+        from evaluate_agent_extended import extended, SCENARIOS
+        if args.scenarios and any(name not in SCENARIOS for name in args.scenarios):
+            parser.error("Unknown scenario; choose from: " + ", ".join(SCENARIOS))
         if not all(os.getenv(k) for k in ("EVAL_BASE_URL", "EVAL_MODEL", "EVAL_API_KEY")):
             parser.error("Set EVAL_BASE_URL, EVAL_MODEL and EVAL_API_KEY first")
         client = DiagnosticLLM(base_url=os.environ["EVAL_BASE_URL"].strip().rstrip("/"),
             model=os.environ["EVAL_MODEL"].strip(), api_key=os.environ["EVAL_API_KEY"].strip(),
             reasoning_effort=os.getenv("EVAL_REASONING_EFFORT") or None)
-        sys.exit(extended(client, args.output, args.repeat))
+        sys.exit(extended(client, args.output, args.repeat, args.scenarios))
+    if args.scenarios:
+        parser.error("--scenarios requires --extended --live")
     sys.exit(live(args.output) if args.live else offline(args.output))
