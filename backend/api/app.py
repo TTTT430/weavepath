@@ -314,6 +314,7 @@ class RegenerateMessageInput(ChatInput):
 
 
 class CreateAgentRunInput(CamelModel):
+    context_strategy: Literal["appendParentUpdates"] | None = Field(None, alias="contextStrategy")
     objective: str = Field(min_length=1, max_length=20_000)
     constraints: list[str] = Field(default_factory=list, max_length=50)
     deliverables: list[str] = Field(default_factory=list, max_length=50)
@@ -1459,7 +1460,7 @@ def create_app(store: GraphStore | None = None, llm_client: LLMClient | None = N
     def create_agent_run(workflow_id: str, instance_id: str, body: CreateAgentRunInput):
         if run_service is None:
             raise LLMUnavailable("AI provider is not configured")
-        request_body = body.model_dump(by_alias=True)
+        request_body = body.model_dump(by_alias=True, exclude_none=True)
         if run_dispatcher is not None:
             return run_service.enqueue(
                 workflow_id, instance_id, request_body, run_dispatcher.submit,

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
+from agent_runtime.parent_updates import STRATEGY, placement_summary
 from graph_core import Conflict, NotFound
 from runtime_events import validate_event_type
 
@@ -166,6 +167,10 @@ class AgentRunRepository:
                 cx, workflow_id, instance_id, context
             )
             run_id = "run_" + uuid.uuid4().hex
+            if "contextPlacement" in context:
+                for entry in context["contextPlacement"]["order"]:
+                    if "firstIncludedRunId" in entry and entry["firstIncludedRunId"] is None:
+                        entry["firstIncludedRunId"] = run_id
             root_run_id, attempt_number = run_id, 1
             if parent_run_id is not None:
                 parent = cx.execute("SELECT * FROM agent_runs WHERE id=?", (parent_run_id,)).fetchone()
@@ -200,6 +205,19 @@ class AgentRunRepository:
                 })
             row = cx.execute("SELECT * FROM agent_runs WHERE id=?", (run_id,)).fetchone()
         return self._snapshot(row), True
+
+    def confirmed_context_baseline(self, workflow_id: str, instance_id: str):
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT r.id,r.context_snapshot_json FROM agent_runs r "
+                "WHERE r.workflow_id=? AND r.instance_id=? "
+                "AND json_extract(r.context_snapshot_json, '$.contextStrategy')=? "
+                "AND EXISTS (SELECT 1 FROM run_steps s WHERE s.run_id=r.id "
+                "AND s.sequence=1 AND s.kind='model' AND s.status='completed') "
+                "ORDER BY r.rowid DESC LIMIT 1",
+                (workflow_id, instance_id, STRATEGY),
+            ).fetchone()
+        return (row["id"], json.loads(row["context_snapshot_json"])) if row else None
 
     def find_idempotent(self, workflow_id: str, instance_id: str, request: dict[str, Any]) -> dict[str, Any] | None:
         with self.lock:
@@ -273,10 +291,16 @@ class AgentRunRepository:
                 self._event(cx, run_id, "run.lease_released", {"ownerId": owner_id})
 
     def event(self, run_id: str, event_type: str,
-              payload: dict[str, Any] | None = None) -> None:
+              payload: dict[str, Any] | None = None, *,
+              verify_route: bool = False) -> None:
         """Append one redacted runtime event using the run's monotonic sequence."""
         with self.tx() as cx:
-            self._require_running(cx, run_id)
+            run = self._require_running(cx, run_id)
+            if verify_route:
+                self._require_route_revision_vector(
+                    cx, run["workflow_id"], run["instance_id"],
+                    json.loads(run["context_snapshot_json"]),
+                )
             self._event(cx, run_id, event_type, payload)
 
     def record_model(self, run_id: str, sequence: int, turn_kind: str,
@@ -1008,7 +1032,7 @@ class AgentRunRepository:
     @staticmethod
     def _snapshot(row: sqlite3.Row) -> dict[str, Any]:
         context = json.loads(row["context_snapshot_json"])
-        return {"runId": row["id"], "workflowId": row["workflow_id"], "instanceId": row["instance_id"],
+        result = {"runId": row["id"], "workflowId": row["workflow_id"], "instanceId": row["instance_id"],
                 "status": row["status"], "inputContentRevision": row["input_content_revision"],
                 "contextSha256": row["context_sha256"], "modelSnapshot": json.loads(row["model_snapshot_json"]),
                 "memoryRoute": context.get("memoryRoute", []),
@@ -1030,6 +1054,10 @@ class AgentRunRepository:
                 "leaseExpiresAt": row["lease_expires_at"],
                 "lastHeartbeatAt": row["last_heartbeat_at"],
                 "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+        if "contextPlacement" in context:
+            result["contextStrategy"] = context["contextStrategy"]
+            result["contextAssembly"] = placement_summary(context["contextPlacement"], row["id"])
+        return result
 
     def _metrics(self, row: sqlite3.Row, steps: list[dict[str, Any]],
                  tool_results: list[dict[str, Any]]) -> dict[str, Any]:

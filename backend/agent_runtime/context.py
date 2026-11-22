@@ -253,6 +253,7 @@ def build_agent_messages(
 
 def stable_prefix_sha256(
     first_message: Mapping[str, Any], tools: Sequence[Mapping[str, Any]],
+    *, layout_version: str = PROMPT_LAYOUT_VERSION,
 ) -> str:
     """Hash the provider-visible stable prefix (policy plus canonical tools)."""
     policy = {
@@ -262,7 +263,7 @@ def stable_prefix_sha256(
     if policy["role"] != "system" or not isinstance(policy["content"], str):
         raise ValueError("first message must be a system policy")
     payload = {
-        "layout": PROMPT_LAYOUT_VERSION,
+        "layout": layout_version,
         "policy": policy,
         "tools": canonical_tool_specs(tools),
     }
@@ -271,10 +272,11 @@ def stable_prefix_sha256(
 
 def model_request_sha256(
     messages: Sequence[Mapping[str, Any]], tools: Sequence[Mapping[str, Any]],
+    *, layout_version: str = PROMPT_LAYOUT_VERSION,
 ) -> str:
     """Hash the complete canonical model input for audits and contract tests."""
     payload = {
-        "layout": PROMPT_LAYOUT_VERSION,
+        "layout": layout_version,
         "messages": [_canonical(message) for message in messages],
         "tools": canonical_tool_specs(tools),
     }
@@ -305,6 +307,7 @@ def assemble_agent_context(
     route_instance_ids: Sequence[str] = (),
     route_revision_vector: Sequence[Mapping[str, Any]] = (),
     context_budget_chars: int | None = None,
+    layout_version: str = PROMPT_LAYOUT_VERSION,
 ) -> AssembledAgentContext:
     """Return canonical arguments ready for ``AgentModelPort.next``."""
     canonical_tools = canonical_tool_specs(tools)
@@ -325,9 +328,10 @@ def assemble_agent_context(
     return AssembledAgentContext(
         messages=messages,
         tools=canonical_tools,
-        stable_prefix_sha256=stable_prefix_sha256(messages[0], canonical_tools),
-        request_sha256=model_request_sha256(messages, canonical_tools),
+        stable_prefix_sha256=stable_prefix_sha256(messages[0], canonical_tools, layout_version=layout_version),
+        request_sha256=model_request_sha256(messages, canonical_tools, layout_version=layout_version),
         compaction_plan=compacted.plan,
+        prompt_layout_version=layout_version,
     )
 
 
