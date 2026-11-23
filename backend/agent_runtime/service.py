@@ -5,12 +5,15 @@ import math
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 
 from agent_runtime.adapters import AgentModelPort
-from agent_runtime.prompt_builder import assemble_agent_context
+from agent_runtime.compaction import configured_context_budget
+from agent_runtime.context import assemble_agent_context
+from agent_runtime.parent_updates import (LAYOUT_VERSION, STRATEGY, plan_order, rebuild_order,
+                                          render_order, with_update_guidance)
 from agent_runtime.repository import AgentRunRepository
 from agent_runtime.tools import ToolRegistry
 from api.llm import LLMUnavailable
@@ -241,23 +244,13 @@ class AgentRuntimeService:
                     "modelConfigurationChanged",
                     "Model configuration changed before the queued run started", 409, run_id,
                 )
-            assembled = assemble_agent_context(
-                route_messages=context["messages"],
-                accepted_knowledge=context.get("acceptedKnowledge", []),
-                request=request,
-                tools=context["availableTools"],
-                retrieved_evidence=context.get("retrievedEvidence", ""),
-                provider_system_prompt=current_snapshot.get("systemPrompt", ""),
-                target_instance_id=context.get("instanceId"),
-                route_instance_ids=[
-                    item.get("instanceId") for item in context.get("memoryRoute", [])
-                    if isinstance(item, dict) and isinstance(item.get("instanceId"), str)
-                ],
-                route_revision_vector=context.get("routeRevisionVector", []),
-                context_budget_chars=(context.get("compactionPlan") or {}).get(
-                    "budgetCharacters"
-                ),
-            )
+            try:
+                assembled = self._assemble_context(context, request, current_snapshot)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise AgentRunError(
+                    "runContextIntegrityFailed", "Queued run context could not be verified",
+                    409, run_id,
+                ) from exc
             if (assembled.prompt_layout_version != context.get("promptLayoutVersion")
                     or assembled.stable_prefix_sha256 != context.get("stablePrefixSha256")
                     or assembled.request_sha256 != context.get("modelRequestSha256")
@@ -268,6 +261,7 @@ class AgentRuntimeService:
                 )
             return self._run_created(
                 run_id, bound_model, list(assembled.messages), assembled.tools,
+                verify_route=context.get("contextStrategy") == STRATEGY,
             )
         except AgentRunError as exc:
             self.repository.fail(run_id, exc.code)
@@ -503,16 +497,6 @@ class AgentRuntimeService:
             raise AgentRunError(
                 "aiUnavailable", "Agent provider is unavailable", 503
             ) from exc
-        assembled = assemble_agent_context(
-            route_messages=snapshot["messages"], accepted_knowledge=accepted_knowledge,
-            request=request, tools=self.tools.specs(),
-            retrieved_evidence=retrieved_evidence,
-            provider_system_prompt=model_snapshot.get("systemPrompt", ""),
-            target_instance_id=instance_id,
-            route_instance_ids=[item["instanceId"] for item in memory_route],
-            route_revision_vector=route_revision_vector,
-        )
-        tool_specs, prompt_messages = assembled.tools, assembled.messages
         context = {"workflowId": workflow_id, "instanceId": instance_id,
                    "inputContentRevision": snapshot["contentRevision"],
                    "memoryRoute": memory_route,
@@ -522,19 +506,44 @@ class AgentRuntimeService:
                                       if key != "contextText"}
                                      if retrieval_plan else None),
                    "retrievedEvidence": retrieved_evidence,
-                   "compactionPlan": assembled.compaction_plan,
-                   "availableTools": tool_specs,
-                   "promptLayoutVersion": assembled.prompt_layout_version,
-                   "stablePrefixSha256": assembled.stable_prefix_sha256,
-                   "modelRequestSha256": assembled.request_sha256,
+                   "availableTools": self.tools.specs(),
                    "messages": snapshot["messages"], "objective": request["objective"],
                    "constraints": request["constraints"], "deliverables": request["deliverables"],
                    "acceptanceChecks": request["acceptanceChecks"]}
+        experimental = request.get("contextStrategy") == STRATEGY
         try:
-            run, created = self.repository.create(workflow_id=workflow_id, instance_id=instance_id,
-                                                   request=request, context=context,
-                                                   model_snapshot=model_snapshot,
-                                                   parent_run_id=parent_run_id)
+            with self.repository.lock if experimental else nullcontext():
+                if experimental:
+                    budget = configured_context_budget()
+                    baseline = self.repository.confirmed_context_baseline(workflow_id, instance_id)
+                    context["contextStrategy"] = STRATEGY
+                    context["contextPlacement"] = plan_order(
+                        context["messages"], [node["instanceId"] for node in memory_route],
+                        baseline, budget,
+                    )
+                assembled = self._assemble_context(context, request, model_snapshot)
+                if (experimental and assembled.compaction_plan is not None
+                        and context["contextPlacement"]["mode"] == "append"):
+                    context["contextPlacement"] = rebuild_order(
+                        context["messages"], context["contextPlacement"]["baseRunId"],
+                        budget, "compaction",
+                    )
+                    assembled = self._assemble_context(context, request, model_snapshot)
+                elif experimental and assembled.compaction_plan is not None:
+                    placement = context["contextPlacement"]
+                    if placement["rebuildReason"] is None:
+                        placement.update(mode="rebuild", rebuildReason="compaction")
+                context.update(
+                    availableTools=assembled.tools,
+                    compactionPlan=assembled.compaction_plan,
+                    promptLayoutVersion=assembled.prompt_layout_version,
+                    stablePrefixSha256=assembled.stable_prefix_sha256,
+                    modelRequestSha256=assembled.request_sha256,
+                )
+                run, created = self.repository.create(
+                    workflow_id=workflow_id, instance_id=instance_id, request=request,
+                    context=context, model_snapshot=model_snapshot, parent_run_id=parent_run_id,
+                )
         except Conflict as exc:
             reason = str(exc).lower()
             if "idempotency" in reason:
@@ -552,11 +561,35 @@ class AgentRuntimeService:
         if background_submit is not None:
             background_submit(run_id)
             return self.repository.get(run_id)
-        return self._run_created(run_id, bound_model, list(prompt_messages), tool_specs)
+        return self._run_created(
+            run_id, bound_model, assembled.messages, assembled.tools, verify_route=experimental,
+        )
+
+    @staticmethod
+    def _assemble_context(context, request, model_snapshot):
+        messages = context["messages"]
+        budget = (context.get("compactionPlan") or {}).get("budgetCharacters")
+        system_prompt = model_snapshot.get("systemPrompt", "")
+        options = {}
+        if context.get("contextStrategy") == STRATEGY:
+            placement = context["contextPlacement"]
+            messages = render_order(messages, placement)
+            budget = placement["budgetCharacters"]
+            system_prompt = with_update_guidance(system_prompt)
+            options["layout_version"] = LAYOUT_VERSION
+        return assemble_agent_context(
+            route_messages=messages, accepted_knowledge=context.get("acceptedKnowledge", []),
+            request=request, tools=context["availableTools"],
+            retrieved_evidence=context.get("retrievedEvidence", ""),
+            provider_system_prompt=system_prompt, target_instance_id=context.get("instanceId"),
+            route_instance_ids=[item["instanceId"] for item in context.get("memoryRoute", [])],
+            route_revision_vector=context.get("routeRevisionVector", []),
+            context_budget_chars=budget, **options,
+        )
 
     def _run_created(self, run_id: str, bound_model: Any,
                      prompt_messages: list[dict[str, Any]],
-                     tool_specs: list[dict[str, Any]]) -> dict[str, Any]:
+                     tool_specs: list[dict[str, Any]], *, verify_route: bool = False) -> dict[str, Any]:
         owner_id: str | None = None
         lease_manager: Any = None
         try:
@@ -571,7 +604,10 @@ class AgentRuntimeService:
                     return cancelled
                 step_sequence += 1
                 self._require_lease_phase(run_id, owner_id, "model_request")
-                self.repository.event(run_id, "model.started", {"stepSequence": step_sequence})
+                self.repository.event(
+                    run_id, "model.started", {"stepSequence": step_sequence},
+                    verify_route=verify_route,
+                )
                 turn = None
                 try:
                     turn = bound_model.next(messages, tool_specs)

@@ -179,10 +179,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true", help="Explicit opt-in: sends synthetic tasks to your provider and incurs charges")
     parser.add_argument("--output", type=Path, default=ROOT / "evals/report.local.json")
+    parser.add_argument("--prefix-cache", action="store_true", help="Compare two Agent Run prompt orders; requires --live")
     parser.add_argument("--extended", action="store_true", help="Run the seven extended live scenarios; requires --live")
     parser.add_argument("--repeat", type=int, choices=range(1, 4), default=1)
     parser.add_argument("--scenarios", nargs="+", help="Extended scenario IDs to run; defaults to all")
     args = parser.parse_args()
+    if args.prefix_cache:
+        if not args.live or args.extended or args.scenarios:
+            parser.error("--prefix-cache requires --live and runs its own paired scenarios")
+        if not all(os.getenv(k) for k in ("EVAL_BASE_URL", "EVAL_MODEL", "EVAL_API_KEY")):
+            parser.error("Set EVAL_BASE_URL, EVAL_MODEL and EVAL_API_KEY first")
+        from evaluate_prefix_cache import compare
+        client = DiagnosticLLM(base_url=os.environ["EVAL_BASE_URL"].strip().rstrip("/"),
+            model=os.environ["EVAL_MODEL"].strip(), api_key=os.environ["EVAL_API_KEY"].strip(),
+            reasoning_effort=os.getenv("EVAL_REASONING_EFFORT") or None)
+        sys.exit(compare(client, args.output))
     if args.extended:
         if not args.live:
             parser.error("--extended requires --live (paid API calls)")
